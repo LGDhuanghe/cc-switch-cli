@@ -140,7 +140,7 @@ use crate::prompt_files::prompt_file_path;
 use crate::provider::ProviderManager;
 
 /// 应用类型
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum AppType {
     Claude,
@@ -155,6 +155,12 @@ impl AppType {
             AppType::Codex => "codex",
             AppType::Gemini => "gemini", // 新增
         }
+    }
+}
+
+impl std::fmt::Display for AppType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
     }
 }
 
