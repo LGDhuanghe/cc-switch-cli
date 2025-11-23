@@ -161,10 +161,10 @@ xattr -cr /usr/local/bin/cc-switch
 
 ```bash
 # Download
-curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-v4.0.0-linux-x64.tar.gz
+curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-v4.0.0-linux-x64-musl.tar.gz
 
 # Extract
-tar -xzf cc-switch-cli-v4.0.0-linux-x64.tar.gz
+tar -xzf cc-switch-cli-v4.0.0-linux-x64-musl.tar.gz
 
 # Add execute permission
 chmod +x cc-switch
@@ -177,8 +177,8 @@ sudo mv cc-switch /usr/local/bin/
 
 ```bash
 # For Raspberry Pi or ARM servers
-curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-v4.0.0-linux-arm64.tar.gz
-tar -xzf cc-switch-cli-v4.0.0-linux-arm64.tar.gz
+curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-v4.0.0-linux-arm64-musl.tar.gz
+tar -xzf cc-switch-cli-v4.0.0-linux-arm64-musl.tar.gz
 chmod +x cc-switch
 sudo mv cc-switch /usr/local/bin/
 ```
