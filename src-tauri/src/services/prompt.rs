@@ -159,6 +159,34 @@ impl PromptService {
         Ok(())
     }
 
+    pub fn disable_prompt(state: &AppState, app: AppType, id: &str) -> Result<(), AppError> {
+        let mut cfg = state.config.write()?;
+        let prompts = match app {
+            AppType::Claude => &mut cfg.prompts.claude.prompts,
+            AppType::Codex => &mut cfg.prompts.codex.prompts,
+            AppType::Gemini => &mut cfg.prompts.gemini.prompts,
+        };
+
+        // 验证提示词是否存在且已启用
+        if let Some(prompt) = prompts.get_mut(id) {
+            if !prompt.enabled {
+                return Err(AppError::InvalidInput(format!("提示词 {} 未激活", id)));
+            }
+            prompt.enabled = false;
+        } else {
+            return Err(AppError::InvalidInput(format!("提示词 {} 不存在", id)));
+        }
+
+        drop(cfg);
+        state.save()?;
+
+        // 清空对应的实时文件
+        let target_path = prompt_file_path(&app)?;
+        write_text_file(&target_path, "")?;
+
+        Ok(())
+    }
+
     pub fn import_from_file(state: &AppState, app: AppType) -> Result<String, AppError> {
         let file_path = prompt_file_path(&app)?;
 

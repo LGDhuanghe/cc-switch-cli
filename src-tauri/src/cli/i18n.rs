@@ -435,6 +435,22 @@ pub mod texts {
         }
     }
 
+    pub fn deactivated_prompt(id: &str) -> String {
+        if is_chinese() {
+            format!("✓ 已取消激活提示词 '{}'", id)
+        } else {
+            format!("✓ Deactivated prompt '{}'", id)
+        }
+    }
+
+    pub fn prompt_cleared_note() -> &'static str {
+        if is_chinese() {
+            "实时文件已清空"
+        } else {
+            "Live prompt file has been cleared"
+        }
+    }
+
     pub fn prompt_synced_note() -> &'static str {
         if is_chinese() {
             "注意：提示词已同步到实时配置文件。"

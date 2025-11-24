@@ -216,6 +216,19 @@ fn switch_prompt_interactive(
         .and_then(|s| s.strip_suffix(')'))
         .ok_or_else(|| AppError::Message("Invalid choice".to_string()))?;
 
+    // 检查是否选择了已激活的提示词（Toggle 功能）
+    if let Some(prompt) = prompts.get(id) {
+        if prompt.enabled {
+            // 取消激活
+            PromptService::disable_prompt(state, app_type.clone(), id)?;
+            println!("\n{}", success(&texts::deactivated_prompt(id)));
+            println!("{}", info(texts::prompt_cleared_note()));
+            pause();
+            return Ok(());
+        }
+    }
+
+    // 激活提示词
     PromptService::enable_prompt(state, app_type.clone(), id)?;
 
     println!("\n{}", success(&texts::activated_prompt(id)));
