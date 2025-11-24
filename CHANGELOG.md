@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.0.2-cli] - 2025-11-24
+
+### Changed
+
+- **Interactive CLI Refactoring**: Reorganized interactive mode into modular structure (~1,254 lines)
+  - Split functionality into 6 focused submodules: `provider.rs`, `mcp.rs`, `prompts.rs`, `config.rs`, `settings.rs`, `utils.rs`
+  - Improved code maintainability and separation of concerns
+- **Provider Display Enhancement**: Replaced "Category" field with "API URL" in interactive mode
+  - Provider list now shows actual API endpoints instead of category labels
+  - Detail view displays full API URL with app-specific extraction logic
+  - Added support for Claude (`ANTHROPIC_BASE_URL`), Codex (`base_url` from TOML), Gemini (`GEMINI_BASE_URL`)
+
+### Added
+
+- Configuration management menu with 8 operations (export, import, backup, restore, validate, reset, show full, show path)
+- Enhanced MCP management options (delete, enable/disable servers, import from live config, validate command)
+- Extended prompts management (view full content, delete prompts, view current prompt)
+- ~395 lines of new i18n strings for configuration, MCP, and prompts operations
+
+### Removed
+
+- Category selection prompt in "Add Provider" interactive flow
+- Category column from provider list tables in interactive mode
+
+---
+
+## [4.0.1-cli] - 2025-11-24
+
+### Fixed
+
+- Documentation updates and corrections
+
+---
+
 ## [4.0.0-cli] - 2025-11-23 (CLI Edition Fork)
 
 ### Overview
