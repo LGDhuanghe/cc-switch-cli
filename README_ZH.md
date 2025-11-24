@@ -123,7 +123,7 @@ cc-switch prompts delete <id>        # 删除提示词
 
 ### 🎯 Skills 管理
 
-⚠️ **注意：v4.0.x 版本暂未实现** - 此功能计划在未来版本中推出。
+⚠️ **注意：v4.1.x 版本暂未实现** - 此功能计划在未来版本中推出。
 
 通过社区技能扩展 Claude Code/Codex/Gemini 的能力。
 

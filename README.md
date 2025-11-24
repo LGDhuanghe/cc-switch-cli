@@ -123,7 +123,7 @@ cc-switch prompts delete <id>        # Delete prompt
 
 ### 🎯 Skills Management
 
-⚠️ **Note: Not yet implemented in v4.0.x** - This feature is planned for future releases.
+⚠️ **Note: Not yet implemented in v4.1.x** - This feature is planned for future releases.
 
 Manage and extend Claude Code/Codex/Gemini capabilities with community skills.
 
