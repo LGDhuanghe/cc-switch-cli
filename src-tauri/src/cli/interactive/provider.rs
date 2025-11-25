@@ -357,6 +357,24 @@ fn add_provider_interactive(app_type: &AppType) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Edit mode choices for provider editing
+#[derive(Debug, Clone)]
+enum EditMode {
+    Interactive,
+    JsonEditor,
+    Cancel,
+}
+
+impl std::fmt::Display for EditMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Interactive => write!(f, "{}", texts::edit_mode_interactive()),
+            Self::JsonEditor => write!(f, "{}", texts::edit_mode_json_editor()),
+            Self::Cancel => write!(f, "{}", texts::cancel()),
+        }
+    }
+}
+
 fn edit_provider_interactive(
     app_type: &AppType,
     providers: &std::collections::HashMap<String, crate::provider::Provider>,
@@ -393,16 +411,197 @@ fn edit_provider_interactive(
         .ok_or_else(|| AppError::Message(texts::invalid_selection_format().to_string()))?
         .to_string();
 
-    // 3. 调用命令层的实现
-    crate::cli::commands::provider::execute(
-        crate::cli::commands::provider::ProviderCommand::Edit {
-            id: selected_id,
-        },
-        Some(app_type.clone()),
-    )?;
+    // 3. 选择编辑模式
+    let edit_mode_choices = vec![
+        EditMode::Interactive,
+        EditMode::JsonEditor,
+        EditMode::Cancel,
+    ];
+
+    let edit_mode = Select::new(texts::choose_edit_mode(), edit_mode_choices)
+        .prompt()
+        .map_err(|_| AppError::Message("Selection cancelled".to_string()))?;
+
+    match edit_mode {
+        EditMode::Interactive => {
+            // 调用命令层的交互式编辑实现
+            crate::cli::commands::provider::execute(
+                crate::cli::commands::provider::ProviderCommand::Edit {
+                    id: selected_id,
+                },
+                Some(app_type.clone()),
+            )?;
+        }
+        EditMode::JsonEditor => {
+            // 获取当前供应商数据
+            let original = providers
+                .get(&selected_id)
+                .ok_or_else(|| AppError::Message("Provider not found".to_string()))?;
+
+            // 调用 JSON 编辑器
+            edit_provider_with_json_editor(app_type, &selected_id, original)?;
+        }
+        EditMode::Cancel => {
+            println!("\n{}", info(texts::cancelled()));
+        }
+    }
 
     pause();
     Ok(())
+}
+
+/// Edit provider using external JSON editor
+fn edit_provider_with_json_editor(
+    app_type: &AppType,
+    id: &str,
+    original: &crate::provider::Provider,
+) -> Result<(), AppError> {
+    loop {
+        // 1. Serialize to pretty JSON
+        let json_content = serde_json::to_string_pretty(original)
+            .map_err(|e| AppError::JsonSerialize { source: e })?;
+
+        // 2. Open in external editor
+        println!("\n{}", info(texts::opening_external_editor()));
+        let edited_content = match open_external_editor(&json_content) {
+            Ok(content) => content,
+            Err(e) => {
+                println!("\n{}", error(&format!("{}", e)));
+                return Ok(());
+            }
+        };
+
+        // Check if content was changed
+        if edited_content.trim() == json_content.trim() {
+            println!("\n{}", info(texts::no_changes_detected()));
+            return Ok(());
+        }
+
+        // 3. Validate JSON syntax
+        let parsed_value: serde_json::Value = match serde_json::from_str(&edited_content) {
+            Ok(v) => v,
+            Err(e) => {
+                println!("\n{}", error(&format!("{}: {}", texts::invalid_json_syntax(), e)));
+
+                // Ask if user wants to retry
+                let retry = Confirm::new(texts::retry_editing())
+                    .with_default(true)
+                    .prompt()
+                    .map_err(|e| AppError::Message(format!("Confirmation failed: {}", e)))?;
+
+                if retry {
+                    // Update original with the edited (but invalid) content for retry
+                    // This way user doesn't lose their work
+                    continue;
+                } else {
+                    println!("\n{}", info(texts::cancelled()));
+                    return Ok(());
+                }
+            }
+        };
+
+        // 4. Parse as Provider struct
+        let updated: crate::provider::Provider = match serde_json::from_value(parsed_value) {
+            Ok(p) => p,
+            Err(e) => {
+                println!(
+                    "\n{}",
+                    error(&format!("{}: {}", texts::invalid_provider_structure(), e))
+                );
+
+                // Ask if user wants to retry
+                let retry = Confirm::new(texts::retry_editing())
+                    .with_default(true)
+                    .prompt()
+                    .map_err(|e| AppError::Message(format!("Confirmation failed: {}", e)))?;
+
+                if retry {
+                    continue;
+                } else {
+                    println!("\n{}", info(texts::cancelled()));
+                    return Ok(());
+                }
+            }
+        };
+
+        // 5. Verify ID hasn't changed
+        if updated.id != id {
+            println!(
+                "\n{}",
+                error(texts::provider_id_cannot_be_changed())
+            );
+
+            // Ask if user wants to retry
+            let retry = Confirm::new(texts::retry_editing())
+                .with_default(true)
+                .prompt()
+                .map_err(|e| AppError::Message(format!("Confirmation failed: {}", e)))?;
+
+            if retry {
+                continue;
+            } else {
+                println!("\n{}", info(texts::cancelled()));
+                return Ok(());
+            }
+        }
+
+        // 6. Display summary
+        println!("\n{}", highlight(texts::provider_summary()));
+        println!("{}", "─".repeat(60));
+        display_provider_summary(&updated, app_type);
+
+        // 7. Confirm save
+        let confirm = Confirm::new(texts::confirm_save_changes())
+            .with_default(false)
+            .prompt()
+            .map_err(|e| AppError::Message(format!("Confirmation failed: {}", e)))?;
+
+        if !confirm {
+            println!("\n{}", info(texts::cancelled()));
+            return Ok(());
+        }
+
+        // 8. Save using ProviderService
+        let state = get_state()?;
+        ProviderService::update(&state, app_type.clone(), updated)?;
+
+        println!(
+            "\n{}",
+            success(&texts::entity_updated_success(texts::entity_provider(), id))
+        );
+        break;
+    }
+
+    Ok(())
+}
+
+/// Open external editor for content editing
+fn open_external_editor(initial_content: &str) -> Result<String, AppError> {
+    edit::edit(initial_content)
+        .map_err(|e| AppError::Message(format!("{}: {}", texts::editor_failed(), e)))
+}
+
+/// Display provider summary (used by JSON editor)
+fn display_provider_summary(provider: &crate::provider::Provider, app_type: &AppType) {
+    println!("  {}:       {}", texts::id_label_colon(), provider.id);
+    println!("  {}:     {}", texts::name_label_with_colon(), provider.name);
+
+    if let Some(url) = &provider.website_url {
+        println!("  {}:      {}", texts::url_label_colon(), url);
+    }
+
+    if let Some(notes) = &provider.notes {
+        println!("  {}:  {}", texts::notes_label_colon(), notes);
+    }
+
+    if let Some(sort_index) = provider.sort_index {
+        println!("  {}:     {}", texts::sort_index_label_colon(), sort_index);
+    }
+
+    // Show API URL if available
+    if let Some(api_url) = extract_api_url(&provider.settings_config, app_type) {
+        println!("  {}:  {}", texts::api_url_label_colon(), api_url);
+    }
 }
 
 /// Claude 配置信息

@@ -1147,6 +1147,30 @@ pub mod texts {
         }
     }
 
+    pub fn id_label_colon() -> &'static str {
+        if is_chinese() {
+            "ID"
+        } else {
+            "ID"
+        }
+    }
+
+    pub fn url_label_colon() -> &'static str {
+        if is_chinese() {
+            "网址"
+        } else {
+            "URL"
+        }
+    }
+
+    pub fn api_url_label_colon() -> &'static str {
+        if is_chinese() {
+            "API 地址"
+        } else {
+            "API URL"
+        }
+    }
+
     pub fn summary_divider() -> &'static str {
         "======================"
     }
@@ -1302,6 +1326,110 @@ pub mod texts {
             "选择要编辑的供应商："
         } else {
             "Select provider to edit:"
+        }
+    }
+
+    pub fn choose_edit_mode() -> &'static str {
+        if is_chinese() {
+            "选择编辑模式："
+        } else {
+            "Choose edit mode:"
+        }
+    }
+
+    pub fn edit_mode_interactive() -> &'static str {
+        if is_chinese() {
+            "📝 交互式编辑 (分步提示)"
+        } else {
+            "📝 Interactive editing (step-by-step prompts)"
+        }
+    }
+
+    pub fn edit_mode_json_editor() -> &'static str {
+        if is_chinese() {
+            "✏️  JSON 编辑 (使用外部编辑器)"
+        } else {
+            "✏️  JSON editing (use external editor)"
+        }
+    }
+
+    pub fn cancel() -> &'static str {
+        if is_chinese() {
+            "❌ 取消"
+        } else {
+            "❌ Cancel"
+        }
+    }
+
+    pub fn opening_external_editor() -> &'static str {
+        if is_chinese() {
+            "正在打开外部编辑器..."
+        } else {
+            "Opening external editor..."
+        }
+    }
+
+    pub fn invalid_json_syntax() -> &'static str {
+        if is_chinese() {
+            "无效的 JSON 语法"
+        } else {
+            "Invalid JSON syntax"
+        }
+    }
+
+    pub fn invalid_provider_structure() -> &'static str {
+        if is_chinese() {
+            "无效的供应商结构"
+        } else {
+            "Invalid provider structure"
+        }
+    }
+
+    pub fn provider_id_cannot_be_changed() -> &'static str {
+        if is_chinese() {
+            "供应商 ID 不能被修改"
+        } else {
+            "Provider ID cannot be changed"
+        }
+    }
+
+    pub fn retry_editing() -> &'static str {
+        if is_chinese() {
+            "是否重新编辑？"
+        } else {
+            "Retry editing?"
+        }
+    }
+
+    pub fn no_changes_detected() -> &'static str {
+        if is_chinese() {
+            "未检测到任何更改"
+        } else {
+            "No changes detected"
+        }
+    }
+
+    pub fn provider_summary() -> &'static str {
+        if is_chinese() {
+            "供应商信息摘要"
+        } else {
+            "Provider Summary"
+        }
+    }
+
+    pub fn confirm_save_changes() -> &'static str {
+        if is_chinese() {
+            "确认保存更改？"
+        } else {
+            "Save changes?"
+        }
+    }
+
+    pub fn editor_failed() -> &'static str {
+        if is_chinese() {
+            "编辑器失败"
+        } else {
+            "Editor failed"
         }
     }
 

@@ -63,6 +63,7 @@ regex = "1.10"
 rquickjs = { version = "0.8", features = ["array-buffer", "classes"] }
 zip = "2.2"
 url = "2.5"
+edit = "0.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.52"
