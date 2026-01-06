@@ -300,12 +300,16 @@ fn prompt_codex_config(current: Option<&Value>) -> Result<Value, AppError> {
     let mut current_model: Option<String> = None;
     let mut current_env_key: Option<String> = None;
     let mut current_wire_api: Option<String> = None;
+    let mut current_requires_openai_auth: Option<bool> = None;
     if let Some(cfg) = current_config_str {
         if let Ok(table) = toml::from_str::<toml::Table>(cfg) {
             current_base_url = table.get("base_url").and_then(|v| v.as_str()).map(String::from);
             current_model = table.get("model").and_then(|v| v.as_str()).map(String::from);
             current_env_key = table.get("env_key").and_then(|v| v.as_str()).map(String::from);
             current_wire_api = table.get("wire_api").and_then(|v| v.as_str()).map(String::from);
+            current_requires_openai_auth = table
+                .get("requires_openai_auth")
+                .and_then(|v| v.as_bool());
         }
     }
 
@@ -354,28 +358,7 @@ fn prompt_codex_config(current: Option<&Value>) -> Result<Value, AppError> {
             .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
     };
 
-    // 4. Environment Variable Key (for Codex 0.64+)
-    println!("\n{}", texts::codex_env_key_info().yellow());
-    let env_key = if let Some(current) = current_env_key.as_deref() {
-        Text::new(texts::codex_env_key_label())
-            .with_initial_value(current)
-            .with_help_message(texts::codex_env_key_help())
-            .prompt()
-            .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
-    } else {
-        Text::new(texts::codex_env_key_label())
-            .with_placeholder("OPENAI_API_KEY")
-            .with_help_message(texts::codex_env_key_help())
-            .prompt()
-            .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
-    };
-    let env_key = if env_key.trim().is_empty() {
-        "OPENAI_API_KEY".to_string()
-    } else {
-        env_key.trim().to_string()
-    };
-
-    // 5. Wire API format (chat or responses)
+    // 4. Wire API format (chat or responses)
     let wire_api_options = vec!["chat", "responses"];
     let default_wire_api_index = match current_wire_api.as_deref() {
         Some("responses") => 1,
@@ -387,17 +370,69 @@ fn prompt_codex_config(current: Option<&Value>) -> Result<Value, AppError> {
         .prompt()
         .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
 
-    // 构建 TOML 配置（存储所有必要字段）
-    let config_toml = format!(
-        "base_url = \"{}\"\nmodel = \"{}\"\nenv_key = \"{}\"\nwire_api = \"{}\"",
-        base_url.trim(),
-        model.trim(),
-        env_key,
-        wire_api
-    );
+    // 5. Auth mode (OpenAI auth vs env var)
+    println!("\n{}", texts::codex_auth_mode_info().yellow());
+    let auth_mode_options = vec![
+        texts::codex_auth_mode_openai(),
+        texts::codex_auth_mode_env_var(),
+    ];
+    let default_auth_mode_index = match current_requires_openai_auth {
+        Some(true) => 0,
+        Some(false) => 1,
+        None => 0, // default to OpenAI auth (no env var required)
+    };
+    let auth_mode = Select::new(texts::codex_auth_mode_label(), auth_mode_options.clone())
+        .with_starting_cursor(default_auth_mode_index)
+        .with_help_message(texts::codex_auth_mode_help())
+        .prompt()
+        .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
+    let use_openai_auth = auth_mode == texts::codex_auth_mode_openai();
 
-    // 提示用户关于双写模式
-    println!("\n{}", texts::codex_dual_write_info(&env_key, api_key.trim()).bright_yellow());
+    // 6. Environment Variable Key (only when using env var mode)
+    let env_key = if use_openai_auth {
+        None
+    } else {
+        println!("\n{}", texts::codex_env_key_info().yellow());
+        let env_key = if let Some(current) = current_env_key.as_deref() {
+            Text::new(texts::codex_env_key_label())
+                .with_initial_value(current)
+                .with_help_message(texts::codex_env_key_help())
+                .prompt()
+                .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
+        } else {
+            Text::new(texts::codex_env_key_label())
+                .with_placeholder("OPENAI_API_KEY")
+                .with_help_message(texts::codex_env_key_help())
+                .prompt()
+                .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
+        };
+        let env_key = if env_key.trim().is_empty() {
+            "OPENAI_API_KEY".to_string()
+        } else {
+            env_key.trim().to_string()
+        };
+        println!("\n{}", texts::codex_env_reminder(&env_key).bright_yellow());
+        Some(env_key)
+    };
+
+    // 构建 TOML 配置（存储所有必要字段）
+    let mut config_lines = vec![
+        format!("base_url = \"{}\"", base_url.trim()),
+        format!("model = \"{}\"", model.trim()),
+        format!("wire_api = \"{}\"", wire_api),
+    ];
+
+    if use_openai_auth {
+        config_lines.push("requires_openai_auth = true".to_string());
+        println!("\n{}", texts::codex_openai_auth_info().bright_yellow());
+    } else {
+        if let Some(env_key) = env_key.as_deref() {
+            config_lines.push(format!("env_key = \"{}\"", env_key));
+        }
+        config_lines.push("requires_openai_auth = false".to_string());
+    }
+
+    let config_toml = config_lines.join("\n");
 
     // 返回完整配置（auth 用于旧版本，config 用于 0.64+）
     Ok(json!({

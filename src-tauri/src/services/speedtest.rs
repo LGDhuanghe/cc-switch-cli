@@ -119,6 +119,15 @@ impl SpeedtestService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+
+    fn run_async<T>(fut: impl Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("create tokio runtime")
+            .block_on(fut)
+    }
 
     #[test]
     fn sanitize_timeout_clamps_values() {
@@ -142,15 +151,14 @@ mod tests {
 
     #[test]
     fn test_endpoints_handles_empty_list() {
-        let result =
-            tauri::async_runtime::block_on(SpeedtestService::test_endpoints(Vec::new(), Some(5)))
-                .expect("empty list should succeed");
+        let result = run_async(SpeedtestService::test_endpoints(Vec::new(), Some(5)))
+            .expect("empty list should succeed");
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_endpoints_reports_invalid_url() {
-        let result = tauri::async_runtime::block_on(SpeedtestService::test_endpoints(
+        let result = run_async(SpeedtestService::test_endpoints(
             vec!["not a url".into(), "".into()],
             None,
         ))

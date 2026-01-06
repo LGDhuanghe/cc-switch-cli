@@ -770,11 +770,51 @@ pub mod texts {
     }
 
     // Codex 0.64+ Configuration
+    pub fn codex_auth_mode_info() -> &'static str {
+        if is_chinese() {
+            "⚠ 请选择 Codex 的鉴权方式（决定 API Key 从哪里读取）"
+        } else {
+            "⚠ Choose how Codex authenticates (where the API key is read from)"
+        }
+    }
+
+    pub fn codex_auth_mode_label() -> &'static str {
+        if is_chinese() {
+            "认证方式："
+        } else {
+            "Auth Mode:"
+        }
+    }
+
+    pub fn codex_auth_mode_help() -> &'static str {
+        if is_chinese() {
+            "OpenAI 认证：使用 auth.json/凭据存储；环境变量：使用 env_key 指定的变量（未设置会报错）"
+        } else {
+            "OpenAI auth uses auth.json/credential store; env var mode uses env_key (missing env var will error)"
+        }
+    }
+
+    pub fn codex_auth_mode_openai() -> &'static str {
+        if is_chinese() {
+            "OpenAI 认证（推荐，无需环境变量）"
+        } else {
+            "OpenAI auth (recommended, no env var)"
+        }
+    }
+
+    pub fn codex_auth_mode_env_var() -> &'static str {
+        if is_chinese() {
+            "环境变量（env_key，需要手动 export）"
+        } else {
+            "Environment variable (env_key, requires export)"
+        }
+    }
+
     pub fn codex_env_key_info() -> &'static str {
         if is_chinese() {
-            "⚠ Codex 0.64+ 需要通过环境变量提供 API 密钥"
+            "⚠ 环境变量模式：Codex 将从指定的环境变量读取 API Key"
         } else {
-            "⚠ Codex 0.64+ requires API key via environment variable"
+            "⚠ Env var mode: Codex will read the API key from the specified environment variable"
         }
     }
 
@@ -821,6 +861,14 @@ pub mod texts {
                 "⚠ Make sure to set the {} environment variable with your API key\n  Example: export {}=\"your-api-key\"",
                 env_key, env_key
             )
+        }
+    }
+
+    pub fn codex_openai_auth_info() -> &'static str {
+        if is_chinese() {
+            "✓ OpenAI 认证模式：Codex 将使用 auth.json/系统凭据存储，无需设置 OPENAI_API_KEY 环境变量"
+        } else {
+            "✓ OpenAI auth mode: Codex will use auth.json/credential store; no OPENAI_API_KEY env var required"
         }
     }
 

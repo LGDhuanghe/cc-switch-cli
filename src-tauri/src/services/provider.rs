@@ -113,19 +113,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validate_provider_settings_rejects_missing_auth() {
+    fn validate_provider_settings_allows_missing_auth_for_codex() {
         let provider = Provider::with_id(
             "codex".into(),
             "Codex".into(),
             json!({ "config": "base_url = \"https://example.com\"" }),
             None,
         );
-        let err = ProviderService::validate_provider_settings(&AppType::Codex, &provider)
-            .expect_err("missing auth should be rejected");
-        assert!(
-            err.to_string().contains("auth"),
-            "expected auth error, got {err:?}"
-        );
+        ProviderService::validate_provider_settings(&AppType::Codex, &provider)
+            .expect("Codex auth is optional when using OpenAI auth or env_key");
     }
 
     #[test]
@@ -1298,7 +1294,13 @@ impl ProviderService {
         let env_key = stored_config
             .get("env_key")
             .and_then(|v| v.as_str())
-            .unwrap_or("OPENAI_API_KEY");
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let inferred_requires_openai_auth = env_key == Some("OPENAI_API_KEY") && !auth_is_empty;
+        let requires_openai_auth = stored_config
+            .get("requires_openai_auth")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(inferred_requires_openai_auth);
 
         // 从供应商名称生成 provider ID
         let provider_id = generate_provider_id_from_name(&provider.name);
@@ -1317,6 +1319,7 @@ impl ProviderService {
         doc.as_table_mut().remove("base_url");
         doc.as_table_mut().remove("wire_api");
         doc.as_table_mut().remove("env_key");
+        doc.as_table_mut().remove("requires_openai_auth");
 
         // 设置根级别字段
         doc["model_provider"] = value(&provider_id);
@@ -1326,7 +1329,7 @@ impl ProviderService {
         for (key, val) in stored_config.iter() {
             match key.as_str() {
                 // 跳过已处理的字段和应该在 provider section 的字段
-                "base_url" | "wire_api" | "env_key" | "name" => continue,
+                "base_url" | "wire_api" | "env_key" | "requires_openai_auth" | "name" => continue,
                 "model" => continue, // 已在上面设置
                 // 复制其他根级别字段（如 model_reasoning_effort, network_access 等）
                 _ => {
@@ -1344,7 +1347,11 @@ impl ProviderService {
             provider_table["base_url"] = value(base_url);
         }
         provider_table["wire_api"] = value(wire_api);
-        provider_table["env_key"] = value(env_key);
+        if requires_openai_auth {
+            provider_table["requires_openai_auth"] = value(true);
+        } else if let Some(env_key) = env_key {
+            provider_table["env_key"] = value(env_key);
+        }
 
         // 确保 model_providers 表存在
         if !doc.contains_key("model_providers") {
@@ -1896,4 +1903,88 @@ pub struct ProviderSortUpdate {
     pub id: String,
     #[serde(rename = "sortIndex")]
     pub sort_index: usize,
+}
+
+#[cfg(test)]
+mod codex_openai_auth_tests {
+    use super::*;
+    use serial_test::serial;
+    use std::ffi::OsString;
+    use std::path::Path;
+    use std::sync::RwLock;
+    use tempfile::TempDir;
+
+    struct EnvGuard {
+        old_home: Option<OsString>,
+        old_userprofile: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set_home(home: &Path) -> Self {
+            let old_home = std::env::var_os("HOME");
+            let old_userprofile = std::env::var_os("USERPROFILE");
+            std::env::set_var("HOME", home);
+            std::env::set_var("USERPROFILE", home);
+            Self {
+                old_home,
+                old_userprofile,
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.old_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.old_userprofile {
+                Some(value) => std::env::set_var("USERPROFILE", value),
+                None => std::env::remove_var("USERPROFILE"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn switch_codex_provider_uses_openai_auth_instead_of_env_key() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = EnvGuard::set_home(temp_home.path());
+
+        let mut config = MultiAppConfig::default();
+        config.ensure_app(&AppType::Codex);
+        {
+            let manager = config
+                .get_manager_mut(&AppType::Codex)
+                .expect("codex manager");
+            manager.providers.insert(
+                "p1".to_string(),
+                Provider::with_id(
+                    "p1".to_string(),
+                    "OpenAI".to_string(),
+                    json!({
+                        "auth": { "OPENAI_API_KEY": "sk-test" },
+                        "config": "base_url = \"https://api.openai.com/v1\"\nmodel = \"gpt-4o\"\nenv_key = \"OPENAI_API_KEY\"\nwire_api = \"chat\""
+                    }),
+                    None,
+                ),
+            );
+        }
+
+        let state = AppState {
+            config: RwLock::new(config),
+        };
+        ProviderService::switch(&state, AppType::Codex, "p1").expect("switch should succeed");
+
+        let config_text =
+            std::fs::read_to_string(get_codex_config_path()).expect("read codex config.toml");
+        assert!(
+            config_text.contains("requires_openai_auth = true"),
+            "config.toml should enable OpenAI auth for Codex model provider"
+        );
+        assert!(
+            !config_text.contains("env_key = \"OPENAI_API_KEY\""),
+            "config.toml should not force OPENAI_API_KEY env var by default"
+        );
+    }
 }
