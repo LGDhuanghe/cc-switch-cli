@@ -188,9 +188,7 @@ mod tests {
         ProviderService::add(&state, AppType::Claude, provider).expect("add should succeed");
 
         let cfg = state.config.read().expect("read config");
-        let manager = cfg
-            .get_manager(&AppType::Claude)
-            .expect("claude manager");
+        let manager = cfg.get_manager(&AppType::Claude).expect("claude manager");
         assert_eq!(
             manager.current, "p1",
             "first provider should become current to avoid empty current provider"
@@ -305,7 +303,10 @@ mod tests {
         let p1_after = manager.providers.get("p1").expect("p1 exists");
 
         assert!(
-            p1_after.settings_config.get("includeCoAuthoredBy").is_none(),
+            p1_after
+                .settings_config
+                .get("includeCoAuthoredBy")
+                .is_none(),
             "common top-level keys should not be persisted into provider snapshot"
         );
 
@@ -342,6 +343,109 @@ mod tests {
             ProviderService::extract_credentials(&provider, &AppType::Claude).unwrap();
         assert_eq!(api_key, "token");
         assert_eq!(base_url, "https://claude.example");
+    }
+
+    #[test]
+    #[serial]
+    fn common_config_snippet_is_merged_into_gemini_env_on_write() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = EnvGuard::set_home(temp_home.path());
+
+        let mut config = MultiAppConfig::default();
+        config.ensure_app(&AppType::Gemini);
+        config.common_config_snippets.gemini =
+            Some(r#"{"env":{"CC_SWITCH_GEMINI_COMMON":"1"}}"#.to_string());
+
+        let state = AppState {
+            config: RwLock::new(config),
+        };
+
+        let provider = Provider::with_id(
+            "p1".to_string(),
+            "First".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "token"
+                }
+            }),
+            None,
+        );
+
+        ProviderService::add(&state, AppType::Gemini, provider).expect("add should succeed");
+
+        let env = crate::gemini_config::read_gemini_env().expect("read gemini env");
+        assert_eq!(
+            env.get("CC_SWITCH_GEMINI_COMMON").map(String::as_str),
+            Some("1"),
+            "common snippet env key should be present in ~/.gemini/.env"
+        );
+        assert_eq!(
+            env.get("GEMINI_API_KEY").map(String::as_str),
+            Some("token"),
+            "provider env key should remain in ~/.gemini/.env"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn common_config_snippet_is_not_persisted_into_gemini_provider_snapshot_on_switch() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = EnvGuard::set_home(temp_home.path());
+
+        let mut config = MultiAppConfig::default();
+        config.ensure_app(&AppType::Gemini);
+        config.common_config_snippets.gemini =
+            Some(r#"{"env":{"CC_SWITCH_GEMINI_COMMON":"1"}}"#.to_string());
+
+        let state = AppState {
+            config: RwLock::new(config),
+        };
+
+        let p1 = Provider::with_id(
+            "p1".to_string(),
+            "First".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "token1"
+                }
+            }),
+            None,
+        );
+        let p2 = Provider::with_id(
+            "p2".to_string(),
+            "Second".to_string(),
+            json!({
+                "env": {
+                    "GEMINI_API_KEY": "token2"
+                }
+            }),
+            None,
+        );
+
+        ProviderService::add(&state, AppType::Gemini, p1).expect("add p1");
+        ProviderService::add(&state, AppType::Gemini, p2).expect("add p2");
+
+        ProviderService::switch(&state, AppType::Gemini, "p2").expect("switch to p2");
+
+        let cfg = state.config.read().expect("read config");
+        let manager = cfg.get_manager(&AppType::Gemini).expect("gemini manager");
+        let p1_after = manager.providers.get("p1").expect("p1 exists");
+
+        let env = p1_after
+            .settings_config
+            .get("env")
+            .and_then(Value::as_object)
+            .expect("provider env should be object");
+
+        assert!(
+            !env.contains_key("CC_SWITCH_GEMINI_COMMON"),
+            "common env keys should not be persisted into provider snapshot"
+        );
+        assert_eq!(
+            env.get("GEMINI_API_KEY").and_then(Value::as_str),
+            Some("token1"),
+            "provider-specific env should remain in snapshot"
+        );
     }
 }
 
@@ -423,6 +527,24 @@ impl ProviderService {
                 "common_config.claude.not_object",
                 "Claude 通用配置片段必须是 JSON 对象",
                 "Claude common config snippet must be a JSON object",
+            ));
+        }
+        Ok(value)
+    }
+
+    fn parse_common_gemini_config_snippet(snippet: &str) -> Result<Value, AppError> {
+        let value: Value = serde_json::from_str(snippet).map_err(|e| {
+            AppError::localized(
+                "common_config.gemini.invalid_json",
+                format!("Gemini 通用配置片段不是有效的 JSON：{e}"),
+                format!("Gemini common config snippet is not valid JSON: {e}"),
+            )
+        })?;
+        if !value.is_object() {
+            return Err(AppError::localized(
+                "common_config.gemini.not_object",
+                "Gemini 通用配置片段必须是 JSON 对象",
+                "Gemini common config snippet must be a JSON object",
             ));
         }
         Ok(value)
@@ -792,6 +914,18 @@ impl ProviderService {
                     obj.insert("config".to_string(), config_value);
                 }
 
+                let common_snippet = {
+                    let guard = state.config.read().map_err(AppError::from)?;
+                    guard.common_config_snippets.gemini.clone()
+                };
+                if let Some(snippet) = common_snippet.as_deref() {
+                    let snippet = snippet.trim();
+                    if !snippet.is_empty() {
+                        let common = Self::parse_common_gemini_config_snippet(snippet)?;
+                        strip_common_values(&mut live_after, &common);
+                    }
+                }
+
                 {
                     let mut guard = state.config.write().map_err(AppError::from)?;
                     if let Some(manager) = guard.get_manager_mut(app_type) {
@@ -906,10 +1040,8 @@ impl ProviderService {
             let is_current = manager.current == provider_clone.id;
             let action = if is_current {
                 let backup = Self::capture_live_snapshot(&app_type_clone)?;
-                let common_config_snippet = config
-                    .common_config_snippets
-                    .get(&app_type_clone)
-                    .cloned();
+                let common_config_snippet =
+                    config.common_config_snippets.get(&app_type_clone).cloned();
                 Some(PostCommitAction {
                     app_type: app_type_clone.clone(),
                     provider: provider_clone.clone(),
@@ -978,10 +1110,8 @@ impl ProviderService {
 
             let action = if is_current {
                 let backup = Self::capture_live_snapshot(&app_type_clone)?;
-                let common_config_snippet = config
-                    .common_config_snippets
-                    .get(&app_type_clone)
-                    .cloned();
+                let common_config_snippet =
+                    config.common_config_snippets.get(&app_type_clone).cloned();
                 Some(PostCommitAction {
                     app_type: app_type_clone.clone(),
                     provider: provider_clone.clone(),
@@ -1472,10 +1602,7 @@ impl ProviderService {
                 backup,
                 sync_mcp: true, // v3.7.0: 所有应用切换时都同步 MCP，防止配置丢失
                 refresh_snapshot: true,
-                common_config_snippet: config
-                    .common_config_snippets
-                    .get(&app_type_clone)
-                    .cloned(),
+                common_config_snippet: config.common_config_snippets.get(&app_type_clone).cloned(),
             };
 
             Ok(((), Some(action)))
@@ -1564,17 +1691,17 @@ impl ProviderService {
             .unwrap_or(true);
 
         // 获取存储的 config TOML 文本
-        let cfg_text = settings
-            .get("config")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let cfg_text = settings.get("config").and_then(Value::as_str).unwrap_or("");
 
         // 解析存储的 TOML 以提取字段（如果为空则使用默认值）
         let stored_config: toml::Table = if cfg_text.trim().is_empty() {
             toml::Table::new()
         } else {
             toml::from_str(cfg_text).map_err(|e| {
-                AppError::Config(format!("解析供应商 {} 的 config TOML 失败: {}", provider.id, e))
+                AppError::Config(format!(
+                    "解析供应商 {} 的 config TOML 失败: {}",
+                    provider.id, e
+                ))
             })?
         };
 
@@ -1610,9 +1737,9 @@ impl ProviderService {
         let mut doc = if base_text.trim().is_empty() {
             toml_edit::DocumentMut::default()
         } else {
-            base_text.parse::<toml_edit::DocumentMut>().map_err(|e| {
-                AppError::Config(format!("解析 config.toml 失败: {}", e))
-            })?
+            base_text
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|e| AppError::Config(format!("解析 config.toml 失败: {}", e)))?
         };
 
         // 移除不应该在根级别的字段
@@ -1816,6 +1943,14 @@ impl ProviderService {
             obj.insert("config".to_string(), config_value);
         }
 
+        if let Some(snippet) = config.common_config_snippets.gemini.as_deref() {
+            let snippet = snippet.trim();
+            if !snippet.is_empty() {
+                let common = Self::parse_common_gemini_config_snippet(snippet)?;
+                strip_common_values(&mut live, &common);
+            }
+        }
+
         if let Some(manager) = config.get_manager_mut(&AppType::Gemini) {
             if let Some(current) = manager.providers.get_mut(&current_id) {
                 current.settings_config = live;
@@ -1852,7 +1987,10 @@ impl ProviderService {
         Ok(())
     }
 
-    pub(crate) fn write_gemini_live(provider: &Provider) -> Result<(), AppError> {
+    pub(crate) fn write_gemini_live(
+        provider: &Provider,
+        common_config_snippet: Option<&str>,
+    ) -> Result<(), AppError> {
         use crate::gemini_config::{
             get_gemini_settings_path, json_to_env, validate_gemini_settings_strict,
             write_gemini_env_atomic,
@@ -1861,19 +1999,33 @@ impl ProviderService {
         // 一次性检测认证类型，避免重复检测
         let auth_type = Self::detect_gemini_auth_type(provider);
 
-        let mut env_map = json_to_env(&provider.settings_config)?;
+        let provider_content = provider.settings_config.clone();
+        let content_to_write = if let Some(snippet) = common_config_snippet {
+            let snippet = snippet.trim();
+            if snippet.is_empty() {
+                provider_content
+            } else {
+                let common = Self::parse_common_gemini_config_snippet(snippet)?;
+                let mut merged = common;
+                merge_json_values(&mut merged, &provider_content);
+                merged
+            }
+        } else {
+            provider_content
+        };
+
+        let mut env_map = json_to_env(&content_to_write)?;
 
         // 准备要写入 ~/.gemini/settings.json 的配置（缺省时保留现有文件内容）
-        let mut config_to_write = if let Some(config_value) = provider.settings_config.get("config")
-        {
+        let mut config_to_write = if let Some(config_value) = content_to_write.get("config") {
             if config_value.is_null() {
-                None  // null → 保留现有文件
+                None // null → 保留现有文件
             } else if config_value.is_object() {
                 let obj = config_value.as_object().unwrap();
                 if obj.is_empty() {
-                    None  // 空对象 {} → 保留现有文件
+                    None // 空对象 {} → 保留现有文件
                 } else {
-                    Some(config_value.clone())  // 有内容 → 才替换
+                    Some(config_value.clone()) // 有内容 → 才替换
                 }
             } else {
                 return Err(AppError::localized(
@@ -1891,7 +2043,7 @@ impl ProviderService {
             if settings_path.exists() {
                 config_to_write = Some(read_json_file(&settings_path)?);
             } else {
-                config_to_write = Some(json!({}));  // 新建空配置
+                config_to_write = Some(json!({})); // 新建空配置
             }
         }
 
@@ -1904,7 +2056,7 @@ impl ProviderService {
             GeminiAuthType::ApiKey => {
                 // API Key 供应商（所有第三方服务）
                 // 统一处理：验证配置 + 写入 .env 文件
-                validate_gemini_settings_strict(&provider.settings_config)?;
+                validate_gemini_settings_strict(&content_to_write)?;
                 write_gemini_env_atomic(&env_map)?;
             }
         }
@@ -1930,7 +2082,7 @@ impl ProviderService {
         match app_type {
             AppType::Codex => Self::write_codex_live(provider),
             AppType::Claude => Self::write_claude_live(provider, common_config_snippet),
-            AppType::Gemini => Self::write_gemini_live(provider), // 新增
+            AppType::Gemini => Self::write_gemini_live(provider, common_config_snippet), // 新增
         }
     }
 
