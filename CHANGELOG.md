@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.2.5] - 2026-01-08
+
+### Added
+
+- **Interactive**: Use `←/→` on the main menu to switch the current application.
+
 ## [4.2.4] - 2026-01-06
 
 ### Added
