@@ -244,6 +244,14 @@ pub mod texts {
         }
     }
 
+    pub fn main_menu_help() -> &'static str {
+        if is_chinese() {
+            "↑↓ 选择，←→ 切换应用，Enter 确认，Esc 退出"
+        } else {
+            "↑↓ to move, ←→ to switch app, Enter to select, Esc to exit"
+        }
+    }
+
     pub fn menu_manage_providers() -> &'static str {
         if is_chinese() {
             "🔌 管理供应商"

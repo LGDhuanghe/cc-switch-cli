@@ -5,22 +5,21 @@ mod provider;
 mod settings;
 mod utils;
 
+use std::io::IsTerminal;
+
 use crate::app_config::AppType;
 use crate::cli::i18n::texts;
 use crate::cli::ui::{error, highlight, info, success};
 use crate::error::AppError;
 use crate::services::{McpService, PromptService, ProviderService};
 
-use utils::{clear_screen, pause, prompt_select};
+use utils::{app_switch_direction_from_key, clear_screen, cycle_app_type, pause, prompt_select};
 
 pub fn run(app: Option<AppType>) -> Result<(), AppError> {
     let mut app_type = app.unwrap_or(AppType::Claude);
 
     loop {
-        clear_screen();
-        print_welcome(&app_type);
-
-        match show_main_menu(&app_type)? {
+        match show_main_menu(&mut app_type)? {
             MainMenuChoice::ManageProviders => {
                 if let Err(e) = provider::manage_providers_menu(&app_type) {
                     println!("\n{}", error(&format!("{}: {}", texts::error_prefix(), e)));
@@ -114,7 +113,7 @@ fn print_welcome(app_type: &AppType) {
     println!();
 }
 
-fn show_main_menu(app_type: &AppType) -> Result<MainMenuChoice, AppError> {
+fn show_main_menu(app_type: &mut AppType) -> Result<MainMenuChoice, AppError> {
     let choices = vec![
         MainMenuChoice::ManageProviders,
         MainMenuChoice::ManageMCP,
@@ -126,10 +125,53 @@ fn show_main_menu(app_type: &AppType) -> Result<MainMenuChoice, AppError> {
         MainMenuChoice::Exit,
     ];
 
-    Ok(
-        prompt_select(&texts::main_menu_prompt(app_type.as_str()), choices)?
-            .unwrap_or(MainMenuChoice::Exit),
-    )
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Ok(
+            prompt_select(&texts::main_menu_prompt(app_type.as_str()), choices)?
+                .unwrap_or(MainMenuChoice::Exit),
+        );
+    }
+
+    let term = console::Term::stdout();
+    let mut selected_idx: usize = 0;
+
+    loop {
+        clear_screen();
+        print_welcome(app_type);
+
+        println!("{}", texts::main_menu_prompt(app_type.as_str()));
+        println!("{}", "─".repeat(60));
+        for (idx, choice) in choices.iter().enumerate() {
+            if idx == selected_idx {
+                println!("{} {}", highlight("➤"), highlight(&choice.to_string()));
+            } else {
+                println!("  {}", choice);
+            }
+        }
+        println!("{}", "─".repeat(60));
+        println!("{}", texts::main_menu_help());
+
+        let key = term
+            .read_key()
+            .map_err(|e| AppError::Message(e.to_string()))?;
+
+        if let Some(direction) = app_switch_direction_from_key(&key) {
+            *app_type = cycle_app_type(app_type, direction);
+            continue;
+        }
+
+        match key {
+            console::Key::ArrowUp => {
+                selected_idx = selected_idx.checked_sub(1).unwrap_or(choices.len() - 1);
+            }
+            console::Key::ArrowDown => {
+                selected_idx = (selected_idx + 1) % choices.len();
+            }
+            console::Key::Enter => return Ok(choices[selected_idx].clone()),
+            console::Key::Escape | console::Key::Unknown => return Ok(MainMenuChoice::Exit),
+            _ => {}
+        }
+    }
 }
 
 fn select_app() -> Result<AppType, AppError> {
