@@ -246,9 +246,33 @@ pub mod texts {
 
     pub fn main_menu_help() -> &'static str {
         if is_chinese() {
-            "↑↓ 选择，←→ 切换应用，Enter 确认，Esc 退出"
+            "↑↓ 选择，←→ 切换应用，/ 搜索，Enter 确认，Esc 清除/退出"
         } else {
-            "↑↓ to move, ←→ to switch app, Enter to select, Esc to exit"
+            "↑↓ to move, ←→ to switch app, / to search, Enter to select, Esc to clear/exit"
+        }
+    }
+
+    pub fn main_menu_search_prompt() -> &'static str {
+        if is_chinese() {
+            "输入搜索关键字（空或 Esc 清除过滤）："
+        } else {
+            "Enter search keyword (empty/Esc to clear):"
+        }
+    }
+
+    pub fn main_menu_filtering(query: &str) -> String {
+        if is_chinese() {
+            format!("🔎 搜索: {}", query)
+        } else {
+            format!("🔎 Search: {}", query)
+        }
+    }
+
+    pub fn main_menu_no_matches() -> &'static str {
+        if is_chinese() {
+            "没有匹配的菜单项"
+        } else {
+            "No matching menu items"
         }
     }
 
@@ -413,6 +437,14 @@ pub mod texts {
             "Esc 返回上一步"
         } else {
             "Esc to go back"
+        }
+    }
+
+    pub fn select_filter_help() -> &'static str {
+        if is_chinese() {
+            "Esc 返回；输入可过滤"
+        } else {
+            "Esc to go back; type to filter"
         }
     }
 

@@ -13,7 +13,10 @@ use crate::cli::ui::{error, highlight, info, set_tui_theme_app, success};
 use crate::error::AppError;
 use crate::services::{McpService, PromptService, ProviderService};
 
-use utils::{app_switch_direction_from_key, clear_screen, cycle_app_type, pause, prompt_select};
+use utils::{
+    app_switch_direction_from_key, clear_screen, cycle_app_type, pause, prompt_select,
+    prompt_text_with_default,
+};
 
 pub fn run(app: Option<AppType>) -> Result<(), AppError> {
     // Disable bracketed paste mode to work around inquire dropping paste events
@@ -139,42 +142,123 @@ fn show_main_menu(app_type: &mut AppType) -> Result<MainMenuChoice, AppError> {
 
     let term = console::Term::stdout();
     let mut selected_idx: usize = 0;
+    let mut filter_query: Option<String> = None;
 
     loop {
+        // Determine active filter query (non-empty trimmed string)
+        let active_query = filter_query
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty());
+
+        // Filter choices based on query
+        let visible_choices: Vec<MainMenuChoice> = if let Some(query) = active_query {
+            let query_lower = query.to_lowercase();
+            choices
+                .iter()
+                .filter(|choice| choice.to_string().to_lowercase().contains(&query_lower))
+                .cloned()
+                .collect()
+        } else {
+            choices.clone()
+        };
+
+        // Reset selection if out of bounds
+        if visible_choices.is_empty() || selected_idx >= visible_choices.len() {
+            selected_idx = 0;
+        }
+
+        // Render menu
         clear_screen();
         set_tui_theme_app(Some(app_type.clone()));
         print_welcome(app_type);
 
         println!("{}", texts::main_menu_prompt(app_type.as_str()));
         println!("{}", "─".repeat(60));
-        for (idx, choice) in choices.iter().enumerate() {
-            if idx == selected_idx {
-                println!("{} {}", highlight("➤"), highlight(&choice.to_string()));
-            } else {
-                println!("  {}", choice);
+
+        // Show filter status if active
+        if let Some(query) = active_query {
+            println!("{}", info(&texts::main_menu_filtering(query)));
+        }
+
+        // Show menu items or no matches message
+        if visible_choices.is_empty() {
+            println!("  {}", info(texts::main_menu_no_matches()));
+        } else {
+            for (idx, choice) in visible_choices.iter().enumerate() {
+                if idx == selected_idx {
+                    println!("{} {}", highlight("➤"), highlight(&choice.to_string()));
+                } else {
+                    println!("  {}", choice);
+                }
             }
         }
+
         println!("{}", "─".repeat(60));
         println!("{}", texts::main_menu_help());
 
+        // Read keyboard input
         let key = term
             .read_key()
             .map_err(|e| AppError::Message(e.to_string()))?;
 
+        // Handle app switching (left/right arrows)
         if let Some(direction) = app_switch_direction_from_key(&key) {
             *app_type = cycle_app_type(app_type, direction);
             continue;
         }
 
+        // Handle keyboard actions
         match key {
+            console::Key::Char('/') => {
+                // Enter search mode with current query as default
+                clear_screen();
+                let current_query = filter_query.as_deref().unwrap_or("");
+                let query =
+                    prompt_text_with_default(texts::main_menu_search_prompt(), current_query)?
+                        .unwrap_or_default();
+                let query = query.trim();
+
+                if query.is_empty() {
+                    filter_query = None;
+                } else {
+                    filter_query = Some(query.to_string());
+                }
+
+                selected_idx = 0;
+            }
             console::Key::ArrowUp => {
-                selected_idx = selected_idx.checked_sub(1).unwrap_or(choices.len() - 1);
+                if !visible_choices.is_empty() {
+                    selected_idx = selected_idx
+                        .checked_sub(1)
+                        .unwrap_or(visible_choices.len() - 1);
+                }
             }
             console::Key::ArrowDown => {
-                selected_idx = (selected_idx + 1) % choices.len();
+                if !visible_choices.is_empty() {
+                    selected_idx = (selected_idx + 1) % visible_choices.len();
+                }
             }
-            console::Key::Enter => return Ok(choices[selected_idx].clone()),
-            console::Key::Escape | console::Key::Unknown => return Ok(MainMenuChoice::Exit),
+            console::Key::Enter => {
+                if !visible_choices.is_empty() {
+                    return Ok(visible_choices[selected_idx].clone());
+                }
+            }
+            console::Key::Escape => {
+                // If filter is active, clear it; otherwise exit
+                if filter_query
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|q| !q.is_empty())
+                    .is_some()
+                {
+                    filter_query = None;
+                    selected_idx = 0;
+                    continue;
+                }
+                return Ok(MainMenuChoice::Exit);
+            }
+            console::Key::Unknown => return Ok(MainMenuChoice::Exit),
             _ => {}
         }
     }

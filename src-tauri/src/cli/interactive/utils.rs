@@ -66,7 +66,7 @@ where
 {
     handle_inquire(
         Select::new(message, options)
-            .with_help_message(texts::esc_to_go_back_help())
+            .with_help_message(texts::select_filter_help())
             .prompt(),
     )
 }
@@ -77,7 +77,7 @@ where
 {
     handle_inquire(
         MultiSelect::new(message, options)
-            .with_help_message(texts::esc_to_go_back_help())
+            .with_help_message(texts::select_filter_help())
             .prompt(),
     )
 }
