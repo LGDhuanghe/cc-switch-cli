@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 在不引入 DB、保持 `config.json` 为 SSOT、且不纳入 OpenCode 的前提下，优先修复/对齐 upstream 的关键“正确性差异”（Gemini MCP 导入、MCP upsert 清理、Gemini provider 写入合并），降低真实用户配置被覆盖或导入失败风险。
+**Goal:** 在不引入 DB、保持 `config.json` 为 SSOT 的前提下，优先修复/对齐 upstream 的关键“正确性差异”（Gemini MCP 导入、MCP upsert 清理、Gemini provider 写入合并），降低真实用户配置被覆盖或导入失败风险。
 
 **Architecture:** 以集成测试驱动（`src-tauri/tests/*.rs`），先锁定“现状会失败”的行为，再做最小改动：1) Gemini MCP 读取做反向转换；2) `McpService::upsert_server` 对 apps 取消勾选执行 live 清理；3) Gemini provider 的 `config` 写入改为 merge 现有 `settings.json`，保留 `mcpServers` 等字段。
 
@@ -208,4 +208,3 @@ git commit -m "fix: merge gemini provider config into existing settings.json"
 Run: `cd src-tauri && cargo test`
 
 Expected: PASS
-

@@ -12,7 +12,7 @@
 ## 1. 背景与约束
 
 ### 1.1 背景
-- upstream `cc-switch` 是「Tauri App + 前端 UI」形态，但其 Rust 后端已经沉淀了较多系统能力（Proxy、Failover、DB、Stream Check、OpenCode 等）。
+- upstream `cc-switch` 是「Tauri App + 前端 UI」形态，但其 Rust 后端已经沉淀了较多系统能力（Proxy、Failover、DB、Stream Check 等）。
 - 本仓库 `cc-switch-cli` 已经是独立的 CLI 形态（clap/inquire/TUI），其后端以 `~/.cc-switch/config.json` 为 SSOT（单一事实来源），整体更轻量。
 
 ### 1.2 核心约束（必须遵守）
@@ -36,14 +36,12 @@
 - **Codex auth 语义冲突**：upstream 强制 `auth.json` / `settings_config.auth` 存在；CLI 当前允许“无 auth”（例如凭证存储/环境变量）。
 - **Gemini live 写入策略**：upstream 倾向 merge 到现有 `~/.gemini/settings.json`（保留 `mcpServers` 等）；CLI 存在覆盖整文件风险。
 - **数据结构不对齐**：upstream `ProviderManager.providers: IndexMap`（稳定顺序）、新增 `inFailoverQueue`、`ProviderMeta` 更多字段、`UsageScript.templateType` 等；CLI 缺。
-- **OpenCode**：upstream 已是第 4 app（累加模式）；CLI 目前无 OpenCode。
 
 ### 2.3 MCP / Prompt / Skill
 差异点与优先级：
 - **MCP：Gemini 导入/验证差异**（高风险）：upstream 对 `httpUrl/type/timeout` 有更完善双向转换；CLI 可能把缺省 `type` 误判为 `stdio` 导致导入失败或导入为 0。
 - **MCP：upsert 时“取消勾选 app => 从 live 移除”**：upstream 自洽；CLI 目前更多依赖 `toggle_app` 路径，`upsert` 不会清理取消项。
 - **Skill：几乎两套系统**：upstream 有 SSOT `~/.cc-switch/skills/` + 多 app 同步（symlink/copy fallback）+ 扫描未管理技能；CLI 仍偏 Claude 单目录安装且 CLI 命令层基本占位。
-- **OpenCode：MCP/Prompt 缺口**：upstream 已实现；CLI 未实现。
 
 ### 2.4 Proxy / Failover / Stream Check / Usage / Database
 - upstream：本地 HTTP proxy、熔断器、请求路由与 failover、stream-check、usage 日志与成本、SQLite 持久化（含 live 备份）。
@@ -66,17 +64,11 @@ CLI 特有：`interactive(TUI)`、`completions`。
 
 推荐：**A**（先把“行为正确性 + 数据结构”对齐，避免高风险大迁移）。✅ **已选：A**
 
-### D2：OpenCode 是否纳入“必须对齐”范围？
-- 如果上游未来重点在 OpenCode（累加模式 + MCP + Prompt + Provider），对齐 OpenCode 能显著降低未来差异。
-- 如果你希望 CLI 只管理 Claude/Codex/Gemini，可以先把 OpenCode 作为 Phase 3+ 的可选项。
-
-已选：**暂不纳入**（先对齐 Claude/Codex/Gemini；OpenCode 放到后续可选阶段）。
-
-### D3：Proxy 第一阶段形态（若做）
+### D2：Proxy 第一阶段形态（若做）
 - **A（推荐）**：`cc-switch proxy serve` 仅提供代理服务；用户手动把各 CLI base_url 指向 `127.0.0.1:15721`；不做 takeover（自动改写 live）。
 - **B**：直接做 takeover（自动改写 live + 备份/恢复）。风险与联动复杂度显著更高。
 
-### D4：Codex auth 规则怎么对齐？
+### D3：Codex auth 规则怎么对齐？
 这里很容易“对齐上游”反而破坏 CLI 现有兼容性：
 - **保持 CLI 行为（推荐）**：继续支持缺失 `auth.json`（credential store/env_key/requires_openai_auth 等路径），但在导入/upsert 时补充更明确的校验与提示。
 - **强行同构 upstream**：把 auth 设为强制，会导致现有测试与用户配置失效，除非同时设计迁移策略。
@@ -85,7 +77,7 @@ CLI 特有：`interactive(TUI)`、`completions`。
 
 ## 4. 渐进式对齐路线图（Phase → 任务 → 验收）
 
-> 原则：优先做“正确性/安全性”修复，其次做“结构收敛降低 diff 成本”，再做“新能力（OpenCode/Proxy）”。
+> 原则：优先做“正确性/安全性”修复，其次做“结构收敛降低 diff 成本”，再做“新能力（Proxy 等系统能力）”。
 
 ### Phase 1（优先）：MCP/Provider 的正确性对齐（不引入 DB，不加大特性）
 
@@ -121,22 +113,7 @@ CLI 特有：`interactive(TUI)`、`completions`。
 - provider 列表/导出结果顺序稳定。
 - usage 查询在 `usage_script` 缺省 key/base_url 时仍可工作（按 upstream 语义）。
 
-### Phase 3：OpenCode 最小闭环（可选，但建议纳入对齐）
-
-**目标**
-- 先让 OpenCode 的 MCP/Prompt 可用，逐步再对齐 Provider（累加模式）。
-
-**建议任务**
-1) `AppType` 扩展：加入 `OpenCode` + additive mode 语义（对齐 upstream）。
-2) Prompt：支持 OpenCode 的 prompt 文件路径（参考 upstream：OpenCode 也使用 `AGENTS.md`）。
-3) MCP：新增 `opencode_config.rs` 与 `mcp/opencode.rs` 转换逻辑；CLI 的 `mcp` 子命令支持 `--app opencode` 的 import/sync/remove。
-4) Provider（后续）：实现 additive 模式 providers 的增删（不引入 current 概念），并与 OpenCode live config 对齐。
-
-**验收标准**
-- `cc-switch mcp import --app opencode` 能正确导入并落盘。
-- `cc-switch prompts` 能管理 OpenCode 的 prompt 文件（show/import/activate）。
-
-### Phase 4：Skills 系统重做（建议按 upstream 思路，但“文件型 SSOT”落地）
+### Phase 3：Skills 系统重做（建议按 upstream 思路，但“文件型 SSOT”落地）
 
 **目标**
 - 把 CLI 的 skills 从“Claude 单目录 + 占位命令”提升为 upstream 同级别能力：SSOT + 多 app 同步 + 扫描未管理技能。
@@ -152,7 +129,7 @@ CLI 特有：`interactive(TUI)`、`completions`。
 - `skills` 子命令可用且不破坏既有 Claude skills。
 - 多 app 同步在 Windows/macOS/Linux 均有可用路径（symlink/copy）。
 
-### Phase 5：Proxy/Failover/Stream Check/Usage（可选，且建议最后做）
+### Phase 4：Proxy/Failover/Stream Check/Usage（可选，且建议最后做）
 
 **目标**
 - 在 CLI 中以最小形态引入 upstream 的“代理与系统能力”，避免 Tauri/UI/DB 强耦合。
@@ -189,9 +166,8 @@ CLI 特有：`interactive(TUI)`、`completions`。
 建议新增/强化的回归点（按 Phase）：
 - Phase 1：Gemini MCP 导入/写回、MCP upsert 取消勾选清理、Gemini provider 写入不覆盖 mcpServers。
 - Phase 2：current provider 自愈、provider 列表顺序稳定、usage script 回退、Codex common snippet 抽取。
-- Phase 3：OpenCode MCP/Prompt。
-- Phase 4：skills sync/symlink fallback/unmanaged scan。
-- Phase 5：proxy serve 基本转发 + failover + 熔断。
+- Phase 3：skills sync/symlink fallback/unmanaged scan。
+- Phase 4：proxy serve 基本转发 + failover + 熔断。
 
 ---
 
@@ -207,4 +183,4 @@ CLI 特有：`interactive(TUI)`、`completions`。
 
 ## 8. 下一步（把文档变成可执行 task）
 
-当你确认 **D1/D2/D3/D4** 的决策后，我们会把 Phase 1 拆成一组可执行的小 task（每个 task 都有：涉及文件、验收点、测试命令），然后按 task 逐个编码与回归。
+当你确认 **D1/D2/D3** 的决策后，我们会把 Phase 1 拆成一组可执行的小 task（每个 task 都有：涉及文件、验收点、测试命令），然后按 task 逐个编码与回归。
