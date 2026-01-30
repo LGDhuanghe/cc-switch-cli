@@ -1127,6 +1127,11 @@ impl ProviderService {
         if action.refresh_snapshot && crate::sync_policy::should_sync_live(&action.app_type) {
             Self::refresh_provider_snapshot(state, &action.app_type, &action.provider.id)?;
         }
+
+        // D6: Align upstream live flows - also sync skills (best effort, should not block provider ops).
+        if let Err(e) = crate::services::skill::SkillService::sync_all_enabled_best_effort() {
+            log::warn!("同步 Skills 失败: {e}");
+        }
         Ok(())
     }
 

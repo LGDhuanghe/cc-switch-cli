@@ -3,6 +3,7 @@ mod mcp;
 mod prompts;
 mod provider;
 mod settings;
+mod skills;
 mod utils;
 
 use std::io::IsTerminal;
@@ -51,6 +52,12 @@ pub fn run(app: Option<AppType>) -> Result<(), AppError> {
                     pause();
                 }
             }
+            MainMenuChoice::ManageSkills => {
+                if let Err(e) = skills::manage_skills_menu(&app_type) {
+                    println!("\n{}", error(&format!("{}: {}", texts::error_prefix(), e)));
+                    pause();
+                }
+            }
             MainMenuChoice::ViewCurrentConfig => {
                 if let Err(e) = view_current_config(&app_type) {
                     println!("\n{}", error(&format!("{}: {}", texts::error_prefix(), e)));
@@ -86,6 +93,7 @@ enum MainMenuChoice {
     ManageMCP,
     ManagePrompts,
     ManageConfig,
+    ManageSkills,
     ViewCurrentConfig,
     SwitchApp,
     Settings,
@@ -99,6 +107,7 @@ impl std::fmt::Display for MainMenuChoice {
             Self::ManageMCP => write!(f, "{}", texts::menu_manage_mcp()),
             Self::ManagePrompts => write!(f, "{}", texts::menu_manage_prompts()),
             Self::ManageConfig => write!(f, "{}", texts::menu_manage_config()),
+            Self::ManageSkills => write!(f, "{}", texts::menu_manage_skills()),
             Self::ViewCurrentConfig => write!(f, "{}", texts::menu_view_config()),
             Self::SwitchApp => write!(f, "{}", texts::menu_switch_app()),
             Self::Settings => write!(f, "{}", texts::menu_settings()),
@@ -127,6 +136,7 @@ fn show_main_menu(app_type: &mut AppType) -> Result<MainMenuChoice, AppError> {
         MainMenuChoice::ManageMCP,
         MainMenuChoice::ManagePrompts,
         MainMenuChoice::ManageConfig,
+        MainMenuChoice::ManageSkills,
         MainMenuChoice::ViewCurrentConfig,
         MainMenuChoice::SwitchApp,
         MainMenuChoice::Settings,

@@ -308,6 +308,14 @@ pub mod texts {
         }
     }
 
+    pub fn menu_manage_skills() -> &'static str {
+        if is_chinese() {
+            "🧩 管理 Skills"
+        } else {
+            "🧩 Manage Skills"
+        }
+    }
+
     pub fn menu_view_config() -> &'static str {
         if is_chinese() {
             "👁️  查看当前配置"
@@ -337,6 +345,240 @@ pub mod texts {
             "🚪 退出"
         } else {
             "🚪 Exit"
+        }
+    }
+
+    // ============================================
+    // SKILLS (Skills)
+    // ============================================
+
+    pub fn skills_management() -> &'static str {
+        if is_chinese() {
+            "Skills 管理"
+        } else {
+            "Skills Management"
+        }
+    }
+
+    pub fn no_skills_installed() -> &'static str {
+        if is_chinese() {
+            "未安装任何 Skills。"
+        } else {
+            "No skills installed."
+        }
+    }
+
+    pub fn skills_discover() -> &'static str {
+        if is_chinese() {
+            "🔎 发现/搜索 Skills"
+        } else {
+            "🔎 Discover/Search Skills"
+        }
+    }
+
+    pub fn skills_install() -> &'static str {
+        if is_chinese() {
+            "⬇️  安装 Skill"
+        } else {
+            "⬇️  Install Skill"
+        }
+    }
+
+    pub fn skills_uninstall() -> &'static str {
+        if is_chinese() {
+            "🗑️  卸载 Skill"
+        } else {
+            "🗑️  Uninstall Skill"
+        }
+    }
+
+    pub fn skills_toggle_for_app() -> &'static str {
+        if is_chinese() {
+            "✅ 启用/禁用（当前应用）"
+        } else {
+            "✅ Enable/Disable (Current App)"
+        }
+    }
+
+    pub fn skills_show_info() -> &'static str {
+        if is_chinese() {
+            "ℹ️  查看 Skill 信息"
+        } else {
+            "ℹ️  Skill Info"
+        }
+    }
+
+    pub fn skills_sync_now() -> &'static str {
+        if is_chinese() {
+            "🔄 同步 Skills 到本地"
+        } else {
+            "🔄 Sync Skills to Live"
+        }
+    }
+
+    pub fn skills_sync_method() -> &'static str {
+        if is_chinese() {
+            "🔗 同步方式（auto/symlink/copy）"
+        } else {
+            "🔗 Sync Method (auto/symlink/copy)"
+        }
+    }
+
+    pub fn skills_select_sync_method() -> &'static str {
+        if is_chinese() {
+            "选择同步方式："
+        } else {
+            "Select sync method:"
+        }
+    }
+
+    pub fn skills_current_sync_method(method: &str) -> String {
+        if is_chinese() {
+            format!("当前同步方式：{method}")
+        } else {
+            format!("Current sync method: {method}")
+        }
+    }
+
+    pub fn skills_current_app_note(app: &str) -> String {
+        if is_chinese() {
+            format!("提示：启用/禁用将作用于当前应用（{app}）。")
+        } else {
+            format!("Note: Enable/Disable applies to the current app ({app}).")
+        }
+    }
+
+    pub fn skills_scan_unmanaged() -> &'static str {
+        if is_chinese() {
+            "🕵️  扫描未管理 Skills"
+        } else {
+            "🕵️  Scan Unmanaged Skills"
+        }
+    }
+
+    pub fn skills_import_from_apps() -> &'static str {
+        if is_chinese() {
+            "📥 从应用目录导入"
+        } else {
+            "📥 Import from App Dirs"
+        }
+    }
+
+    pub fn skills_manage_repos() -> &'static str {
+        if is_chinese() {
+            "📦 管理技能仓库"
+        } else {
+            "📦 Manage Skill Repos"
+        }
+    }
+
+    pub fn skills_enter_query() -> &'static str {
+        if is_chinese() {
+            "输入搜索关键词（可选）："
+        } else {
+            "Enter search query (optional):"
+        }
+    }
+
+    pub fn skills_enter_install_spec() -> &'static str {
+        if is_chinese() {
+            "输入 Skill 名称或 key（owner/name:directory）："
+        } else {
+            "Enter skill directory or key (owner/name:directory):"
+        }
+    }
+
+    pub fn skills_select_skill() -> &'static str {
+        if is_chinese() {
+            "选择一个 Skill："
+        } else {
+            "Select a skill:"
+        }
+    }
+
+    pub fn skills_confirm_install(name: &str, app: &str) -> String {
+        if is_chinese() {
+            format!("确认安装 '{name}' 并启用到 {app}？")
+        } else {
+            format!("Install '{name}' and enable for {app}?")
+        }
+    }
+
+    pub fn skills_confirm_uninstall(name: &str) -> String {
+        if is_chinese() {
+            format!("确认卸载 '{name}'？")
+        } else {
+            format!("Uninstall '{name}'?")
+        }
+    }
+
+    pub fn skills_confirm_toggle(name: &str, app: &str, enabled: bool) -> String {
+        if is_chinese() {
+            if enabled {
+                format!("确认启用 '{name}' 到 {app}？")
+            } else {
+                format!("确认在 {app} 禁用 '{name}'？")
+            }
+        } else if enabled {
+            format!("Enable '{name}' for {app}?")
+        } else {
+            format!("Disable '{name}' for {app}?")
+        }
+    }
+
+    pub fn skills_no_unmanaged_found() -> &'static str {
+        if is_chinese() {
+            "未发现未管理的 Skills。"
+        } else {
+            "No unmanaged skills found."
+        }
+    }
+
+    pub fn skills_select_unmanaged_to_import() -> &'static str {
+        if is_chinese() {
+            "选择要导入的 Skills："
+        } else {
+            "Select skills to import:"
+        }
+    }
+
+    pub fn skills_repos_management() -> &'static str {
+        if is_chinese() {
+            "技能仓库管理"
+        } else {
+            "Skill Repos"
+        }
+    }
+
+    pub fn skills_repo_list() -> &'static str {
+        if is_chinese() {
+            "📋 查看仓库列表"
+        } else {
+            "📋 List Repos"
+        }
+    }
+
+    pub fn skills_repo_add() -> &'static str {
+        if is_chinese() {
+            "➕ 添加仓库"
+        } else {
+            "➕ Add Repo"
+        }
+    }
+
+    pub fn skills_repo_remove() -> &'static str {
+        if is_chinese() {
+            "➖ 移除仓库"
+        } else {
+            "➖ Remove Repo"
+        }
+    }
+
+    pub fn skills_repo_enter_spec() -> &'static str {
+        if is_chinese() {
+            "输入仓库（GitHub URL 或 owner/name[@branch]）："
+        } else {
+            "Enter repo (GitHub URL or owner/name[@branch]):"
         }
     }
 

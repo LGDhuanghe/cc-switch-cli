@@ -33,7 +33,7 @@ fn run(cli: Cli) -> Result<(), AppError> {
         Some(Commands::Prompts(cmd)) => {
             cc_switch_lib::cli::commands::prompts::execute(cmd, cli.app)
         }
-        Some(Commands::Skills(cmd)) => cc_switch_lib::cli::commands::skills::execute(cmd),
+        Some(Commands::Skills(cmd)) => cc_switch_lib::cli::commands::skills::execute(cmd, cli.app),
         Some(Commands::Config(cmd)) => cc_switch_lib::cli::commands::config::execute(cmd, cli.app),
         Some(Commands::Env(cmd)) => cc_switch_lib::cli::commands::env::execute(cmd, cli.app),
         Some(Commands::Completions { shell }) => {
