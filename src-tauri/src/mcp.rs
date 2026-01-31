@@ -714,14 +714,10 @@ pub fn sync_enabled_to_gemini(config: &MultiAppConfig) -> Result<(), AppError> {
 pub fn import_from_gemini(config: &mut MultiAppConfig) -> Result<usize, AppError> {
     use crate::app_config::{McpApps, McpServer};
 
-    let text_opt = crate::gemini_mcp::read_mcp_json()?;
-    let Some(text) = text_opt else { return Ok(0) };
-
-    let v: Value = serde_json::from_str(&text)
-        .map_err(|e| AppError::McpValidation(format!("解析 ~/.gemini/settings.json 失败: {e}")))?;
-    let Some(map) = v.get("mcpServers").and_then(|x| x.as_object()) else {
+    let map = crate::gemini_mcp::read_mcp_servers_map()?;
+    if map.is_empty() {
         return Ok(0);
-    };
+    }
 
     // 确保新结构存在
     if config.mcp.servers.is_none() {
@@ -1117,6 +1113,10 @@ pub fn sync_single_server_to_gemini(
     id: &str,
     server_spec: &Value,
 ) -> Result<(), AppError> {
+    if !crate::sync_policy::should_sync_live(&AppType::Gemini) {
+        return Ok(());
+    }
+
     // 读取现有的 MCP 配置
     let current = crate::gemini_mcp::read_mcp_servers_map()?;
 
@@ -1130,6 +1130,10 @@ pub fn sync_single_server_to_gemini(
 
 /// 从 Gemini live 配置中移除单个 MCP 服务器
 pub fn remove_server_from_gemini(id: &str) -> Result<(), AppError> {
+    if !crate::sync_policy::should_sync_live(&AppType::Gemini) {
+        return Ok(());
+    }
+
     // 读取现有的 MCP 配置
     let mut current = crate::gemini_mcp::read_mcp_servers_map()?;
 

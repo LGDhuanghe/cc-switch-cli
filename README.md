@@ -30,14 +30,35 @@ This project is a **CLI fork** of [CC-Switch](https://github.com/farion1231/cc-s
 
 <table>
   <tr>
+    <th>Home</th>
+    <th>Switch</th>
+    <th>Settings</th>
+  </tr>
+  <tr>
+    <td><img src="assets/screenshots/首页en.png" alt="Home" width="100%"/></td>
+    <td><img src="assets/screenshots/切换en.png" alt="Switch" width="100%"/></td>
+    <td><img src="assets/screenshots/设置en.png" alt="Settings" width="100%"/></td>
+  </tr>
+</table>
+
+<details>
+  <summary>Legacy UI (no longer actively maintained)</summary>
+
+> [!WARNING]
+> The legacy interactive UI is temporarily not maintained. Please use the new TUI.
+
+<table>
+  <tr>
     <th>Interactive Main Menu</th>
     <th>Provider Management</th>
   </tr>
   <tr>
-    <td><img src="assets/screenshots/main-en.png" alt="Main Menu" width="100%"/></td>
-    <td><img src="assets/screenshots/add-en.png" alt="Provider Management" width="100%"/></td>
+    <td><img src="assets/screenshots/main-en.png" alt="Legacy Main Menu" width="100%"/></td>
+    <td><img src="assets/screenshots/add-en.png" alt="Legacy Provider Management" width="100%"/></td>
   </tr>
 </table>
+
+</details>
 
 ---
 
@@ -286,6 +307,7 @@ copy target\release\cc-switch.exe C:\Windows\System32\
 ### Core Design
 
 - **SSOT**: All config in `~/.cc-switch/config.json`, live configs are generated artifacts
+- **Safe Live Sync (Default)**: Skip writing live files for apps that haven't been initialized yet (prevents creating `~/.claude`, `~/.codex`, `~/.gemini` unexpectedly)
 - **Atomic Writes**: Temp file + rename pattern prevents corruption
 - **Service Layer Reuse**: 100% reused from original GUI version
 - **Concurrency Safe**: RwLock with scoped guards
@@ -310,6 +332,8 @@ copy target\release\cc-switch.exe C:\Windows\System32\
 <summary><b>Why doesn't my configuration take effect after switching providers?</b></summary>
 
 <br>
+
+First, make sure the target CLI has been initialized at least once (i.e. its config directory exists). CC-Switch may skip live sync for uninitialized apps; you will see a warning. Run the target CLI once (e.g. `claude --help`, `codex --help`, `gemini --help`), then switch again.
 
 This is usually caused by **environment variable conflicts**. If you have API keys set in system environment variables (like `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`), they will override CC-Switch's configuration.
 

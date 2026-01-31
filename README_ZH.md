@@ -30,14 +30,35 @@
 
 <table>
   <tr>
+    <th>首页</th>
+    <th>切换</th>
+    <th>设置</th>
+  </tr>
+  <tr>
+    <td><img src="assets/screenshots/首页zh.png" alt="首页" width="100%"/></td>
+    <td><img src="assets/screenshots/切换zh.png" alt="切换" width="100%"/></td>
+    <td><img src="assets/screenshots/设置zh.png" alt="设置" width="100%"/></td>
+  </tr>
+</table>
+
+<details>
+  <summary>旧版 UI（暂不维护）</summary>
+
+> [!WARNING]
+> 旧版交互 UI 已暂时停止维护，请以新版 TUI 为准。
+
+<table>
+  <tr>
     <th>交互式主界面</th>
     <th>供应商管理</th>
   </tr>
   <tr>
-    <td><img src="assets/screenshots/main-ch.png" alt="主界面" width="100%"/></td>
-    <td><img src="assets/screenshots/add-ch.png" alt="供应商管理" width="100%"/></td>
+    <td><img src="assets/screenshots/main-ch.png" alt="旧版主界面" width="100%"/></td>
+    <td><img src="assets/screenshots/add-ch.png" alt="旧版供应商管理" width="100%"/></td>
   </tr>
 </table>
+
+</details>
 
 ---
 
@@ -286,6 +307,7 @@ copy target\release\cc-switch.exe C:\Windows\System32\
 ### 核心设计
 
 - **SSOT**：所有配置存于 `~/.cc-switch/config.json`，实时配置是生成的产物
+- **安全 Live 同步（默认）**：若目标应用尚未初始化，将跳过写入 live 文件（避免意外创建 `~/.claude`、`~/.codex`、`~/.gemini`）
 - **原子写入**：临时文件 + 重命名模式防止损坏
 - **服务层复用**：100% 复用原 GUI 版本
 - **并发安全**：RwLock 配合作用域守卫
@@ -310,6 +332,8 @@ copy target\release\cc-switch.exe C:\Windows\System32\
 <summary><b>为什么切换供应商后配置没有生效？</b></summary>
 
 <br>
+
+首先确认目标 CLI 已经至少运行过一次（即对应配置目录已存在）。如果应用未初始化，CC-Switch 会出于安全原因跳过写入 live 文件，并提示一条 warning。请先运行一次目标 CLI（例如 `claude --help` / `codex --help` / `gemini --help`），然后再切换一次供应商。
 
 这通常是由**环境变量冲突**引起的。如果你在系统环境变量中设置了 API 密钥（如 `ANTHROPIC_API_KEY`、`OPENAI_API_KEY`），它们会覆盖 CC-Switch 的配置。
 

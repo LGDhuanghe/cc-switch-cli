@@ -1,20 +1,24 @@
-use regex::Regex;
+mod endpoints;
+mod gemini_auth;
+mod live;
+mod usage;
+
+use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app_config::{AppType, MultiAppConfig};
 use crate::codex_config::{get_codex_auth_path, get_codex_config_path};
 use crate::config::{
     delete_file, get_claude_settings_path, get_provider_config_path, read_json_file,
-    write_json_file, write_text_file,
+    write_json_file,
 };
 use crate::error::AppError;
-use crate::provider::{Provider, ProviderMeta, UsageData, UsageResult};
-use crate::settings::{self, CustomEndpoint};
+use crate::provider::Provider;
 use crate::store::AppState;
-use crate::usage_script;
+
+use gemini_auth::GeminiAuthType;
+use live::LiveSnapshot;
 
 /// 供应商相关业务逻辑
 pub struct ProviderService;
@@ -29,21 +33,6 @@ fn generate_provider_id_from_name(name: &str) -> String {
 }
 
 #[derive(Clone)]
-enum LiveSnapshot {
-    Claude {
-        settings: Option<Value>,
-    },
-    Codex {
-        auth: Option<Value>,
-        config: Option<String>,
-    },
-    Gemini {
-        env: Option<HashMap<String, String>>, // 新增
-        config: Option<Value>,                // 新增：settings.json 内容
-    },
-}
-
-#[derive(Clone)]
 struct PostCommitAction {
     app_type: AppType,
     provider: Provider,
@@ -51,62 +40,6 @@ struct PostCommitAction {
     sync_mcp: bool,
     refresh_snapshot: bool,
     common_config_snippet: Option<String>,
-}
-
-impl LiveSnapshot {
-    fn restore(&self) -> Result<(), AppError> {
-        match self {
-            LiveSnapshot::Claude { settings } => {
-                let path = get_claude_settings_path();
-                if let Some(value) = settings {
-                    write_json_file(&path, value)?;
-                } else if path.exists() {
-                    delete_file(&path)?;
-                }
-            }
-            LiveSnapshot::Codex { auth, config } => {
-                let auth_path = get_codex_auth_path();
-                let config_path = get_codex_config_path();
-                if let Some(value) = auth {
-                    write_json_file(&auth_path, value)?;
-                } else if auth_path.exists() {
-                    delete_file(&auth_path)?;
-                }
-
-                if let Some(text) = config {
-                    write_text_file(&config_path, text)?;
-                } else if config_path.exists() {
-                    delete_file(&config_path)?;
-                }
-            }
-            LiveSnapshot::Gemini { env, .. } => {
-                // 新增
-                use crate::gemini_config::{
-                    get_gemini_env_path, get_gemini_settings_path, write_gemini_env_atomic,
-                };
-                let path = get_gemini_env_path();
-                if let Some(env_map) = env {
-                    write_gemini_env_atomic(env_map)?;
-                } else if path.exists() {
-                    delete_file(&path)?;
-                }
-
-                let settings_path = get_gemini_settings_path();
-                match self {
-                    LiveSnapshot::Gemini {
-                        config: Some(cfg), ..
-                    } => {
-                        write_json_file(&settings_path, cfg)?;
-                    }
-                    LiveSnapshot::Gemini { config: None, .. } if settings_path.exists() => {
-                        delete_file(&settings_path)?;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -166,6 +99,8 @@ mod tests {
     fn switch_codex_succeeds_without_auth_json() {
         let temp_home = TempDir::new().expect("create temp home");
         let _env = EnvGuard::set_home(temp_home.path());
+        std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+            .expect("create ~/.codex (initialized)");
 
         let mut config = MultiAppConfig::default();
         config.ensure_app(&AppType::Codex);
@@ -242,6 +177,8 @@ mod tests {
     fn codex_switch_preserves_base_url_and_wire_api_across_multiple_switches() {
         let temp_home = TempDir::new().expect("create temp home");
         let _env = EnvGuard::set_home(temp_home.path());
+        std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+            .expect("create ~/.codex (initialized)");
 
         let mut config = MultiAppConfig::default();
         config.ensure_app(&AppType::Codex);
@@ -352,9 +289,74 @@ mod tests {
 
     #[test]
     #[serial]
+    fn current_self_heals_when_current_provider_missing() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = EnvGuard::set_home(temp_home.path());
+
+        let mut config = MultiAppConfig::default();
+        config.ensure_app(&AppType::Claude);
+        {
+            let manager = config
+                .get_manager_mut(&AppType::Claude)
+                .expect("claude manager");
+            manager.current = "missing".to_string();
+
+            let mut p1 = Provider::with_id(
+                "p1".to_string(),
+                "First".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token1",
+                        "ANTHROPIC_BASE_URL": "https://claude.one"
+                    }
+                }),
+                None,
+            );
+            p1.sort_index = Some(10);
+
+            let mut p2 = Provider::with_id(
+                "p2".to_string(),
+                "Second".to_string(),
+                json!({
+                    "env": {
+                        "ANTHROPIC_AUTH_TOKEN": "token2",
+                        "ANTHROPIC_BASE_URL": "https://claude.two"
+                    }
+                }),
+                None,
+            );
+            p2.sort_index = Some(0);
+
+            manager.providers.insert("p1".to_string(), p1);
+            manager.providers.insert("p2".to_string(), p2);
+        }
+
+        let state = AppState {
+            config: RwLock::new(config),
+        };
+
+        let current_id =
+            ProviderService::current(&state, AppType::Claude).expect("self-heal current provider");
+        assert_eq!(
+            current_id, "p2",
+            "should pick provider with smaller sort_index"
+        );
+
+        let cfg = state.config.read().expect("read config");
+        let manager = cfg.get_manager(&AppType::Claude).expect("claude manager");
+        assert_eq!(
+            manager.current, "p2",
+            "current should be updated in config after self-heal"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn common_config_snippet_is_merged_into_claude_settings_on_write() {
         let temp_home = TempDir::new().expect("create temp home");
         let _env = EnvGuard::set_home(temp_home.path());
+        std::fs::create_dir_all(crate::config::get_claude_config_dir())
+            .expect("create ~/.claude (initialized)");
 
         let mut config = MultiAppConfig::default();
         config.ensure_app(&AppType::Claude);
@@ -482,6 +484,135 @@ mod tests {
     }
 
     #[test]
+    #[serial]
+    fn common_config_snippet_is_merged_into_codex_config_on_write() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = EnvGuard::set_home(temp_home.path());
+        std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+            .expect("create ~/.codex (initialized)");
+
+        let mut config = MultiAppConfig::default();
+        config.ensure_app(&AppType::Codex);
+        config.common_config_snippets.codex = Some("disable_response_storage = true".to_string());
+
+        let state = AppState {
+            config: RwLock::new(config),
+        };
+
+        let provider = Provider::with_id(
+            "p1".to_string(),
+            "First".to_string(),
+            json!({
+                "config": "base_url = \"https://api.example/v1\"\nmodel = \"gpt-5.2-codex\"\nwire_api = \"responses\"\n"
+            }),
+            None,
+        );
+
+        ProviderService::add(&state, AppType::Codex, provider).expect("add should succeed");
+
+        let live_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
+        assert!(
+            live_text.contains("disable_response_storage = true"),
+            "common snippet should be merged into config.toml"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn codex_switch_extracts_common_snippet_preserving_mcp_servers() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = EnvGuard::set_home(temp_home.path());
+
+        let mut config = MultiAppConfig::default();
+        config.ensure_app(&AppType::Codex);
+        {
+            let manager = config
+                .get_manager_mut(&AppType::Codex)
+                .expect("codex manager");
+            manager.current = "p1".to_string();
+            manager.providers.insert(
+                "p1".to_string(),
+                Provider::with_id(
+                    "p1".to_string(),
+                    "First".to_string(),
+                    json!({ "config": "base_url = \"https://api.one.example/v1\"\n" }),
+                    None,
+                ),
+            );
+            manager.providers.insert(
+                "p2".to_string(),
+                Provider::with_id(
+                    "p2".to_string(),
+                    "Second".to_string(),
+                    json!({ "config": "base_url = \"https://api.two.example/v1\"\n" }),
+                    None,
+                ),
+            );
+        }
+
+        let state = AppState {
+            config: RwLock::new(config),
+        };
+
+        let config_toml = r#"model_provider = "azure"
+model = "gpt-4"
+disable_response_storage = true
+
+[model_providers.azure]
+name = "Azure OpenAI"
+base_url = "https://azure.example/v1"
+wire_api = "responses"
+
+[mcp_servers.my_server]
+base_url = "http://localhost:8080"
+"#;
+
+        let config_path = get_codex_config_path();
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent).expect("create codex dir");
+        }
+        std::fs::write(&config_path, config_toml).expect("seed config.toml");
+
+        ProviderService::switch(&state, AppType::Codex, "p2").expect("switch should succeed");
+
+        let cfg = state.config.read().expect("read config after switch");
+        let extracted = cfg
+            .common_config_snippets
+            .codex
+            .as_deref()
+            .unwrap_or_default();
+
+        assert!(
+            extracted.contains("disable_response_storage = true"),
+            "should keep top-level common config"
+        );
+        assert!(
+            extracted.contains("[mcp_servers.my_server]"),
+            "should keep mcp_servers table"
+        );
+        assert!(
+            extracted.contains("base_url = \"http://localhost:8080\""),
+            "should keep mcp_servers.* base_url"
+        );
+        assert!(
+            !extracted
+                .lines()
+                .any(|line| line.trim_start().starts_with("model_provider")),
+            "should remove top-level model_provider"
+        );
+        assert!(
+            !extracted
+                .lines()
+                .any(|line| line.trim_start().starts_with("model =")),
+            "should remove top-level model"
+        );
+        assert!(
+            !extracted.contains("[model_providers"),
+            "should remove entire model_providers table"
+        );
+    }
+
+    #[test]
     fn extract_credentials_returns_expected_values() {
         let provider = Provider::with_id(
             "claude".into(),
@@ -501,10 +632,83 @@ mod tests {
     }
 
     #[test]
+    fn resolve_usage_script_credentials_falls_back_to_provider_values() {
+        let provider = Provider::with_id(
+            "claude".into(),
+            "Claude".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token",
+                    "ANTHROPIC_BASE_URL": "https://claude.example"
+                }
+            }),
+            None,
+        );
+        let usage_script = crate::provider::UsageScript {
+            enabled: true,
+            language: "javascript".to_string(),
+            code: String::new(),
+            timeout: None,
+            api_key: None,
+            base_url: None,
+            access_token: None,
+            user_id: None,
+            template_type: None,
+            auto_query_interval: None,
+        };
+
+        let (api_key, base_url) = ProviderService::resolve_usage_script_credentials(
+            &provider,
+            &AppType::Claude,
+            &usage_script,
+        )
+        .expect("should resolve via provider values");
+        assert_eq!(api_key, "token");
+        assert_eq!(base_url, "https://claude.example");
+    }
+
+    #[test]
+    fn resolve_usage_script_credentials_does_not_require_provider_api_key_when_script_has_one() {
+        let provider = Provider::with_id(
+            "claude".into(),
+            "Claude".into(),
+            json!({
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://claude.example"
+                }
+            }),
+            None,
+        );
+        let usage_script = crate::provider::UsageScript {
+            enabled: true,
+            language: "javascript".to_string(),
+            code: String::new(),
+            timeout: None,
+            api_key: Some("override".to_string()),
+            base_url: None,
+            access_token: None,
+            user_id: None,
+            template_type: None,
+            auto_query_interval: None,
+        };
+
+        let (api_key, base_url) = ProviderService::resolve_usage_script_credentials(
+            &provider,
+            &AppType::Claude,
+            &usage_script,
+        )
+        .expect("should resolve base_url from provider without needing provider api key");
+        assert_eq!(api_key, "override");
+        assert_eq!(base_url, "https://claude.example");
+    }
+
+    #[test]
     #[serial]
     fn common_config_snippet_is_merged_into_gemini_env_on_write() {
         let temp_home = TempDir::new().expect("create temp home");
         let _env = EnvGuard::set_home(temp_home.path());
+        std::fs::create_dir_all(crate::gemini_config::get_gemini_dir())
+            .expect("create ~/.gemini (initialized)");
 
         let mut config = MultiAppConfig::default();
         config.ensure_app(&AppType::Gemini);
@@ -650,25 +854,7 @@ fn strip_common_values(target: &mut Value, common: &Value) {
     }
 }
 
-/// Gemini 认证类型枚举
-///
-/// 区分 OAuth 和 API Key 两种认证方式
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GeminiAuthType {
-    /// Google 官方（使用 OAuth 认证）
-    GoogleOfficial,
-    /// API Key 认证（包括所有第三方供应商：PackyCode、Generic 等）
-    ApiKey,
-}
-
 impl ProviderService {
-    // 认证类型常量
-    const API_KEY_SECURITY_SELECTED_TYPE: &'static str = "gemini-api-key";
-    const GOOGLE_OAUTH_SECURITY_SELECTED_TYPE: &'static str = "oauth-personal";
-
-    // Partner Promotion Key 常量
-    const GOOGLE_OFFICIAL_PARTNER_KEY: &'static str = "google-official";
-
     fn parse_common_claude_config_snippet(snippet: &str) -> Result<Value, AppError> {
         let value: Value = serde_json::from_str(snippet).map_err(|e| {
             AppError::localized(
@@ -705,116 +891,85 @@ impl ProviderService {
         Ok(value)
     }
 
-    /// 检测 Gemini 供应商的认证类型
-    ///
-    /// 只区分两种认证方式：OAuth (Google 官方) 和 API Key (所有其他供应商)
-    ///
-    /// # 返回值
-    ///
-    /// - `GeminiAuthType::GoogleOfficial`: Google 官方，使用 OAuth
-    /// - `GeminiAuthType::ApiKey`: 其他所有供应商，使用 API Key
-    fn detect_gemini_auth_type(provider: &Provider) -> GeminiAuthType {
-        // 检查 partner_promotion_key 是否为 google-official
-        if let Some(key) = provider
-            .meta
-            .as_ref()
-            .and_then(|meta| meta.partner_promotion_key.as_deref())
-        {
-            if key.eq_ignore_ascii_case(Self::GOOGLE_OFFICIAL_PARTNER_KEY) {
-                return GeminiAuthType::GoogleOfficial;
+    fn extract_codex_common_config_from_config_toml(config_toml: &str) -> Result<String, AppError> {
+        let config_toml = config_toml.trim();
+        if config_toml.is_empty() {
+            return Ok(String::new());
+        }
+
+        let mut doc = config_toml
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|e| AppError::Message(format!("TOML parse error: {e}")))?;
+
+        // Remove provider-specific fields.
+        let root = doc.as_table_mut();
+        root.remove("model");
+        root.remove("model_provider");
+        // Legacy/alt formats might use a top-level base_url.
+        root.remove("base_url");
+        // Remove entire model_providers table (provider-specific configuration)
+        root.remove("model_providers");
+
+        // Clean up multiple empty lines (keep at most one blank line).
+        let mut cleaned = String::new();
+        let mut blank_run = 0usize;
+        for line in doc.to_string().lines() {
+            if line.trim().is_empty() {
+                blank_run += 1;
+                if blank_run <= 1 {
+                    cleaned.push('\n');
+                }
+                continue;
             }
+            blank_run = 0;
+            cleaned.push_str(line);
+            cleaned.push('\n');
         }
 
-        // 检查名称是否为 Google
-        let name_lower = provider.name.to_ascii_lowercase();
-        if name_lower == "google" || name_lower.starts_with("google ") {
-            return GeminiAuthType::GoogleOfficial;
-        }
-
-        // 其他所有情况：API Key 认证
-        GeminiAuthType::ApiKey
+        Ok(cleaned.trim().to_string())
     }
 
-    /// 确保 Google 官方 Gemini 供应商的安全标志正确设置（OAuth 模式）
-    ///
-    /// Google 官方 Gemini 使用 OAuth 个人认证，不需要 API Key。
-    ///
-    /// # 写入两处 settings.json 的原因
-    ///
-    /// 1. **`~/.cc-switch/settings.json`** (应用级配置):
-    ///    - CC-Switch 应用的全局设置
-    ///    - 确保应用知道当前使用的认证类型
-    ///    - 用于 UI 显示和其他应用逻辑
-    ///
-    /// 2. **`~/.gemini/settings.json`** (Gemini 客户端配置):
-    ///    - Gemini CLI 客户端读取的配置文件
-    ///    - 直接影响 Gemini 客户端的认证行为
-    ///    - 确保 Gemini 使用正确的认证方式连接 API
-    ///
-    /// # 设置的值
-    ///
-    /// ```json
-    /// {
-    ///   "security": {
-    ///     "auth": {
-    ///       "selectedType": "oauth-personal"
-    ///     }
-    ///   }
-    /// }
-    /// ```
-    ///
-    /// # OAuth 认证流程
-    ///
-    /// 1. 用户切换到 Google 官方供应商
-    /// 2. CC-Switch 设置 `selectedType = "oauth-personal"`
-    /// 3. 用户首次使用 Gemini CLI 时，会自动打开浏览器进行 OAuth 登录
-    /// 4. 登录成功后，凭证保存在 Gemini 的 credential store 中
-    /// 5. 后续请求自动使用保存的凭证
-    pub(crate) fn ensure_google_oauth_security_flag(provider: &Provider) -> Result<(), AppError> {
-        // 检测是否为 Google 官方
-        let auth_type = Self::detect_gemini_auth_type(provider);
-        if auth_type != GeminiAuthType::GoogleOfficial {
+    fn maybe_update_codex_common_config_snippet(
+        config: &mut MultiAppConfig,
+        config_toml: &str,
+    ) -> Result<(), AppError> {
+        let existing = config
+            .common_config_snippets
+            .codex
+            .as_deref()
+            .unwrap_or_default()
+            .trim();
+        if !existing.is_empty() {
             return Ok(());
         }
 
-        // 写入应用级别的 settings.json (~/.cc-switch/settings.json)
-        settings::ensure_security_auth_selected_type(Self::GOOGLE_OAUTH_SECURITY_SELECTED_TYPE)?;
+        let extracted = Self::extract_codex_common_config_from_config_toml(config_toml)?;
+        if extracted.trim().is_empty() {
+            return Ok(());
+        }
 
-        // 写入 Gemini 目录的 settings.json (~/.gemini/settings.json)
-        use crate::gemini_config::write_google_oauth_settings;
-        write_google_oauth_settings()?;
-
+        config.common_config_snippets.codex = Some(extracted);
         Ok(())
     }
 
-    /// 确保 API Key 供应商的安全标志正确设置
-    ///
-    /// 此函数适用于所有使用 API Key 认证的 Gemini 供应商，包括：
-    /// - PackyCode（合作伙伴）
-    /// - 其他第三方 Gemini API 服务
-    ///
-    /// 所有 API Key 供应商使用相同的认证方式和配置逻辑。
-    ///
-    /// # 设置的值
-    ///
-    /// ```json
-    /// {
-    ///   "security": {
-    ///     "auth": {
-    ///       "selectedType": "gemini-api-key"
-    ///     }
-    ///   }
-    /// }
-    /// ```
-    pub(crate) fn ensure_api_key_security_flag(_provider: &Provider) -> Result<(), AppError> {
-        // 写入应用级别的 settings.json (~/.cc-switch/settings.json)
-        settings::ensure_security_auth_selected_type(Self::API_KEY_SECURITY_SELECTED_TYPE)?;
-
-        // 写入 Gemini 目录的 settings.json (~/.gemini/settings.json)
-        use crate::gemini_config::write_generic_settings;
-        write_generic_settings()?;
-
-        Ok(())
+    fn merge_toml_tables(dst: &mut toml_edit::Table, src: &toml_edit::Table) {
+        for (key, src_item) in src.iter() {
+            match (dst.get_mut(key), src_item.as_table()) {
+                (Some(dst_item), Some(src_table)) => {
+                    if let Some(dst_table) = dst_item.as_table_mut() {
+                        Self::merge_toml_tables(dst_table, src_table);
+                    } else {
+                        *dst_item = toml_edit::Item::Table(src_table.clone());
+                    }
+                }
+                (Some(dst_item), None) => {
+                    *dst_item = src_item.clone();
+                }
+                (None, _) => {
+                    dst.insert(key, src_item.clone());
+                }
+            }
+        }
     }
 
     /// 归一化 Claude 模型键：读旧键(ANTHROPIC_SMALL_FAST_MODEL)，写新键(DEFAULT_*), 并删除旧键
@@ -969,7 +1124,7 @@ impl ProviderService {
             use crate::services::mcp::McpService;
             McpService::sync_all_enabled(state)?;
         }
-        if action.refresh_snapshot {
+        if action.refresh_snapshot && crate::sync_policy::should_sync_live(&action.app_type) {
             Self::refresh_provider_snapshot(state, &action.app_type, &action.provider.id)?;
         }
         Ok(())
@@ -1023,9 +1178,21 @@ impl ProviderService {
                 };
                 let cfg_text = crate::codex_config::read_and_validate_codex_config_text()?;
                 let cfg_snippet = Self::codex_config_snippet_from_live_config(&cfg_text)?;
+                let common_snippet = Self::extract_codex_common_config_from_config_toml(&cfg_text)?;
 
                 {
                     let mut guard = state.config.write().map_err(AppError::from)?;
+                    if !common_snippet.trim().is_empty()
+                        && guard
+                            .common_config_snippets
+                            .codex
+                            .as_deref()
+                            .unwrap_or_default()
+                            .trim()
+                            .is_empty()
+                    {
+                        guard.common_config_snippets.codex = Some(common_snippet.clone());
+                    }
                     if let Some(manager) = guard.get_manager_mut(app_type) {
                         if let Some(target) = manager.providers.get_mut(provider_id) {
                             let obj = target.settings_config.as_object_mut().ok_or_else(|| {
@@ -1096,61 +1263,14 @@ impl ProviderService {
     }
 
     fn capture_live_snapshot(app_type: &AppType) -> Result<LiveSnapshot, AppError> {
-        match app_type {
-            AppType::Claude => {
-                let path = get_claude_settings_path();
-                let settings = if path.exists() {
-                    Some(read_json_file::<Value>(&path)?)
-                } else {
-                    None
-                };
-                Ok(LiveSnapshot::Claude { settings })
-            }
-            AppType::Codex => {
-                let auth_path = get_codex_auth_path();
-                let config_path = get_codex_config_path();
-                let auth = if auth_path.exists() {
-                    Some(read_json_file::<Value>(&auth_path)?)
-                } else {
-                    None
-                };
-                let config = if config_path.exists() {
-                    Some(
-                        std::fs::read_to_string(&config_path)
-                            .map_err(|e| AppError::io(&config_path, e))?,
-                    )
-                } else {
-                    None
-                };
-                Ok(LiveSnapshot::Codex { auth, config })
-            }
-            AppType::Gemini => {
-                // 新增
-                use crate::gemini_config::{
-                    get_gemini_env_path, get_gemini_settings_path, read_gemini_env,
-                };
-                let path = get_gemini_env_path();
-                let env = if path.exists() {
-                    Some(read_gemini_env()?)
-                } else {
-                    None
-                };
-                let settings_path = get_gemini_settings_path();
-                let config = if settings_path.exists() {
-                    Some(read_json_file(&settings_path)?)
-                } else {
-                    None
-                };
-                Ok(LiveSnapshot::Gemini { env, config })
-            }
-        }
+        live::capture_live_snapshot(app_type)
     }
 
     /// 列出指定应用下的所有供应商
     pub fn list(
         state: &AppState,
         app_type: AppType,
-    ) -> Result<HashMap<String, Provider>, AppError> {
+    ) -> Result<IndexMap<String, Provider>, AppError> {
         let config = state.config.read().map_err(AppError::from)?;
         let manager = config
             .get_manager(&app_type)
@@ -1160,11 +1280,42 @@ impl ProviderService {
 
     /// 获取当前供应商 ID
     pub fn current(state: &AppState, app_type: AppType) -> Result<String, AppError> {
-        let config = state.config.read().map_err(AppError::from)?;
-        let manager = config
-            .get_manager(&app_type)
-            .ok_or_else(|| Self::app_not_found(&app_type))?;
-        Ok(manager.current.clone())
+        {
+            let config = state.config.read().map_err(AppError::from)?;
+            let manager = config
+                .get_manager(&app_type)
+                .ok_or_else(|| Self::app_not_found(&app_type))?;
+
+            if manager.current.is_empty() || manager.providers.contains_key(&manager.current) {
+                return Ok(manager.current.clone());
+            }
+        }
+
+        let app_type_clone = app_type.clone();
+        Self::run_transaction(state, move |config| {
+            let manager = config
+                .get_manager_mut(&app_type_clone)
+                .ok_or_else(|| Self::app_not_found(&app_type_clone))?;
+
+            if manager.current.is_empty() || manager.providers.contains_key(&manager.current) {
+                return Ok((manager.current.clone(), None));
+            }
+
+            let mut provider_list: Vec<_> = manager.providers.iter().collect();
+            provider_list.sort_by(|(_, a), (_, b)| match (a.sort_index, b.sort_index) {
+                (Some(idx_a), Some(idx_b)) => idx_a.cmp(&idx_b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.created_at.cmp(&b.created_at),
+            });
+
+            manager.current = provider_list
+                .first()
+                .map(|(id, _)| (*id).clone())
+                .unwrap_or_default();
+
+            Ok((manager.current.clone(), None))
+        })
     }
 
     /// 新增供应商
@@ -1442,124 +1593,6 @@ impl ProviderService {
         }
     }
 
-    /// 获取自定义端点列表
-    pub fn get_custom_endpoints(
-        state: &AppState,
-        app_type: AppType,
-        provider_id: &str,
-    ) -> Result<Vec<CustomEndpoint>, AppError> {
-        let cfg = state.config.read().map_err(AppError::from)?;
-        let manager = cfg
-            .get_manager(&app_type)
-            .ok_or_else(|| Self::app_not_found(&app_type))?;
-
-        let Some(provider) = manager.providers.get(provider_id) else {
-            return Ok(vec![]);
-        };
-        let Some(meta) = provider.meta.as_ref() else {
-            return Ok(vec![]);
-        };
-        if meta.custom_endpoints.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let mut result: Vec<_> = meta.custom_endpoints.values().cloned().collect();
-        result.sort_by(|a, b| b.added_at.cmp(&a.added_at));
-        Ok(result)
-    }
-
-    /// 新增自定义端点
-    pub fn add_custom_endpoint(
-        state: &AppState,
-        app_type: AppType,
-        provider_id: &str,
-        url: String,
-    ) -> Result<(), AppError> {
-        let normalized = url.trim().trim_end_matches('/').to_string();
-        if normalized.is_empty() {
-            return Err(AppError::localized(
-                "provider.endpoint.url_required",
-                "URL 不能为空",
-                "URL cannot be empty",
-            ));
-        }
-
-        {
-            let mut cfg = state.config.write().map_err(AppError::from)?;
-            let manager = cfg
-                .get_manager_mut(&app_type)
-                .ok_or_else(|| Self::app_not_found(&app_type))?;
-            let provider = manager.providers.get_mut(provider_id).ok_or_else(|| {
-                AppError::localized(
-                    "provider.not_found",
-                    format!("供应商不存在: {provider_id}"),
-                    format!("Provider not found: {provider_id}"),
-                )
-            })?;
-            let meta = provider.meta.get_or_insert_with(ProviderMeta::default);
-
-            let endpoint = CustomEndpoint {
-                url: normalized.clone(),
-                added_at: Self::now_millis(),
-                last_used: None,
-            };
-            meta.custom_endpoints.insert(normalized, endpoint);
-        }
-
-        state.save()?;
-        Ok(())
-    }
-
-    /// 删除自定义端点
-    pub fn remove_custom_endpoint(
-        state: &AppState,
-        app_type: AppType,
-        provider_id: &str,
-        url: String,
-    ) -> Result<(), AppError> {
-        let normalized = url.trim().trim_end_matches('/').to_string();
-
-        {
-            let mut cfg = state.config.write().map_err(AppError::from)?;
-            if let Some(manager) = cfg.get_manager_mut(&app_type) {
-                if let Some(provider) = manager.providers.get_mut(provider_id) {
-                    if let Some(meta) = provider.meta.as_mut() {
-                        meta.custom_endpoints.remove(&normalized);
-                    }
-                }
-            }
-        }
-
-        state.save()?;
-        Ok(())
-    }
-
-    /// 更新端点最后使用时间
-    pub fn update_endpoint_last_used(
-        state: &AppState,
-        app_type: AppType,
-        provider_id: &str,
-        url: String,
-    ) -> Result<(), AppError> {
-        let normalized = url.trim().trim_end_matches('/').to_string();
-
-        {
-            let mut cfg = state.config.write().map_err(AppError::from)?;
-            if let Some(manager) = cfg.get_manager_mut(&app_type) {
-                if let Some(provider) = manager.providers.get_mut(provider_id) {
-                    if let Some(meta) = provider.meta.as_mut() {
-                        if let Some(endpoint) = meta.custom_endpoints.get_mut(&normalized) {
-                            endpoint.last_used = Some(Self::now_millis());
-                        }
-                    }
-                }
-            }
-        }
-
-        state.save()?;
-        Ok(())
-    }
-
     /// 更新供应商排序
     pub fn update_sort_order(
         state: &AppState,
@@ -1581,161 +1614,6 @@ impl ProviderService {
 
         state.save()?;
         Ok(true)
-    }
-
-    /// 执行用量脚本并格式化结果（私有辅助方法）
-    async fn execute_and_format_usage_result(
-        script_code: &str,
-        api_key: &str,
-        base_url: &str,
-        timeout: u64,
-        access_token: Option<&str>,
-        user_id: Option<&str>,
-    ) -> Result<UsageResult, AppError> {
-        match usage_script::execute_usage_script(
-            script_code,
-            api_key,
-            base_url,
-            timeout,
-            access_token,
-            user_id,
-        )
-        .await
-        {
-            Ok(data) => {
-                let usage_list: Vec<UsageData> = if data.is_array() {
-                    serde_json::from_value(data).map_err(|e| {
-                        AppError::localized(
-                            "usage_script.data_format_error",
-                            format!("数据格式错误: {e}"),
-                            format!("Data format error: {e}"),
-                        )
-                    })?
-                } else {
-                    let single: UsageData = serde_json::from_value(data).map_err(|e| {
-                        AppError::localized(
-                            "usage_script.data_format_error",
-                            format!("数据格式错误: {e}"),
-                            format!("Data format error: {e}"),
-                        )
-                    })?;
-                    vec![single]
-                };
-
-                Ok(UsageResult {
-                    success: true,
-                    data: Some(usage_list),
-                    error: None,
-                })
-            }
-            Err(err) => {
-                let lang = settings::get_settings()
-                    .language
-                    .unwrap_or_else(|| "zh".to_string());
-
-                let msg = match err {
-                    AppError::Localized { zh, en, .. } => {
-                        if lang == "en" {
-                            en
-                        } else {
-                            zh
-                        }
-                    }
-                    other => other.to_string(),
-                };
-
-                Ok(UsageResult {
-                    success: false,
-                    data: None,
-                    error: Some(msg),
-                })
-            }
-        }
-    }
-
-    /// 查询供应商用量（使用已保存的脚本配置）
-    pub async fn query_usage(
-        state: &AppState,
-        app_type: AppType,
-        provider_id: &str,
-    ) -> Result<UsageResult, AppError> {
-        let (script_code, timeout, api_key, base_url, access_token, user_id) = {
-            let config = state.config.read().map_err(AppError::from)?;
-            let manager = config
-                .get_manager(&app_type)
-                .ok_or_else(|| Self::app_not_found(&app_type))?;
-            let provider = manager.providers.get(provider_id).cloned().ok_or_else(|| {
-                AppError::localized(
-                    "provider.not_found",
-                    format!("供应商不存在: {provider_id}"),
-                    format!("Provider not found: {provider_id}"),
-                )
-            })?;
-
-            let usage_script = provider
-                .meta
-                .as_ref()
-                .and_then(|m| m.usage_script.as_ref())
-                .ok_or_else(|| {
-                    AppError::localized(
-                        "provider.usage.script.missing",
-                        "未配置用量查询脚本",
-                        "Usage script is not configured",
-                    )
-                })?;
-            if !usage_script.enabled {
-                return Err(AppError::localized(
-                    "provider.usage.disabled",
-                    "用量查询未启用",
-                    "Usage query is disabled",
-                ));
-            }
-
-            // 直接从 UsageScript 中获取凭证，不再从供应商配置提取
-            (
-                usage_script.code.clone(),
-                usage_script.timeout.unwrap_or(10),
-                usage_script.api_key.clone().unwrap_or_default(),
-                usage_script.base_url.clone().unwrap_or_default(),
-                usage_script.access_token.clone(),
-                usage_script.user_id.clone(),
-            )
-        };
-
-        Self::execute_and_format_usage_result(
-            &script_code,
-            &api_key,
-            &base_url,
-            timeout,
-            access_token.as_deref(),
-            user_id.as_deref(),
-        )
-        .await
-    }
-
-    /// 测试用量脚本（使用临时脚本内容，不保存）
-    #[allow(clippy::too_many_arguments)]
-    pub async fn test_usage_script(
-        _state: &AppState,
-        _app_type: AppType,
-        _provider_id: &str,
-        script_code: &str,
-        timeout: u64,
-        api_key: Option<&str>,
-        base_url: Option<&str>,
-        access_token: Option<&str>,
-        user_id: Option<&str>,
-    ) -> Result<UsageResult, AppError> {
-        // 直接使用传入的凭证参数进行测试
-        Self::execute_and_format_usage_result(
-            script_code,
-            api_key.unwrap_or(""),
-            base_url.unwrap_or(""),
-            timeout,
-            access_token,
-            user_id,
-        )
-        .await
     }
 
     /// 切换指定应用的供应商
@@ -1909,6 +1787,7 @@ impl ProviderService {
         let config_snippet = if config_path.exists() {
             let config_text =
                 std::fs::read_to_string(&config_path).map_err(|e| AppError::io(&config_path, e))?;
+            Self::maybe_update_codex_common_config_snippet(config, &config_text)?;
             Some(Self::codex_config_snippet_from_live_config(&config_text)?)
         } else {
             None
@@ -1933,8 +1812,15 @@ impl ProviderService {
         Ok(())
     }
 
-    fn write_codex_live(provider: &Provider) -> Result<(), AppError> {
+    fn write_codex_live(
+        provider: &Provider,
+        common_config_snippet: Option<&str>,
+    ) -> Result<(), AppError> {
         use toml_edit::{value, Item, Table};
+
+        if !crate::sync_policy::should_sync_live(&AppType::Codex) {
+            return Ok(());
+        }
 
         let settings = provider
             .settings_config
@@ -1998,6 +1884,20 @@ impl ProviderService {
                 .parse::<toml_edit::DocumentMut>()
                 .map_err(|e| AppError::Config(format!("解析 config.toml 失败: {}", e)))?
         };
+
+        if let Some(snippet) = common_config_snippet {
+            let snippet = snippet.trim();
+            if !snippet.is_empty() {
+                let common_doc = snippet.parse::<toml_edit::DocumentMut>().map_err(|e| {
+                    AppError::localized(
+                        "common_config.codex.invalid_toml",
+                        format!("Codex 通用配置片段不是有效的 TOML：{e}"),
+                        format!("Codex common config snippet is not valid TOML: {e}"),
+                    )
+                })?;
+                Self::merge_toml_tables(doc.as_table_mut(), common_doc.as_table());
+            }
+        }
 
         // 移除不应该在根级别的字段
         doc.as_table_mut().remove("base_url");
@@ -2221,6 +2121,10 @@ impl ProviderService {
         provider: &Provider,
         common_config_snippet: Option<&str>,
     ) -> Result<(), AppError> {
+        if !crate::sync_policy::should_sync_live(&AppType::Claude) {
+            return Ok(());
+        }
+
         let settings_path = get_claude_settings_path();
         let mut provider_content = provider.settings_config.clone();
         let _ = Self::normalize_claude_models_in_value(&mut provider_content);
@@ -2248,6 +2152,21 @@ impl ProviderService {
         provider: &Provider,
         common_config_snippet: Option<&str>,
     ) -> Result<(), AppError> {
+        Self::write_gemini_live_impl(provider, common_config_snippet, false)
+    }
+
+    pub(crate) fn write_gemini_live_force(
+        provider: &Provider,
+        common_config_snippet: Option<&str>,
+    ) -> Result<(), AppError> {
+        Self::write_gemini_live_impl(provider, common_config_snippet, true)
+    }
+
+    fn write_gemini_live_impl(
+        provider: &Provider,
+        common_config_snippet: Option<&str>,
+        force_sync: bool,
+    ) -> Result<(), AppError> {
         use crate::gemini_config::{
             get_gemini_settings_path, json_to_env, validate_gemini_settings_strict,
             write_gemini_env_atomic,
@@ -2255,6 +2174,17 @@ impl ProviderService {
 
         // 一次性检测认证类型，避免重复检测
         let auth_type = Self::detect_gemini_auth_type(provider);
+
+        if !force_sync && !crate::sync_policy::should_sync_live(&AppType::Gemini) {
+            // still update CC-Switch app-level settings, but do not create any ~/.gemini files
+            match auth_type {
+                GeminiAuthType::GoogleOfficial => {
+                    Self::ensure_google_oauth_security_flag(provider)?
+                }
+                GeminiAuthType::ApiKey => Self::ensure_api_key_security_flag(provider)?,
+            }
+            return Ok(());
+        }
 
         let provider_content = provider.settings_config.clone();
         let content_to_write = if let Some(snippet) = common_config_snippet {
@@ -2274,15 +2204,37 @@ impl ProviderService {
         let mut env_map = json_to_env(&content_to_write)?;
 
         // 准备要写入 ~/.gemini/settings.json 的配置（缺省时保留现有文件内容）
+        let settings_path = get_gemini_settings_path();
         let mut config_to_write = if let Some(config_value) = content_to_write.get("config") {
             if config_value.is_null() {
                 None // null → 保留现有文件
-            } else if config_value.is_object() {
-                let obj = config_value.as_object().unwrap();
-                if obj.is_empty() {
+            } else if let Some(provider_config) = config_value.as_object() {
+                if provider_config.is_empty() {
                     None // 空对象 {} → 保留现有文件
                 } else {
-                    Some(config_value.clone()) // 有内容 → 才替换
+                    // 有内容 → 合并到现有 settings.json（保留现有 key，如 mcpServers），供应商优先
+                    let mut merged = if settings_path.exists() {
+                        read_json_file(&settings_path)?
+                    } else {
+                        json!({})
+                    };
+
+                    if !merged.is_object() {
+                        merged = json!({});
+                    }
+
+                    let merged_map = merged.as_object_mut().ok_or_else(|| {
+                        AppError::localized(
+                            "gemini.validation.invalid_settings",
+                            "Gemini 现有 settings.json 格式错误: 必须是对象",
+                            "Gemini existing settings.json invalid: must be a JSON object",
+                        )
+                    })?;
+                    for (key, value) in provider_config {
+                        merged_map.insert(key.clone(), value.clone());
+                    }
+
+                    Some(merged)
                 }
             } else {
                 return Err(AppError::localized(
@@ -2296,7 +2248,6 @@ impl ProviderService {
         };
 
         if config_to_write.is_none() {
-            let settings_path = get_gemini_settings_path();
             if settings_path.exists() {
                 config_to_write = Some(read_json_file(&settings_path)?);
             } else {
@@ -2319,7 +2270,6 @@ impl ProviderService {
         }
 
         if let Some(config_value) = config_to_write {
-            let settings_path = get_gemini_settings_path();
             write_json_file(&settings_path, &config_value)?;
         }
 
@@ -2337,7 +2287,7 @@ impl ProviderService {
         common_config_snippet: Option<&str>,
     ) -> Result<(), AppError> {
         match app_type {
-            AppType::Codex => Self::write_codex_live(provider),
+            AppType::Codex => Self::write_codex_live(provider, common_config_snippet),
             AppType::Claude => Self::write_claude_live(provider, common_config_snippet),
             AppType::Gemini => Self::write_gemini_live(provider, common_config_snippet), // 新增
         }
@@ -2408,168 +2358,12 @@ impl ProviderService {
         Ok(())
     }
 
-    /// 验证 UsageScript 配置（边界检查）
-    fn validate_usage_script(script: &crate::provider::UsageScript) -> Result<(), AppError> {
-        // 验证自动查询间隔 (0-1440 分钟，即最大24小时)
-        if let Some(interval) = script.auto_query_interval {
-            if interval > 1440 {
-                return Err(AppError::localized(
-                    "usage_script.interval_too_large",
-                    format!(
-                        "自动查询间隔不能超过 1440 分钟（24小时），当前值: {interval}"
-                    ),
-                    format!(
-                        "Auto query interval cannot exceed 1440 minutes (24 hours), current: {interval}"
-                    ),
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    fn extract_credentials(
-        provider: &Provider,
-        app_type: &AppType,
-    ) -> Result<(String, String), AppError> {
-        match app_type {
-            AppType::Claude => {
-                let env = provider
-                    .settings_config
-                    .get("env")
-                    .and_then(|v| v.as_object())
-                    .ok_or_else(|| {
-                        AppError::localized(
-                            "provider.claude.env.missing",
-                            "配置格式错误: 缺少 env",
-                            "Invalid configuration: missing env section",
-                        )
-                    })?;
-
-                let api_key = env
-                    .get("ANTHROPIC_AUTH_TOKEN")
-                    .or_else(|| env.get("ANTHROPIC_API_KEY"))
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AppError::localized(
-                            "provider.claude.api_key.missing",
-                            "缺少 API Key",
-                            "API key is missing",
-                        )
-                    })?
-                    .to_string();
-
-                let base_url = env
-                    .get("ANTHROPIC_BASE_URL")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AppError::localized(
-                            "provider.claude.base_url.missing",
-                            "缺少 ANTHROPIC_BASE_URL 配置",
-                            "Missing ANTHROPIC_BASE_URL configuration",
-                        )
-                    })?
-                    .to_string();
-
-                Ok((api_key, base_url))
-            }
-            AppType::Codex => {
-                let auth = provider
-                    .settings_config
-                    .get("auth")
-                    .and_then(|v| v.as_object())
-                    .ok_or_else(|| {
-                        AppError::localized(
-                            "provider.codex.auth.missing",
-                            "配置格式错误: 缺少 auth",
-                            "Invalid configuration: missing auth section",
-                        )
-                    })?;
-
-                let api_key = auth
-                    .get("OPENAI_API_KEY")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| {
-                        AppError::localized(
-                            "provider.codex.api_key.missing",
-                            "缺少 API Key",
-                            "API key is missing",
-                        )
-                    })?
-                    .to_string();
-
-                let config_toml = provider
-                    .settings_config
-                    .get("config")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                let base_url = if config_toml.contains("base_url") {
-                    let re = Regex::new(r#"base_url\s*=\s*["']([^"']+)["']"#).map_err(|e| {
-                        AppError::localized(
-                            "provider.regex_init_failed",
-                            format!("正则初始化失败: {e}"),
-                            format!("Failed to initialize regex: {e}"),
-                        )
-                    })?;
-                    re.captures(config_toml)
-                        .and_then(|caps| caps.get(1))
-                        .map(|m| m.as_str().to_string())
-                        .ok_or_else(|| {
-                            AppError::localized(
-                                "provider.codex.base_url.invalid",
-                                "config.toml 中 base_url 格式错误",
-                                "base_url in config.toml has invalid format",
-                            )
-                        })?
-                } else {
-                    return Err(AppError::localized(
-                        "provider.codex.base_url.missing",
-                        "config.toml 中缺少 base_url 配置",
-                        "base_url is missing from config.toml",
-                    ));
-                };
-
-                Ok((api_key, base_url))
-            }
-            AppType::Gemini => {
-                // 新增
-                use crate::gemini_config::json_to_env;
-
-                let env_map = json_to_env(&provider.settings_config)?;
-
-                let api_key = env_map.get("GEMINI_API_KEY").cloned().ok_or_else(|| {
-                    AppError::localized(
-                        "gemini.missing_api_key",
-                        "缺少 GEMINI_API_KEY",
-                        "Missing GEMINI_API_KEY",
-                    )
-                })?;
-
-                let base_url = env_map
-                    .get("GOOGLE_GEMINI_BASE_URL")
-                    .cloned()
-                    .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string());
-
-                Ok((api_key, base_url))
-            }
-        }
-    }
-
     fn app_not_found(app_type: &AppType) -> AppError {
         AppError::localized(
             "provider.app_not_found",
             format!("应用类型不存在: {app_type:?}"),
             format!("App type not found: {app_type:?}"),
         )
-    }
-
-    fn now_millis() -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64
     }
 
     pub fn delete(state: &AppState, app_type: AppType, provider_id: &str) -> Result<(), AppError> {
@@ -2630,7 +2424,7 @@ impl ProviderService {
                 ));
             }
 
-            manager.providers.remove(provider_id);
+            manager.providers.shift_remove(provider_id);
         }
 
         state.save()
@@ -2689,6 +2483,8 @@ mod codex_openai_auth_tests {
     fn switch_codex_provider_uses_openai_auth_instead_of_env_key() {
         let temp_home = TempDir::new().expect("create temp home");
         let _env = EnvGuard::set_home(temp_home.path());
+        std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+            .expect("create ~/.codex (initialized)");
 
         let mut config = MultiAppConfig::default();
         config.ensure_app(&AppType::Codex);
