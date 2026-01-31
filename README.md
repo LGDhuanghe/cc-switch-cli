@@ -30,14 +30,35 @@ This project is a **CLI fork** of [CC-Switch](https://github.com/farion1231/cc-s
 
 <table>
   <tr>
+    <th>Home</th>
+    <th>Switch</th>
+    <th>Settings</th>
+  </tr>
+  <tr>
+    <td><img src="assets/screenshots/首页en.png" alt="Home" width="100%"/></td>
+    <td><img src="assets/screenshots/切换en.png" alt="Switch" width="100%"/></td>
+    <td><img src="assets/screenshots/设置en.png" alt="Settings" width="100%"/></td>
+  </tr>
+</table>
+
+<details>
+  <summary>Legacy UI (no longer actively maintained)</summary>
+
+> [!WARNING]
+> The legacy interactive UI is temporarily not maintained. Please use the new TUI.
+
+<table>
+  <tr>
     <th>Interactive Main Menu</th>
     <th>Provider Management</th>
   </tr>
   <tr>
-    <td><img src="assets/screenshots/main-en.png" alt="Main Menu" width="100%"/></td>
-    <td><img src="assets/screenshots/add-en.png" alt="Provider Management" width="100%"/></td>
+    <td><img src="assets/screenshots/main-en.png" alt="Legacy Main Menu" width="100%"/></td>
+    <td><img src="assets/screenshots/add-en.png" alt="Legacy Provider Management" width="100%"/></td>
   </tr>
 </table>
+
+</details>
 
 ---
 

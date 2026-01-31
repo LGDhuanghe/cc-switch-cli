@@ -30,14 +30,35 @@
 
 <table>
   <tr>
+    <th>首页</th>
+    <th>切换</th>
+    <th>设置</th>
+  </tr>
+  <tr>
+    <td><img src="assets/screenshots/首页zh.png" alt="首页" width="100%"/></td>
+    <td><img src="assets/screenshots/切换zh.png" alt="切换" width="100%"/></td>
+    <td><img src="assets/screenshots/设置zh.png" alt="设置" width="100%"/></td>
+  </tr>
+</table>
+
+<details>
+  <summary>旧版 UI（暂不维护）</summary>
+
+> [!WARNING]
+> 旧版交互 UI 已暂时停止维护，请以新版 TUI 为准。
+
+<table>
+  <tr>
     <th>交互式主界面</th>
     <th>供应商管理</th>
   </tr>
   <tr>
-    <td><img src="assets/screenshots/main-ch.png" alt="主界面" width="100%"/></td>
-    <td><img src="assets/screenshots/add-ch.png" alt="供应商管理" width="100%"/></td>
+    <td><img src="assets/screenshots/main-ch.png" alt="旧版主界面" width="100%"/></td>
+    <td><img src="assets/screenshots/add-ch.png" alt="旧版供应商管理" width="100%"/></td>
   </tr>
 </table>
+
+</details>
 
 ---
 
