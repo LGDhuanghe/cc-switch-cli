@@ -7,6 +7,13 @@ All notable changes to CC Switch CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.2] - 2026-02-05
+
+### Changed
+
+- **Providers (TUI/CLI)**: Hide the `Notes` field from add/edit flows; optional fields now only include sort index.
+- **TUI**: Shorten the Website URL label (remove "(optional)") to avoid layout truncation.
+
 ## [4.6.1] - 2026-02-05
 
 ### Added
