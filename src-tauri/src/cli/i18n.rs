@@ -350,6 +350,14 @@ pub mod texts {
         }
     }
 
+    pub fn tui_toast_json_must_be_object() -> &'static str {
+        if is_chinese() {
+            "JSON 必须是对象（例如：{\"env\":{...}}）"
+        } else {
+            "JSON must be an object (e.g. {\"env\":{...}})"
+        }
+    }
+
     pub fn tui_error_invalid_config_structure(e: &str) -> String {
         if is_chinese() {
             format!("配置结构无效：{e}")
@@ -638,6 +646,22 @@ pub mod texts {
             "有未保存的修改，确定放弃？"
         } else {
             "You have unsaved changes. Discard them?"
+        }
+    }
+
+    pub fn tui_editor_save_before_close_title() -> &'static str {
+        if is_chinese() {
+            "当前未保存"
+        } else {
+            "Unsaved Changes"
+        }
+    }
+
+    pub fn tui_editor_save_before_close_message() -> &'static str {
+        if is_chinese() {
+            "当前有未保存的修改。"
+        } else {
+            "You have unsaved changes."
         }
     }
 
@@ -1338,6 +1362,22 @@ pub mod texts {
             "保存"
         } else {
             "save"
+        }
+    }
+
+    pub fn tui_key_save_and_exit() -> &'static str {
+        if is_chinese() {
+            "保存并退出"
+        } else {
+            "save & exit"
+        }
+    }
+
+    pub fn tui_key_exit_without_save() -> &'static str {
+        if is_chinese() {
+            "不保存退出"
+        } else {
+            "exit w/o save"
         }
     }
 
