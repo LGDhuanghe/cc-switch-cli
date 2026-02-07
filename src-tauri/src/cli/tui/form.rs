@@ -171,6 +171,7 @@ enum ProviderTemplateId {
     Custom,
     ClaudeOfficial,
     OpenAiOfficial,
+    RightCode,
     GoogleOAuth,
 }
 
@@ -210,7 +211,7 @@ const SPONSOR_PROVIDER_PRESETS: [SponsorProviderPreset; 1] = [SponsorProviderPre
     gemini_base_url: "https://www.packyapi.com",
 }];
 
-const PROVIDER_TEMPLATE_DEFS_CLAUDE: [ProviderTemplateDef; 2] = [
+const PROVIDER_TEMPLATE_DEFS_CLAUDE: [ProviderTemplateDef; 3] = [
     ProviderTemplateDef {
         id: ProviderTemplateId::Custom,
         label: "Custom",
@@ -219,9 +220,13 @@ const PROVIDER_TEMPLATE_DEFS_CLAUDE: [ProviderTemplateDef; 2] = [
         id: ProviderTemplateId::ClaudeOfficial,
         label: "Claude Official",
     },
+    ProviderTemplateDef {
+        id: ProviderTemplateId::RightCode,
+        label: "RightCode",
+    },
 ];
 
-const PROVIDER_TEMPLATE_DEFS_CODEX: [ProviderTemplateDef; 2] = [
+const PROVIDER_TEMPLATE_DEFS_CODEX: [ProviderTemplateDef; 3] = [
     ProviderTemplateDef {
         id: ProviderTemplateId::Custom,
         label: "Custom",
@@ -229,6 +234,10 @@ const PROVIDER_TEMPLATE_DEFS_CODEX: [ProviderTemplateDef; 2] = [
     ProviderTemplateDef {
         id: ProviderTemplateId::OpenAiOfficial,
         label: "OpenAI Official",
+    },
+    ProviderTemplateDef {
+        id: ProviderTemplateId::RightCode,
+        label: "RightCode",
     },
 ];
 
@@ -731,6 +740,21 @@ impl ProviderAddFormState {
                     self.codex_model.set("gpt-5.2-codex");
                     self.codex_wire_api = CodexWireApi::Responses;
                     self.codex_requires_openai_auth = true;
+                }
+                ProviderTemplateId::RightCode => {
+                    self.name.set("RightCode");
+                    self.website_url.set("https://right.codes");
+                    match self.app_type {
+                        AppType::Claude => {
+                            self.claude_base_url.set("https://www.right.codes/claude");
+                        }
+                        AppType::Codex => {
+                            self.codex_base_url.set("https://right.codes/codex/v1");
+                            self.codex_model.set("gpt-5.2-codex");
+                            self.codex_wire_api = CodexWireApi::Responses;
+                        }
+                        AppType::Gemini => {}
+                    }
                 }
                 ProviderTemplateId::GoogleOAuth => {
                     self.name.set("Google OAuth");
@@ -1864,6 +1888,110 @@ mod tests {
         assert!(
             labels.contains(&"* PackyCode"),
             "expected PackyCode chip label to use ASCII prefix for alignment stability"
+        );
+    }
+
+    #[test]
+    fn provider_add_form_template_labels_include_rightcode_for_claude_and_codex() {
+        let claude_form = ProviderAddFormState::new(AppType::Claude);
+        let claude_labels = claude_form.template_labels();
+        assert!(
+            claude_labels.contains(&"RightCode"),
+            "expected RightCode template label to exist for Claude"
+        );
+        assert!(
+            !claude_labels.contains(&"* RightCode"),
+            "expected RightCode template label to not include '*' prefix"
+        );
+
+        let codex_form = ProviderAddFormState::new(AppType::Codex);
+        let codex_labels = codex_form.template_labels();
+        assert!(
+            codex_labels.contains(&"RightCode"),
+            "expected RightCode template label to exist for Codex"
+        );
+        assert!(
+            !codex_labels.contains(&"* RightCode"),
+            "expected RightCode template label to not include '*' prefix"
+        );
+    }
+
+    #[test]
+    fn provider_add_form_template_labels_exclude_rightcode_for_gemini() {
+        let form = ProviderAddFormState::new(AppType::Gemini);
+        let labels = form.template_labels();
+
+        assert!(
+            !labels.contains(&"RightCode"),
+            "expected RightCode template label to not exist for Gemini"
+        );
+        assert!(
+            !labels.contains(&"* RightCode"),
+            "expected RightCode template label to not exist for Gemini"
+        );
+    }
+
+    fn rightcode_template_index(app_type: AppType) -> usize {
+        ProviderAddFormState::new(app_type)
+            .template_labels()
+            .iter()
+            .position(|label| *label == "RightCode")
+            .expect("RightCode template should exist")
+    }
+
+    #[test]
+    fn provider_add_form_rightcode_template_claude_sets_base_url_and_no_partner_meta() {
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        let existing_ids = Vec::<String>::new();
+
+        let idx = rightcode_template_index(AppType::Claude);
+        form.apply_template(idx, &existing_ids);
+
+        let provider = form.to_provider_json_value();
+        assert_eq!(provider["name"], "RightCode");
+        assert_eq!(provider["websiteUrl"], "https://right.codes");
+        assert_eq!(
+            provider["settingsConfig"]["env"]["ANTHROPIC_BASE_URL"],
+            "https://www.right.codes/claude"
+        );
+        let meta = provider["meta"]
+            .as_object()
+            .expect("meta should be an object");
+        assert!(
+            meta.get("isPartner").is_none(),
+            "expected RightCode template to not set meta.isPartner"
+        );
+        assert!(
+            meta.get("partnerPromotionKey").is_none(),
+            "expected RightCode template to not set meta.partnerPromotionKey"
+        );
+    }
+
+    #[test]
+    fn provider_add_form_rightcode_template_codex_sets_base_url_and_no_partner_meta() {
+        let mut form = ProviderAddFormState::new(AppType::Codex);
+        let existing_ids = Vec::<String>::new();
+
+        let idx = rightcode_template_index(AppType::Codex);
+        form.apply_template(idx, &existing_ids);
+
+        let provider = form.to_provider_json_value();
+        assert_eq!(provider["name"], "RightCode");
+        assert_eq!(provider["websiteUrl"], "https://right.codes");
+        let cfg = provider["settingsConfig"]["config"]
+            .as_str()
+            .expect("settingsConfig.config should be string");
+        assert!(cfg.contains("base_url = \"https://right.codes/codex/v1\""));
+        let meta = provider["meta"]
+            .as_object()
+            .expect("meta should be an object");
+        assert!(
+            meta.get("isPartner").is_none(),
+            "expected RightCode template to not set meta.isPartner"
+        );
+        assert!(
+            meta.get("partnerPromotionKey").is_none(),
+            "expected RightCode template to not set meta.partnerPromotionKey"
         );
     }
 
