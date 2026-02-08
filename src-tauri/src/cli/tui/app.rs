@@ -124,6 +124,13 @@ pub struct TextViewState {
     pub scroll: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadingKind {
+    Generic,
+    WebDav,
+    UpdateCheck,
+}
+
 #[derive(Debug, Clone)]
 pub enum Overlay {
     None,
@@ -149,6 +156,7 @@ pub enum Overlay {
         selected: usize,
     },
     Loading {
+        kind: LoadingKind,
         title: String,
         message: String,
     },
@@ -589,6 +597,7 @@ pub enum Action {
     CheckUpdate,
     ConfirmUpdate,
     CancelUpdate,
+    CancelUpdateCheck,
 }
 
 #[derive(Debug, Clone)]
@@ -2094,10 +2103,15 @@ impl App {
                     }
                 }
             }
-            Overlay::Loading { .. } => match key.code {
+            Overlay::Loading { kind, .. } => match key.code {
                 KeyCode::Esc => {
+                    let kind = *kind;
                     self.overlay = Overlay::None;
-                    Action::None
+                    if kind == LoadingKind::UpdateCheck {
+                        Action::CancelUpdateCheck
+                    } else {
+                        Action::None
+                    }
                 }
                 _ => Action::None,
             },
@@ -2167,8 +2181,12 @@ impl App {
                 _ => Action::None,
             },
             Overlay::UpdateAvailable { selected, .. } => match key.code {
-                KeyCode::Up | KeyCode::Down => {
-                    *selected = 1 - *selected;
+                KeyCode::Left => {
+                    *selected = 0;
+                    Action::None
+                }
+                KeyCode::Right => {
+                    *selected = 1;
                     Action::None
                 }
                 KeyCode::Enter => {
@@ -2189,12 +2207,16 @@ impl App {
                 _ => Action::None,
             },
             Overlay::UpdateResult { success, .. } => match key.code {
-                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => {
+                KeyCode::Enter => {
                     let should_exit = *success;
                     self.overlay = Overlay::None;
                     if should_exit {
                         self.should_quit = true;
                     }
+                    Action::None
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::None;
                     Action::None
                 }
                 _ => Action::None,
@@ -4637,5 +4659,100 @@ mod tests {
         assert!(matches!(action, Action::None));
         assert!(matches!(app.overlay, Overlay::None));
         assert!(matches!(app.form, Some(FormState::ProviderAdd(_))));
+    }
+
+    #[test]
+    fn update_available_overlay_left_right_switches_selection() {
+        let mut app = App::new(None);
+        app.overlay = Overlay::UpdateAvailable {
+            current: "4.7.0".to_string(),
+            latest: "v9.9.9".to_string(),
+            selected: 0,
+        };
+
+        let action = app.on_key(key(KeyCode::Right), &data());
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::UpdateAvailable { selected: 1, .. }
+        ));
+
+        let action = app.on_key(key(KeyCode::Left), &data());
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::UpdateAvailable { selected: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn update_available_overlay_up_down_does_not_switch_selection() {
+        let mut app = App::new(None);
+        app.overlay = Overlay::UpdateAvailable {
+            current: "4.7.0".to_string(),
+            latest: "v9.9.9".to_string(),
+            selected: 0,
+        };
+
+        let action = app.on_key(key(KeyCode::Down), &data());
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::UpdateAvailable { selected: 0, .. }
+        ));
+
+        let action = app.on_key(key(KeyCode::Up), &data());
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::UpdateAvailable { selected: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn update_check_loading_overlay_esc_emits_cancel_action() {
+        let mut app = App::new(None);
+        app.overlay = Overlay::Loading {
+            kind: LoadingKind::UpdateCheck,
+            title: texts::tui_update_checking_title().to_string(),
+            message: "Working...".to_string(),
+        };
+
+        let action = app.on_key(key(KeyCode::Esc), &data());
+        assert!(matches!(action, Action::CancelUpdateCheck));
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn update_result_overlay_success_esc_hides_without_exiting() {
+        let mut app = App::new(None);
+        app.overlay = Overlay::UpdateResult {
+            success: true,
+            message: "ok".to_string(),
+        };
+
+        let action = app.on_key(key(KeyCode::Esc), &data());
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert!(
+            !app.should_quit,
+            "Esc should hide the success result overlay without exiting"
+        );
+    }
+
+    #[test]
+    fn update_result_overlay_success_enter_exits() {
+        let mut app = App::new(None);
+        app.overlay = Overlay::UpdateResult {
+            success: true,
+            message: "ok".to_string(),
+        };
+
+        let action = app.on_key(key(KeyCode::Enter), &data());
+        assert!(matches!(action, Action::None));
+        assert!(
+            app.should_quit,
+            "Enter should exit after a successful update"
+        );
     }
 }

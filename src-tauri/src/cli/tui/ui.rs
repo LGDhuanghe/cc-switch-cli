@@ -16,7 +16,7 @@ use crate::cli::i18n::texts;
 
 use super::{
     app::{
-        App, ConfigItem, ConfirmAction, EditorMode, Focus, Overlay, ToastKind, WebDavConfigItem,
+        App, ConfigItem, ConfirmAction, Focus, LoadingKind, Overlay, ToastKind, WebDavConfigItem,
     },
     data::{McpRow, ProviderRow, UiData},
     form::{FormFocus, FormState, GeminiAuthType, McpAddField, ProviderAddField},
@@ -3450,6 +3450,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 chunks[0],
                 theme,
                 &[
+                    ("←→", texts::tui_key_select()),
                     ("Enter", texts::tui_key_apply()),
                     ("Esc", texts::tui_key_cancel()),
                 ],
@@ -3482,8 +3483,12 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
             state.select(Some(*selected));
             frame.render_stateful_widget(list, chunks[1], &mut state);
         }
-        Overlay::Loading { title, message } => {
-            let area = centered_rect_fixed(60, 7, content_area);
+        Overlay::Loading {
+            kind,
+            title,
+            message,
+        } => {
+            let area = centered_rect_fixed(60, 9, content_area);
             frame.render_widget(Clear, area);
 
             let spinner = match app.tick % 4 {
@@ -3507,9 +3512,19 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 .constraints([Constraint::Length(1), Constraint::Min(0)])
                 .split(inner);
 
-            render_key_bar_center(frame, chunks[0], theme, &[("Esc", texts::tui_key_cancel())]);
+            let esc_label = match kind {
+                LoadingKind::UpdateCheck => texts::tui_key_cancel(),
+                _ => texts::tui_key_close(),
+            };
+            render_key_bar_center(frame, chunks[0], theme, &[("Esc", esc_label)]);
             frame.render_widget(
-                Paragraph::new(Line::raw(message.clone())).wrap(Wrap { trim: false }),
+                Paragraph::new(centered_message_lines(
+                    message,
+                    chunks[1].width,
+                    chunks[1].height,
+                ))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
                 chunks[1],
             );
         }
@@ -3605,6 +3620,7 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 chunks[0],
                 theme,
                 &[
+                    ("←→", texts::tui_key_select()),
                     ("Enter", texts::tui_key_apply()),
                     ("Esc", texts::tui_key_cancel()),
                 ],
@@ -3660,17 +3676,12 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 .constraints([Constraint::Length(1), Constraint::Min(0)])
                 .split(inner);
 
-            render_key_bar_center(
-                frame,
-                chunks[0],
-                theme,
-                &[("Esc", texts::tui_toast_update_hide())],
-            );
+            render_key_bar_center(frame, chunks[0], theme, &[("Esc", texts::tui_key_hide())]);
 
             let progress_text = if let Some(t) = total {
                 if *t > 0 {
-                    let pct = (*downloaded as f64 / *t as f64 * 100.0) as u64;
-                    format!("{}%  ({} / {} KB)", pct, downloaded / 1024, t / 1024)
+                    let pct = ((downloaded.saturating_mul(100) / *t).min(100)) as u64;
+                    texts::tui_update_downloading_progress(pct, downloaded / 1024, t / 1024)
                 } else {
                     texts::tui_update_downloading_kb(*downloaded / 1024)
                 }
@@ -3715,7 +3726,18 @@ fn render_overlay(frame: &mut Frame<'_>, app: &App, data: &UiData, theme: &super
                 .constraints([Constraint::Length(1), Constraint::Min(0)])
                 .split(inner);
 
-            render_key_bar_center(frame, chunks[0], theme, &[("Enter", texts::tui_key_close())]);
+            let keys = if *success {
+                [
+                    ("Enter", texts::tui_key_exit()),
+                    ("Esc", texts::tui_key_hide()),
+                ]
+            } else {
+                [
+                    ("Enter", texts::tui_key_close()),
+                    ("Esc", texts::tui_key_close()),
+                ]
+            };
+            render_key_bar_center(frame, chunks[0], theme, &keys);
 
             frame.render_widget(
                 Paragraph::new(centered_message_lines(

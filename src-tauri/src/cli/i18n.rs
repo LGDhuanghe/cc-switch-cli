@@ -1388,6 +1388,14 @@ pub mod texts {
         }
     }
 
+    pub fn tui_key_exit() -> &'static str {
+        if is_chinese() {
+            "退出"
+        } else {
+            "exit"
+        }
+    }
+
     pub fn tui_key_cancel() -> &'static str {
         if is_chinese() {
             "取消"
@@ -5943,11 +5951,35 @@ pub mod texts {
         }
     }
 
+    pub fn tui_update_downloading_progress(pct: u64, downloaded_kb: u64, total_kb: u64) -> String {
+        if is_chinese() {
+            format!("{pct}%  ({downloaded_kb} / {total_kb} KB)")
+        } else {
+            format!("{pct}%  ({downloaded_kb} / {total_kb} KB)")
+        }
+    }
+
     pub fn tui_update_success(tag: &str) -> String {
         if is_chinese() {
-            format!("已更新到 {tag}，程序即将退出")
+            format!("已更新到 {tag}，按 Enter 退出")
         } else {
-            format!("Updated to {tag}, exiting...")
+            format!("Updated to {tag}. Press Enter to exit.")
+        }
+    }
+
+    pub fn tui_update_err_worker_unavailable() -> &'static str {
+        if is_chinese() {
+            "更新服务不可用"
+        } else {
+            "Update worker unavailable"
+        }
+    }
+
+    pub fn tui_update_err_check_first() -> &'static str {
+        if is_chinese() {
+            "请先检查更新"
+        } else {
+            "Please check for updates first"
         }
     }
 
@@ -5975,11 +6007,11 @@ pub mod texts {
         }
     }
 
-    pub fn tui_toast_update_hide() -> &'static str {
+    pub fn tui_key_hide() -> &'static str {
         if is_chinese() {
             "隐藏"
         } else {
-            "Hide"
+            "hide"
         }
     }
 

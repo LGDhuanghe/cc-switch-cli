@@ -699,11 +699,20 @@ pub(crate) async fn download_and_apply(
         })?;
     let download_url = release_asset.browser_download_url.as_str();
 
-    let downloaded_asset =
-        download_release_asset(&client, download_url, &release_asset.name, Some(&on_progress))
-            .await?;
-    verify_asset_checksum(&client, &downloaded_asset.archive_path, target_tag, release_asset)
-        .await?;
+    let downloaded_asset = download_release_asset(
+        &client,
+        download_url,
+        &release_asset.name,
+        Some(&on_progress),
+    )
+    .await?;
+    verify_asset_checksum(
+        &client,
+        &downloaded_asset.archive_path,
+        target_tag,
+        release_asset,
+    )
+    .await?;
     let extracted_binary = extract_binary(&downloaded_asset.archive_path)?;
     replace_current_binary(&extracted_binary)?;
 
