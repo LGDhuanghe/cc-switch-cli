@@ -1,0 +1,40 @@
+name: Build Binary with Docker
+
+on:
+  push:
+    branches: [ "main", "master" ] # 当你向这些分支 push 代码时触发
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # 允许你在 GitHub 页面上手动点击运行
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 1. 使用你的 Dockerfile 构建镜像
+      - name: Build Docker Image
+        run: docker build -t cc-switch-cli-builder .
+
+      # 2. 从构建好的容器中提取二进制文件
+      - name: Extract Binary
+        run: |
+          # 创建一个临时容器但不启动它
+          docker create --name extract cc-switch-cli-builder
+          # 将编译好的文件拷贝到宿主机当前目录
+          # 注意：路径需对应 Dockerfile 里的生成位置
+          docker cp extract:/app/src-tauri/target/release/cc-switch-cli ./cc-switch-cli
+          docker rm extract
+
+      # 3. 将二进制文件上传到 GitHub Actions 产物中
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cc-switch-cli-binary
+          path: ./cc-switch-cli
