@@ -29,12 +29,12 @@ jobs:
           docker create --name extract cc-switch-cli-builder
           # 将编译好的文件拷贝到宿主机当前目录
           # 注意：路径需对应 Dockerfile 里的生成位置
-          docker cp extract:/app/src-tauri/target/release/cc-switch-cli ./cc-switch-cli
+          docker cp extract:/app/src-tauri/target/release/cc-switch ./cc-switch
           docker rm extract
 
       # 3. 将二进制文件上传到 GitHub Actions 产物中
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cc-switch-cli-binary
-          path: ./cc-switch-cli
+          name: cc-switch-binary
+          path: ./cc-switch
