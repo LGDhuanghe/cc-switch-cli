@@ -311,6 +311,7 @@ fn render_header(
         AppType::Claude => 0,
         AppType::Codex => 1,
         AppType::Gemini => 2,
+        AppType::OpenCode => 1,
     };
     let tabs_line = Line::from(vec![
         Span::styled(

@@ -160,6 +160,7 @@ impl McpService {
             AppType::Gemini => {
                 mcp::sync_single_server_to_gemini(cfg, &server.id, &server.server)?;
             }
+            AppType::OpenCode => {}
         }
         Ok(())
     }
@@ -182,6 +183,7 @@ impl McpService {
             AppType::Claude => mcp::remove_server_from_claude(id)?,
             AppType::Codex => mcp::remove_server_from_codex(id)?,
             AppType::Gemini => mcp::remove_server_from_gemini(id)?,
+            AppType::OpenCode => {}
         }
         Ok(())
     }

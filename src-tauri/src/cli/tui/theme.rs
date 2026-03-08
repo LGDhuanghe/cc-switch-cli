@@ -28,9 +28,10 @@ pub fn theme_for(app: &AppType) -> Theme {
         Color::Reset
     } else {
         match app {
-            AppType::Codex => Color::Rgb(80, 250, 123),   // Dracula green
-            AppType::Claude => Color::Rgb(139, 233, 253),  // Dracula cyan
-            AppType::Gemini => Color::Rgb(255, 121, 198),  // Dracula pink
+            AppType::Codex => Color::Rgb(80, 250, 123), // Dracula green
+            AppType::Claude => Color::Rgb(139, 233, 253), // Dracula cyan
+            AppType::Gemini => Color::Rgb(255, 121, 198), // Dracula pink
+            AppType::OpenCode => Color::Rgb(80, 250, 123),
         }
     };
 

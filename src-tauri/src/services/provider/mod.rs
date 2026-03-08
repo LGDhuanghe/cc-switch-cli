@@ -1582,8 +1582,7 @@ impl ProviderService {
                             .trim()
                             .is_empty()
                     {
-                        guard.common_config_snippets.codex =
-                            Some(common_snippet_extracted.clone());
+                        guard.common_config_snippets.codex = Some(common_snippet_extracted.clone());
                     }
                     if let Some(manager) = guard.get_manager_mut(app_type) {
                         if let Some(target) = manager.providers.get_mut(provider_id) {
@@ -1597,10 +1596,7 @@ impl ProviderService {
                             } else {
                                 obj.remove("auth");
                             }
-                            obj.insert(
-                                "config".to_string(),
-                                Value::String(cfg_to_store.clone()),
-                            );
+                            obj.insert("config".to_string(), Value::String(cfg_to_store.clone()));
                         }
                     }
                 }
@@ -1655,6 +1651,26 @@ impl ProviderService {
                 }
                 state.save()?;
             }
+            AppType::OpenCode => {
+                let providers = crate::opencode_config::get_providers()?;
+                let live_after = providers.get(provider_id).cloned().ok_or_else(|| {
+                    AppError::localized(
+                        "opencode.live.missing_provider",
+                        format!("OpenCode live 配置中缺少供应商: {provider_id}"),
+                        format!("OpenCode live config missing provider: {provider_id}"),
+                    )
+                })?;
+
+                {
+                    let mut guard = state.config.write().map_err(AppError::from)?;
+                    if let Some(manager) = guard.get_manager_mut(app_type) {
+                        if let Some(target) = manager.providers.get_mut(provider_id) {
+                            target.settings_config = live_after;
+                        }
+                    }
+                }
+                state.save()?;
+            }
         }
         Ok(())
     }
@@ -1677,6 +1693,10 @@ impl ProviderService {
 
     /// 获取当前供应商 ID
     pub fn current(state: &AppState, app_type: AppType) -> Result<String, AppError> {
+        if app_type.is_additive_mode() {
+            return Ok(String::new());
+        }
+
         {
             let config = state.config.read().map_err(AppError::from)?;
             let manager = config
@@ -1736,11 +1756,12 @@ impl ProviderService {
                 .providers
                 .insert(provider_clone.id.clone(), provider_clone.clone());
 
-            if was_empty && manager.current.is_empty() {
+            if !app_type_clone.is_additive_mode() && was_empty && manager.current.is_empty() {
                 manager.current = provider_clone.id.clone();
             }
 
-            let is_current = manager.current == provider_clone.id;
+            let is_current =
+                app_type_clone.is_additive_mode() || manager.current == provider_clone.id;
             let action = if is_current {
                 let backup = Self::capture_live_snapshot(&app_type_clone)?;
                 let common_config_snippet =
@@ -1788,7 +1809,7 @@ impl ProviderService {
                 ));
             }
 
-            let is_current = manager.current == provider_id;
+            let is_current = app_type_clone.is_additive_mode() || manager.current == provider_id;
             let merged = if let Some(existing) = manager.providers.get(&provider_id) {
                 let mut updated = provider_clone.clone();
                 match (existing.meta.as_ref(), updated.meta.take()) {
@@ -1833,6 +1854,40 @@ impl ProviderService {
 
     /// 导入当前 live 配置为默认供应商
     pub fn import_default_config(state: &AppState, app_type: AppType) -> Result<(), AppError> {
+        if app_type.is_additive_mode() {
+            let providers = crate::opencode_config::get_providers()?;
+            if providers.is_empty() {
+                return Ok(());
+            }
+
+            {
+                let mut config = state.config.write().map_err(AppError::from)?;
+                config.ensure_app(&app_type);
+                let manager = config
+                    .get_manager_mut(&app_type)
+                    .ok_or_else(|| Self::app_not_found(&app_type))?;
+
+                if !manager.get_all_providers().is_empty() {
+                    return Ok(());
+                }
+
+                for (id, settings_config) in providers {
+                    let name = settings_config
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or(&id)
+                        .to_string();
+                    manager.providers.insert(
+                        id.clone(),
+                        Provider::with_id(id, name, settings_config, None),
+                    );
+                }
+            }
+
+            state.save()?;
+            return Ok(());
+        }
+
         {
             let config = state.config.read().map_err(AppError::from)?;
             if let Some(manager) = config.get_manager(&app_type) {
@@ -1902,6 +1957,7 @@ impl ProviderService {
                     "config": config_obj
                 })
             }
+            AppType::OpenCode => unreachable!("additive mode apps are handled earlier"),
         };
 
         let mut provider = Provider::with_id(
@@ -1987,6 +2043,17 @@ impl ProviderService {
                     "config": config_obj
                 }))
             }
+            AppType::OpenCode => {
+                let config_path = crate::opencode_config::get_opencode_config_path();
+                if !config_path.exists() {
+                    return Err(AppError::localized(
+                        "opencode.config.missing",
+                        "OpenCode 配置文件不存在",
+                        "OpenCode configuration file not found",
+                    ));
+                }
+                crate::opencode_config::read_opencode_config()
+            }
         }
     }
 
@@ -2025,15 +2092,22 @@ impl ProviderService {
         let snapshots: Vec<(AppType, Provider, Option<String>)> = {
             let guard = state.config.read().map_err(AppError::from)?;
             let mut result = Vec::new();
-            for app_type in &[AppType::Claude, AppType::Codex, AppType::Gemini] {
-                if let Some(manager) = guard.get_manager(app_type) {
+            for app_type in AppType::all() {
+                if let Some(manager) = guard.get_manager(&app_type) {
+                    if app_type.is_additive_mode() {
+                        let snippet = guard.common_config_snippets.get(&app_type).cloned();
+                        for provider in manager.providers.values() {
+                            result.push((app_type.clone(), provider.clone(), snippet.clone()));
+                        }
+                        continue;
+                    }
+
                     if manager.current.is_empty() {
                         continue;
                     }
                     match manager.providers.get(&manager.current) {
                         Some(provider) => {
-                            let snippet =
-                                guard.common_config_snippets.get(app_type).cloned();
+                            let snippet = guard.common_config_snippets.get(&app_type).cloned();
                             result.push((app_type.clone(), provider.clone(), snippet));
                         }
                         None => {
@@ -2049,8 +2123,7 @@ impl ProviderService {
         };
 
         for (app_type, provider, snippet) in &snapshots {
-            if let Err(e) =
-                Self::write_live_snapshot(app_type, provider, snippet.as_deref(), true)
+            if let Err(e) = Self::write_live_snapshot(app_type, provider, snippet.as_deref(), true)
             {
                 log::warn!("sync_current_to_live: 写入 {app_type} live 配置失败: {e}");
             }
@@ -2073,11 +2146,42 @@ impl ProviderService {
         let provider_id_owned = provider_id.to_string();
 
         Self::run_transaction(state, move |config| {
+            if app_type_clone.is_additive_mode() {
+                let provider = config
+                    .get_manager(&app_type_clone)
+                    .ok_or_else(|| Self::app_not_found(&app_type_clone))?
+                    .providers
+                    .get(&provider_id_owned)
+                    .cloned()
+                    .ok_or_else(|| {
+                        AppError::localized(
+                            "provider.not_found",
+                            format!("供应商不存在: {provider_id_owned}"),
+                            format!("Provider not found: {provider_id_owned}"),
+                        )
+                    })?;
+
+                let action = PostCommitAction {
+                    app_type: app_type_clone.clone(),
+                    provider,
+                    backup: Self::capture_live_snapshot(&app_type_clone)?,
+                    sync_mcp: true,
+                    refresh_snapshot: false,
+                    common_config_snippet: config
+                        .common_config_snippets
+                        .get(&app_type_clone)
+                        .cloned(),
+                };
+
+                return Ok(((), Some(action)));
+            }
+
             let backup = Self::capture_live_snapshot(&app_type_clone)?;
             let provider = match app_type_clone {
                 AppType::Codex => Self::prepare_switch_codex(config, &provider_id_owned)?,
                 AppType::Claude => Self::prepare_switch_claude(config, &provider_id_owned)?,
                 AppType::Gemini => Self::prepare_switch_gemini(config, &provider_id_owned)?,
+                AppType::OpenCode => unreachable!("additive mode handled above"),
             };
 
             let action = PostCommitAction {
@@ -2229,16 +2333,10 @@ impl ProviderService {
                         .and_then(|v| v.as_table_like_mut())
                     {
                         if section.get("wire_api").is_none() {
-                            section.insert(
-                                "wire_api",
-                                toml_edit::value("responses"),
-                            );
+                            section.insert("wire_api", toml_edit::value("responses"));
                         }
                         if section.get("requires_openai_auth").is_none() {
-                            section.insert(
-                                "requires_openai_auth",
-                                toml_edit::value(true),
-                            );
+                            section.insert("requires_openai_auth", toml_edit::value(true));
                         }
                     }
                 }
@@ -2265,10 +2363,9 @@ impl ProviderService {
                     let mut doc = cfg_text
                         .parse::<toml_edit::DocumentMut>()
                         .map_err(|e| AppError::Config(format!("TOML parse error: {e}")))?;
-                    let common_doc =
-                        snippet.parse::<toml_edit::DocumentMut>().map_err(|e| {
-                            AppError::Config(format!("Common config TOML parse error: {e}"))
-                        })?;
+                    let common_doc = snippet.parse::<toml_edit::DocumentMut>().map_err(|e| {
+                        AppError::Config(format!("Common config TOML parse error: {e}"))
+                    })?;
                     Self::merge_toml_tables(doc.as_table_mut(), common_doc.as_table());
                     doc.to_string()
                 } else {
@@ -2646,7 +2743,28 @@ impl ProviderService {
                 } else {
                     None
                 },
-            ), // 新增
+            ),
+            AppType::OpenCode => {
+                let config_to_write = if let Some(obj) = provider.settings_config.as_object() {
+                    if obj.contains_key("$schema") || obj.contains_key("provider") {
+                        obj.get("provider")
+                            .and_then(|providers| providers.get(&provider.id))
+                            .cloned()
+                            .unwrap_or_else(|| provider.settings_config.clone())
+                    } else {
+                        provider.settings_config.clone()
+                    }
+                } else {
+                    provider.settings_config.clone()
+                };
+
+                match serde_json::from_value::<crate::provider::OpenCodeProviderConfig>(
+                    config_to_write.clone(),
+                ) {
+                    Ok(config) => crate::opencode_config::set_typed_provider(&provider.id, &config),
+                    Err(_) => crate::opencode_config::set_provider(&provider.id, config_to_write),
+                }
+            }
         }
     }
 
@@ -2733,9 +2851,17 @@ impl ProviderService {
                 }
             }
             AppType::Gemini => {
-                // 新增
                 use crate::gemini_config::validate_gemini_settings;
                 validate_gemini_settings(&provider.settings_config)?
+            }
+            AppType::OpenCode => {
+                if !provider.settings_config.is_object() {
+                    return Err(AppError::localized(
+                        "provider.opencode.settings.not_object",
+                        "OpenCode 配置必须是 JSON 对象",
+                        "OpenCode configuration must be a JSON object",
+                    ));
+                }
             }
         }
 
@@ -2764,7 +2890,7 @@ impl ProviderService {
                 .get_manager(&app_type)
                 .ok_or_else(|| Self::app_not_found(&app_type))?;
 
-            if manager.current == provider_id {
+            if !app_type.is_additive_mode() && manager.current == provider_id {
                 return Err(AppError::localized(
                     "provider.delete.current",
                     "不能删除当前正在使用的供应商",
@@ -2780,6 +2906,22 @@ impl ProviderService {
                 )
             })?
         };
+
+        if app_type.is_additive_mode() {
+            if crate::opencode_config::get_opencode_dir().exists() {
+                crate::opencode_config::remove_provider(provider_id)?;
+            }
+
+            {
+                let mut config = state.config.write().map_err(AppError::from)?;
+                let manager = config
+                    .get_manager_mut(&app_type)
+                    .ok_or_else(|| Self::app_not_found(&app_type))?;
+                manager.providers.shift_remove(provider_id);
+            }
+
+            return state.save();
+        }
 
         match app_type {
             AppType::Codex => {
@@ -2799,6 +2941,9 @@ impl ProviderService {
             AppType::Gemini => {
                 // Gemini 使用单一的 .env 文件，不需要删除单独的供应商配置文件
             }
+            AppType::OpenCode => {
+                let _ = provider_snapshot;
+            }
         }
 
         {
@@ -2807,7 +2952,7 @@ impl ProviderService {
                 .get_manager_mut(&app_type)
                 .ok_or_else(|| Self::app_not_found(&app_type))?;
 
-            if manager.current == provider_id {
+            if !app_type.is_additive_mode() && manager.current == provider_id {
                 return Err(AppError::localized(
                     "provider.delete.current",
                     "不能删除当前正在使用的供应商",
@@ -2953,8 +3098,7 @@ mod codex_openai_auth_tests {
             .insert("custom1".to_string(), provider);
 
         let state = state_from_config(config);
-        ProviderService::switch(&state, AppType::Codex, "custom1")
-            .expect("switch should succeed");
+        ProviderService::switch(&state, AppType::Codex, "custom1").expect("switch should succeed");
 
         let config_text =
             std::fs::read_to_string(get_codex_config_path()).expect("read codex config.toml");
@@ -2983,12 +3127,7 @@ mod codex_openai_auth_tests {
     #[test]
     fn migrate_legacy_codex_config_noop_for_new_format() {
         let new_format = "model_provider = \"openai\"\nmodel = \"gpt-4o\"\n\n[model_providers.openai]\nbase_url = \"https://api.openai.com/v1\"\nwire_api = \"chat\"\n";
-        let provider = Provider::with_id(
-            "p1".to_string(),
-            "OpenAI".to_string(),
-            json!({}),
-            None,
-        );
+        let provider = Provider::with_id("p1".to_string(), "OpenAI".to_string(), json!({}), None);
         let result = super::migrate_legacy_codex_config(new_format, &provider);
         assert!(result.is_none(), "new format should not trigger migration");
     }
@@ -3025,12 +3164,7 @@ mod codex_openai_auth_tests {
     #[test]
     fn migrate_legacy_codex_config_preserves_extra_keys() {
         let legacy = "base_url = \"https://custom.com/v1\"\nmodel = \"gpt-5.1-codex\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nmodel_reasoning_effort = \"high\"\ndisable_response_storage = true";
-        let provider = Provider::with_id(
-            "test".to_string(),
-            "Test".to_string(),
-            json!({}),
-            None,
-        );
+        let provider = Provider::with_id("test".to_string(), "Test".to_string(), json!({}), None);
         let result = super::migrate_legacy_codex_config(legacy, &provider)
             .expect("legacy format should trigger migration");
         assert!(

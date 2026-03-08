@@ -98,7 +98,12 @@ fn export_db_to_multi_app_config(db: &Database) -> Result<MultiAppConfig, AppErr
 
     let mut config = MultiAppConfig::default();
 
-    for app in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+    for app in [
+        AppType::Claude,
+        AppType::Codex,
+        AppType::Gemini,
+        AppType::OpenCode,
+    ] {
         let app_key = app.as_str();
         let providers = db.get_all_providers(app_key)?;
         let current = db.get_current_provider(app_key)?.unwrap_or_default();
@@ -111,6 +116,7 @@ fn export_db_to_multi_app_config(db: &Database) -> Result<MultiAppConfig, AppErr
             AppType::Claude => config.prompts.claude.prompts = prompts.into_iter().collect(),
             AppType::Codex => config.prompts.codex.prompts = prompts.into_iter().collect(),
             AppType::Gemini => config.prompts.gemini.prompts = prompts.into_iter().collect(),
+            AppType::OpenCode => config.prompts.opencode.prompts = prompts.into_iter().collect(),
         }
 
         // common snippet
@@ -128,7 +134,12 @@ fn export_db_to_multi_app_config(db: &Database) -> Result<MultiAppConfig, AppErr
 fn persist_multi_app_config_to_db(db: &Database, config: &MultiAppConfig) -> Result<(), AppError> {
     use crate::app_config::AppType;
 
-    for app in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+    for app in [
+        AppType::Claude,
+        AppType::Codex,
+        AppType::Gemini,
+        AppType::OpenCode,
+    ] {
         let app_key = app.as_str();
         let manager = config.get_manager(&app);
 
@@ -165,6 +176,7 @@ fn persist_multi_app_config_to_db(db: &Database, config: &MultiAppConfig) -> Res
             AppType::Claude => &config.prompts.claude.prompts,
             AppType::Codex => &config.prompts.codex.prompts,
             AppType::Gemini => &config.prompts.gemini.prompts,
+            AppType::OpenCode => &config.prompts.opencode.prompts,
         };
         let existing_prompts = db.get_prompts(app_key)?;
         for prompt in desired_prompts.values() {
@@ -295,10 +307,7 @@ fn migrate_legacy_codex_configs(db: &Database, config: &mut MultiAppConfig) {
         if let Some(migrated) = migrate_legacy_codex_config(cfg_text, provider) {
             // Update in-memory
             if let Some(obj) = provider.settings_config.as_object_mut() {
-                obj.insert(
-                    "config".to_string(),
-                    serde_json::Value::String(migrated),
-                );
+                obj.insert("config".to_string(), serde_json::Value::String(migrated));
             }
             // Persist to DB
             if let Err(e) = db.update_provider_settings_config(

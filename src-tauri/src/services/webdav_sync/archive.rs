@@ -45,12 +45,14 @@ pub struct SkillsBackup {
 impl SkillsBackup {
     pub fn backup_current_skills() -> Result<Self, AppError> {
         let ssot = SkillService::get_ssot_dir()?;
-        let tmp = tempdir().map_err(|e| io_context_localized(
-            "webdav.sync.skills_backup_tmpdir_failed",
-            "创建 skills 备份临时目录失败",
-            "Failed to create temporary directory for skills backup",
-            e,
-        ))?;
+        let tmp = tempdir().map_err(|e| {
+            io_context_localized(
+                "webdav.sync.skills_backup_tmpdir_failed",
+                "创建 skills 备份临时目录失败",
+                "Failed to create temporary directory for skills backup",
+                e,
+            )
+        })?;
         let backup_path = tmp.path().join("skills-backup");
         if ssot.exists() {
             copy_dir_recursive(&ssot, &backup_path)?;
@@ -67,8 +69,7 @@ impl SkillsBackup {
             fs::remove_dir_all(&self.ssot_dir).map_err(|e| AppError::io(&self.ssot_dir, e))?;
         }
         if self.backup_path.exists() {
-            fs::create_dir_all(&self.ssot_dir)
-                .map_err(|e| AppError::io(&self.ssot_dir, e))?;
+            fs::create_dir_all(&self.ssot_dir).map_err(|e| AppError::io(&self.ssot_dir, e))?;
             copy_dir_recursive(&self.backup_path, &self.ssot_dir)?;
         }
         Ok(())
@@ -93,16 +94,22 @@ pub fn zip_skills_ssot(dest_path: &Path) -> Result<(), AppError> {
         let canonical_root = fs::canonicalize(&source).unwrap_or_else(|_| source.clone());
         let mut visited = HashSet::new();
         mark_visited_dir(&canonical_root, &mut visited)?;
-        zip_dir_recursive(&canonical_root, &canonical_root, &mut writer, options, &mut visited)?;
+        zip_dir_recursive(
+            &canonical_root,
+            &canonical_root,
+            &mut writer,
+            options,
+            &mut visited,
+        )?;
     }
 
-    writer
-        .finish()
-        .map_err(|e| localized(
+    writer.finish().map_err(|e| {
+        localized(
             "webdav.sync.skills_zip_write_failed",
             format!("写入 skills.zip 失败: {e}"),
             format!("Failed to write skills.zip: {e}"),
-        ))?;
+        )
+    })?;
     Ok(())
 }
 
@@ -157,11 +164,13 @@ pub fn zip_dir_recursive(
         let rel = real_path
             .strip_prefix(root)
             .or_else(|_| path.strip_prefix(root))
-            .map_err(|e| localized(
-                "webdav.sync.zip_relative_path_failed",
-                format!("生成 ZIP 相对路径失败: {e}"),
-                format!("Failed to build relative ZIP path: {e}"),
-            ))?;
+            .map_err(|e| {
+                localized(
+                    "webdav.sync.zip_relative_path_failed",
+                    format!("生成 ZIP 相对路径失败: {e}"),
+                    format!("Failed to build relative ZIP path: {e}"),
+                )
+            })?;
         let rel_str = rel.to_string_lossy().replace('\\', "/");
 
         if real_path.is_dir() {
@@ -175,31 +184,33 @@ pub fn zip_dir_recursive(
             }
             writer
                 .add_directory(format!("{rel_str}/"), options)
-                .map_err(|e| localized(
-                    "webdav.sync.zip_add_directory_failed",
-                    format!("写入 ZIP 目录失败: {e}"),
-                    format!("Failed to write ZIP directory entry: {e}"),
-                ))?;
+                .map_err(|e| {
+                    localized(
+                        "webdav.sync.zip_add_directory_failed",
+                        format!("写入 ZIP 目录失败: {e}"),
+                        format!("Failed to write ZIP directory entry: {e}"),
+                    )
+                })?;
             zip_dir_recursive(root, &real_path, writer, options, visited)?;
         } else {
-            writer
-                .start_file(&rel_str, options)
-                .map_err(|e| localized(
+            writer.start_file(&rel_str, options).map_err(|e| {
+                localized(
                     "webdav.sync.zip_start_file_failed",
                     format!("写入 ZIP 文件头失败: {e}"),
                     format!("Failed to start ZIP file entry: {e}"),
-                ))?;
+                )
+            })?;
             let mut f = fs::File::open(&real_path).map_err(|e| AppError::io(&real_path, e))?;
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)
                 .map_err(|e| AppError::io(&real_path, e))?;
-            writer
-                .write_all(&buf)
-                .map_err(|e| localized(
+            writer.write_all(&buf).map_err(|e| {
+                localized(
                     "webdav.sync.zip_write_file_failed",
                     format!("写入 ZIP 文件内容失败: {e}"),
                     format!("Failed to write ZIP file content: {e}"),
-                ))?;
+                )
+            })?;
         }
     }
     Ok(())
@@ -210,28 +221,37 @@ pub fn zip_dir_recursive(
 // ---------------------------------------------------------------------------
 
 pub fn restore_skills_zip(raw: &[u8]) -> Result<(), AppError> {
-    let tmp = tempdir().map_err(|e| io_context_localized(
-        "webdav.sync.skills_extract_tmpdir_failed",
-        "创建 skills 解压临时目录失败",
-        "Failed to create temporary directory for skills extraction",
-        e,
-    ))?;
+    let tmp = tempdir().map_err(|e| {
+        io_context_localized(
+            "webdav.sync.skills_extract_tmpdir_failed",
+            "创建 skills 解压临时目录失败",
+            "Failed to create temporary directory for skills extraction",
+            e,
+        )
+    })?;
     let zip_path = tmp.path().join("skills.zip");
     crate::config::atomic_write(&zip_path, raw)?;
 
     let file = fs::File::open(&zip_path).map_err(|e| AppError::io(&zip_path, e))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| localized(
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+        localized(
             "webdav.sync.skills_zip_parse_failed",
             format!("解析 skills.zip 失败: {e}"),
             format!("Failed to parse skills.zip: {e}"),
-        ))?;
+        )
+    })?;
 
     if archive.len() > MAX_ZIP_ENTRIES {
         return Err(localized(
             "webdav.sync.skills_zip_too_many_entries",
-            format!("skills.zip 条目数过多（{}），上限 {MAX_ZIP_ENTRIES}", archive.len()),
-            format!("skills.zip has too many entries ({}), limit is {MAX_ZIP_ENTRIES}", archive.len()),
+            format!(
+                "skills.zip 条目数过多（{}），上限 {MAX_ZIP_ENTRIES}",
+                archive.len()
+            ),
+            format!(
+                "skills.zip has too many entries ({}), limit is {MAX_ZIP_ENTRIES}",
+                archive.len()
+            ),
         ));
     }
 
@@ -240,13 +260,13 @@ pub fn restore_skills_zip(raw: &[u8]) -> Result<(), AppError> {
 
     let mut total_bytes: u64 = 0;
     for idx in 0..archive.len() {
-        let mut entry = archive
-            .by_index(idx)
-            .map_err(|e| localized(
+        let mut entry = archive.by_index(idx).map_err(|e| {
+            localized(
                 "webdav.sync.skills_zip_entry_read_failed",
                 format!("读取 ZIP 项失败: {e}"),
                 format!("Failed to read ZIP entry: {e}"),
-            ))?;
+            )
+        })?;
         let Some(safe_name) = entry.enclosed_name() else {
             continue;
         };
@@ -389,8 +409,14 @@ mod tests {
         let mut writer1 = zip::ZipWriter::new(file1);
         let mut visited1 = HashSet::new();
         mark_visited_dir(&source, &mut visited1).expect("mark root");
-        zip_dir_recursive(&source, &source, &mut writer1, zip_file_options(), &mut visited1)
-            .expect("zip source #1");
+        zip_dir_recursive(
+            &source,
+            &source,
+            &mut writer1,
+            zip_file_options(),
+            &mut visited1,
+        )
+        .expect("zip source #1");
         writer1.finish().expect("finish zip1");
 
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -399,8 +425,14 @@ mod tests {
         let mut writer2 = zip::ZipWriter::new(file2);
         let mut visited2 = HashSet::new();
         mark_visited_dir(&source, &mut visited2).expect("mark root");
-        zip_dir_recursive(&source, &source, &mut writer2, zip_file_options(), &mut visited2)
-            .expect("zip source #2");
+        zip_dir_recursive(
+            &source,
+            &source,
+            &mut writer2,
+            zip_file_options(),
+            &mut visited2,
+        )
+        .expect("zip source #2");
         writer2.finish().expect("finish zip2");
 
         let bytes1 = fs::read(&zip1).expect("read zip1");
@@ -434,10 +466,7 @@ mod tests {
             Path::new("skills-extracted/file.bin"),
         )
         .expect_err("stream larger than limit should be rejected");
-        assert!(
-            err.to_string().contains("超过"),
-            "unexpected error: {err}"
-        );
+        assert!(err.to_string().contains("超过"), "unexpected error: {err}");
         assert_eq!(
             writer.len(),
             0,

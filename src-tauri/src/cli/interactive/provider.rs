@@ -267,6 +267,11 @@ pub fn extract_api_url(settings_config: &serde_json::Value, app_type: &AppType) 
             .or_else(|| settings_config.get("env")?.get("BASE_URL"))?
             .as_str()
             .map(|s| s.to_string()),
+        AppType::OpenCode => settings_config
+            .get("options")?
+            .get("baseURL")?
+            .as_str()
+            .map(|s| s.to_string()),
     }
 }
 
@@ -547,6 +552,12 @@ fn edit_provider_with_json_editor(
 
             ("settings_config", json_str, false)
         }
+        AppType::OpenCode => {
+            let json_str = serde_json::to_string_pretty(&original.settings_config)
+                .map_err(|e| AppError::JsonSerialize { source: e })?;
+
+            ("settings_config", json_str, false)
+        }
     };
 
     // 2. Edit loop with validation
@@ -629,6 +640,9 @@ fn edit_provider_with_json_editor(
             }
             AppType::Gemini => {
                 // Replace entire settings_config
+                updated_provider.settings_config = validated_value;
+            }
+            AppType::OpenCode => {
                 updated_provider.settings_config = validated_value;
             }
         }

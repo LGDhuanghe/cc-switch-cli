@@ -33,7 +33,14 @@ pub fn auth_from_credentials(username: &str, password: &str) -> WebDavAuth {
         return None;
     }
     let p = password.trim();
-    Some((u.to_string(), if p.is_empty() { None } else { Some(p.to_string()) }))
+    Some((
+        u.to_string(),
+        if p.is_empty() {
+            None
+        } else {
+            Some(p.to_string())
+        },
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -105,10 +112,7 @@ fn build_client(timeout_secs: u64) -> Result<Client, AppError> {
         .map_err(|e| AppError::Message(format!("创建 WebDAV HTTP 客户端失败: {e}")))
 }
 
-fn apply_auth(
-    builder: reqwest::RequestBuilder,
-    auth: &WebDavAuth,
-) -> reqwest::RequestBuilder {
+fn apply_auth(builder: reqwest::RequestBuilder, auth: &WebDavAuth) -> reqwest::RequestBuilder {
     match auth {
         Some((user, pass)) => builder.basic_auth(user, pass.as_deref()),
         None => builder,
@@ -170,8 +174,7 @@ fn with_service_hint(base_url: &str, message: impl Into<String>) -> String {
 
 pub async fn test_connection(base_url: &str, auth: &WebDavAuth) -> Result<(), AppError> {
     let client = build_client(DEFAULT_TIMEOUT_SECS)?;
-    let method =
-        Method::from_bytes(b"PROPFIND").map_err(|e| AppError::Message(e.to_string()))?;
+    let method = Method::from_bytes(b"PROPFIND").map_err(|e| AppError::Message(e.to_string()))?;
     let mut req = client.request(method, base_url).header("Depth", "0");
     req = apply_auth(req, auth);
     let resp = req.send().await.map_err(|e| {
@@ -318,8 +321,7 @@ async fn propfind_remote_dir(
     base_url: &str,
 ) -> Result<RemoteDirProbe, AppError> {
     let client = build_client(DEFAULT_TIMEOUT_SECS)?;
-    let method =
-        Method::from_bytes(b"PROPFIND").map_err(|e| AppError::Message(e.to_string()))?;
+    let method = Method::from_bytes(b"PROPFIND").map_err(|e| AppError::Message(e.to_string()))?;
     let mut req = client.request(method, url).header("Depth", "0");
     req = apply_auth(req, auth);
     let resp = req.send().await.map_err(|e| {
@@ -373,12 +375,10 @@ fn should_verify_after_mkcol(status: StatusCode) -> bool {
 pub async fn delete_collection(url: &str, auth: &WebDavAuth) -> Result<bool, AppError> {
     let client = build_client(30)?;
     let req = apply_auth(client.request(Method::DELETE, url), auth);
-    let resp = req.send().await.map_err(|e| {
-        AppError::Message(format!(
-            "WebDAV DELETE {} failed: {e}",
-            redact_url(url)
-        ))
-    })?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| AppError::Message(format!("WebDAV DELETE {} failed: {e}", redact_url(url))))?;
     let status = resp.status();
     match status {
         s if s.is_success() => Ok(true),
@@ -401,11 +401,7 @@ pub async fn ensure_remote_directories(
     Ok(())
 }
 
-async fn ensure_single_dir(
-    url: &str,
-    auth: &WebDavAuth,
-    base_url: &str,
-) -> Result<(), AppError> {
+async fn ensure_single_dir(url: &str, auth: &WebDavAuth, base_url: &str) -> Result<(), AppError> {
     match propfind_remote_dir(url, auth, base_url).await? {
         RemoteDirProbe::Exists => return Ok(()),
         RemoteDirProbe::Missing | RemoteDirProbe::Unsupported => {}
@@ -479,10 +475,7 @@ mod tests {
     #[test]
     fn auth_from_credentials_valid() {
         let auth = auth_from_credentials("user", "pass");
-        assert_eq!(
-            auth,
-            Some(("user".to_string(), Some("pass".to_string())))
-        );
+        assert_eq!(auth, Some(("user".to_string(), Some("pass".to_string()))));
     }
 
     #[test]

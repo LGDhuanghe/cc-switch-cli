@@ -3793,6 +3793,7 @@ fn app_type_picker_index(app_type: &AppType) -> usize {
         AppType::Claude => 0,
         AppType::Codex => 1,
         AppType::Gemini => 2,
+        AppType::OpenCode => 1,
     }
 }
 

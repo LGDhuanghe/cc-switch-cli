@@ -19,7 +19,7 @@ use crate::settings::{
     get_webdav_sync_settings, update_webdav_sync_status, WebDavSyncSettings, WebDavSyncStatus,
 };
 
-use self::archive::{zip_skills_ssot, restore_skills_zip, SkillsBackup};
+use self::archive::{restore_skills_zip, zip_skills_ssot, SkillsBackup};
 
 // ---------------------------------------------------------------------------
 // i18n 辅助
@@ -251,12 +251,13 @@ async fn download() -> Result<WebDavSyncSummary, AppError> {
 // ---------------------------------------------------------------------------
 
 fn load_webdav_settings() -> Result<WebDavSyncSettings, AppError> {
-    let settings = get_webdav_sync_settings()
-        .ok_or_else(|| localized(
+    let settings = get_webdav_sync_settings().ok_or_else(|| {
+        localized(
             "webdav.sync.not_configured",
             "未配置 WebDAV 同步",
             "WebDAV sync is not configured",
-        ))?;
+        )
+    })?;
     if !settings.enabled {
         return Err(localized(
             "webdav.sync.not_enabled",
@@ -291,12 +292,14 @@ fn build_artifact_url(settings: &WebDavSyncSettings, file_name: &str) -> Result<
 // ---------------------------------------------------------------------------
 
 fn build_local_snapshot(_settings: &WebDavSyncSettings) -> Result<LocalSnapshot, AppError> {
-    let tmp = tempdir().map_err(|e| io_context_localized(
-        "webdav.sync.snapshot_tmpdir_failed",
-        "创建 WebDAV 快照临时目录失败",
-        "Failed to create temporary directory for WebDAV snapshot",
-        e,
-    ))?;
+    let tmp = tempdir().map_err(|e| {
+        io_context_localized(
+            "webdav.sync.snapshot_tmpdir_failed",
+            "创建 WebDAV 快照临时目录失败",
+            "Failed to create temporary directory for WebDAV snapshot",
+            e,
+        )
+    })?;
 
     // 导出 DB
     let db_sql = Database::init()?.export_sql_string()?.into_bytes();
@@ -357,7 +360,10 @@ fn validate_manifest_compat(manifest: &SyncManifest) -> Result<(), AppError> {
         return Err(localized(
             "webdav.sync.manifest_format_incompatible",
             format!("远端 manifest 格式不兼容: {}", manifest.format),
-            format!("Remote manifest format is incompatible: {}", manifest.format),
+            format!(
+                "Remote manifest format is incompatible: {}",
+                manifest.format
+            ),
         ));
     }
     if manifest.version != PROTOCOL_VERSION {
@@ -399,11 +405,13 @@ async fn download_and_verify(
     let url = build_artifact_url(settings, artifact_name)?;
     let (bytes, _) = webdav::get_bytes(&url, auth, Some(MAX_SYNC_ARTIFACT_BYTES))
         .await?
-        .ok_or_else(|| localized(
-            "webdav.sync.remote_missing_artifact",
-            format!("远端缺少 artifact 文件: {artifact_name}"),
-            format!("Remote artifact file missing: {artifact_name}"),
-        ))?;
+        .ok_or_else(|| {
+            localized(
+                "webdav.sync.remote_missing_artifact",
+                format!("远端缺少 artifact 文件: {artifact_name}"),
+                format!("Remote artifact file missing: {artifact_name}"),
+            )
+        })?;
 
     // 先检查大小（快速），再检查 hash（昂贵）
     if bytes.len() as u64 != meta.size {
@@ -459,12 +467,13 @@ fn validate_artifact_size_limit(name: &str, size: u64) -> Result<(), AppError> {
 // ---------------------------------------------------------------------------
 
 fn apply_snapshot(db_sql: &[u8], skills_zip: &[u8]) -> Result<(), AppError> {
-    let sql_str = std::str::from_utf8(db_sql)
-        .map_err(|e| localized(
+    let sql_str = std::str::from_utf8(db_sql).map_err(|e| {
+        localized(
             "webdav.sync.sql_not_utf8",
             format!("SQL 非 UTF-8: {e}"),
             format!("SQL is not valid UTF-8: {e}"),
-        ))?;
+        )
+    })?;
 
     let skills_backup = SkillsBackup::backup_current_skills()?;
 
@@ -476,7 +485,9 @@ fn apply_snapshot(db_sql: &[u8], skills_zip: &[u8]) -> Result<(), AppError> {
             return Err(localized(
                 "webdav.sync.db_import_and_rollback_failed",
                 format!("导入数据库失败: {db_err}; 同时回滚 Skills 失败: {rollback_err}"),
-                format!("Database import failed: {db_err}; skills rollback also failed: {rollback_err}"),
+                format!(
+                    "Database import failed: {db_err}; skills rollback also failed: {rollback_err}"
+                ),
             ));
         }
         return Err(db_err);
@@ -602,11 +613,13 @@ where
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|e| localized(
-            "webdav.sync.runtime_create_failed",
-            format!("创建异步运行时失败: {e}"),
-            format!("Failed to create async runtime: {e}"),
-        ))?;
+        .map_err(|e| {
+            localized(
+                "webdav.sync.runtime_create_failed",
+                format!("创建异步运行时失败: {e}"),
+                format!("Failed to create async runtime: {e}"),
+            )
+        })?;
     runtime.block_on(future)
 }
 
@@ -708,11 +721,13 @@ async fn download_v1_artifact(
     let url = build_v1_artifact_url(settings, file_name)?;
     let (bytes, _) = webdav::get_bytes(&url, auth, Some(MAX_SYNC_ARTIFACT_BYTES))
         .await?
-        .ok_or_else(|| localized(
-            "webdav.sync.v1_artifact_missing",
-            format!("V1 远端缺少 artifact: {file_name}"),
-            format!("V1 remote artifact missing: {file_name}"),
-        ))?;
+        .ok_or_else(|| {
+            localized(
+                "webdav.sync.v1_artifact_missing",
+                format!("V1 远端缺少 artifact: {file_name}"),
+                format!("V1 remote artifact missing: {file_name}"),
+            )
+        })?;
 
     if bytes.len() as u64 != meta.size {
         return Err(localized(
@@ -755,21 +770,29 @@ async fn migrate_v1_to_v2() -> Result<WebDavSyncSummary, AppError> {
     let auth = webdav::auth_from_credentials(&settings.username, &settings.password);
 
     // 1. 下载 V1 manifest
-    let v1_manifest = detect_v1_manifest(&settings, &auth)
-        .await?
-        .ok_or_else(|| localized(
+    let v1_manifest = detect_v1_manifest(&settings, &auth).await?.ok_or_else(|| {
+        localized(
             "webdav.sync.v1_not_found",
             "远端未找到 V1 同步数据",
             "No V1 sync data found on the remote",
-        ))?;
+        )
+    })?;
 
     // 2. 下载 V1 artifacts（V1 的 settings_sync 不迁移，V2 不再同步该数据）
     let db_sql = download_v1_artifact(
-        &settings, &auth, REMOTE_DB_SQL, &v1_manifest.artifacts.db_sql,
-    ).await?;
+        &settings,
+        &auth,
+        REMOTE_DB_SQL,
+        &v1_manifest.artifacts.db_sql,
+    )
+    .await?;
     let skills_zip = download_v1_artifact(
-        &settings, &auth, REMOTE_SKILLS_ZIP, &v1_manifest.artifacts.skills_zip,
-    ).await?;
+        &settings,
+        &auth,
+        REMOTE_SKILLS_ZIP,
+        &v1_manifest.artifacts.skills_zip,
+    )
+    .await?;
 
     // 3. 应用到本地
     apply_snapshot(&db_sql, &skills_zip)?;

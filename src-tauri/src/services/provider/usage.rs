@@ -251,6 +251,19 @@ impl ProviderService {
                     )
                 })
             }
+            AppType::OpenCode => provider
+                .settings_config
+                .get("options")
+                .and_then(|v| v.get("apiKey"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    AppError::localized(
+                        "provider.opencode.api_key.missing",
+                        "缺少 API Key",
+                        "API key is missing",
+                    )
+                })
+                .map(|s| s.to_string()),
         }
     }
 
@@ -321,6 +334,13 @@ impl ProviderService {
                     .cloned()
                     .unwrap_or_else(|| "https://generativelanguage.googleapis.com".to_string()))
             }
+            AppType::OpenCode => Ok(provider
+                .settings_config
+                .get("options")
+                .and_then(|v| v.get("baseURL"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()),
         }
     }
 

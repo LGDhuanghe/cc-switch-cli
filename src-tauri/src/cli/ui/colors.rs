@@ -33,6 +33,7 @@ fn inquire_color_for_app(app_type: &AppType) -> InquireColor {
         AppType::Codex => InquireColor::LightGreen,
         AppType::Claude => InquireColor::LightCyan,
         AppType::Gemini => InquireColor::LightMagenta,
+        AppType::OpenCode => InquireColor::LightGreen,
     }
 }
 
@@ -82,6 +83,7 @@ fn highlight_color_for_app(app_type: &AppType) -> Color {
         AppType::Codex => Color::BrightGreen,
         AppType::Claude => Color::BrightCyan,
         AppType::Gemini => Color::BrightMagenta,
+        AppType::OpenCode => Color::BrightGreen,
     }
 }
 

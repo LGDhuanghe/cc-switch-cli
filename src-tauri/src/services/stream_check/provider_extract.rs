@@ -24,6 +24,12 @@ impl StreamCheckService {
             }
             AppType::Gemini => Self::extract_env_model(provider, "GEMINI_MODEL")
                 .unwrap_or_else(|| config.gemini_model.clone()),
+            AppType::OpenCode => provider
+                .settings_config
+                .get("models")
+                .and_then(|value| value.as_object())
+                .and_then(|models| models.keys().next().cloned())
+                .unwrap_or_else(|| config.codex_model.clone()),
         }
     }
 
@@ -146,6 +152,14 @@ impl StreamCheckService {
                     .trim_end_matches('/')
                     .to_string())
             }
+            AppType::OpenCode => Ok(provider
+                .settings_config
+                .get("options")
+                .and_then(|value| value.get("baseURL"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .trim_end_matches('/')
+                .to_string()),
         }
     }
 
@@ -176,6 +190,19 @@ impl StreamCheckService {
                     )
                 }),
             AppType::Gemini => Self::extract_gemini_auth(provider),
+            AppType::OpenCode => provider
+                .settings_config
+                .get("options")
+                .and_then(|value| value.get("apiKey"))
+                .and_then(|value| value.as_str())
+                .map(|key| AuthInfo::new(key.to_string(), AuthStrategy::Bearer))
+                .ok_or_else(|| {
+                    AppError::localized(
+                        "provider.opencode.api_key.missing",
+                        "缺少 API Key",
+                        "API key is missing",
+                    )
+                }),
         }
     }
 

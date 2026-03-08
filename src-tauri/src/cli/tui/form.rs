@@ -262,6 +262,7 @@ fn provider_builtin_template_defs(app_type: &AppType) -> &'static [ProviderTempl
         AppType::Claude => &PROVIDER_TEMPLATE_DEFS_CLAUDE,
         AppType::Codex => &PROVIDER_TEMPLATE_DEFS_CODEX,
         AppType::Gemini => &PROVIDER_TEMPLATE_DEFS_GEMINI,
+        AppType::OpenCode => &PROVIDER_TEMPLATE_DEFS_CODEX,
     }
 }
 
@@ -515,6 +516,7 @@ impl ProviderAddFormState {
                     form.gemini_auth_type = GeminiAuthType::OAuth;
                 }
             }
+            AppType::OpenCode => {}
         }
 
         form
@@ -573,6 +575,7 @@ impl ProviderAddFormState {
                     fields.push(ProviderAddField::GeminiModel);
                 }
             }
+            AppType::OpenCode => {}
         }
 
         fields.push(ProviderAddField::CommonConfigDivider);
@@ -787,6 +790,7 @@ impl ProviderAddFormState {
                 self.gemini_auth_type = GeminiAuthType::ApiKey;
                 self.gemini_base_url.set(preset.gemini_base_url);
             }
+            AppType::OpenCode => {}
         }
     }
 
@@ -994,6 +998,7 @@ impl ProviderAddFormState {
                     }
                 }
             }
+            AppType::OpenCode => {}
         }
 
         Value::Object(provider_obj)
@@ -1021,7 +1026,7 @@ impl ProviderAddFormState {
         };
 
         match self.app_type {
-            AppType::Claude | AppType::Gemini => {
+            AppType::Claude | AppType::Gemini | AppType::OpenCode => {
                 let mut common: Value = serde_json::from_str(snippet).map_err(|e| {
                     crate::cli::i18n::texts::common_config_snippet_invalid_json(&e.to_string())
                 })?;
@@ -1407,7 +1412,10 @@ fn parse_codex_config_snippet(cfg: &str) -> ParsedCodexConfigSnippet {
     };
 
     // Root-level keys
-    out.model = table.get("model").and_then(|v| v.as_str()).map(String::from);
+    out.model = table
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     // Provider-specific keys live under [model_providers.<key>]
     let section = table
@@ -1422,16 +1430,25 @@ fn parse_codex_config_snippet(cfg: &str) -> ParsedCodexConfigSnippet {
         });
 
     if let Some(section) = section {
-        out.base_url = section.get("base_url").and_then(|v| v.as_str()).map(String::from);
-        out.wire_api = section.get("wire_api").and_then(|v| v.as_str()).and_then(|s| match s {
-            "chat" => Some(CodexWireApi::Chat),
-            "responses" => Some(CodexWireApi::Responses),
-            _ => None,
-        });
+        out.base_url = section
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        out.wire_api = section
+            .get("wire_api")
+            .and_then(|v| v.as_str())
+            .and_then(|s| match s {
+                "chat" => Some(CodexWireApi::Chat),
+                "responses" => Some(CodexWireApi::Responses),
+                _ => None,
+            });
         out.requires_openai_auth = section
             .get("requires_openai_auth")
             .and_then(|v| v.as_bool());
-        out.env_key = section.get("env_key").and_then(|v| v.as_str()).map(String::from);
+        out.env_key = section
+            .get("env_key")
+            .and_then(|v| v.as_str())
+            .map(String::from);
     }
 
     out
@@ -1486,7 +1503,10 @@ fn update_codex_config_snippet(
             section.insert("wire_api", toml_edit::value(wire_api.as_str()));
 
             // requires_openai_auth
-            section.insert("requires_openai_auth", toml_edit::value(requires_openai_auth));
+            section.insert(
+                "requires_openai_auth",
+                toml_edit::value(requires_openai_auth),
+            );
 
             // env_key
             if requires_openai_auth {
@@ -1632,7 +1652,7 @@ fn strip_common_config_from_settings(
     }
 
     match app_type {
-        AppType::Claude | AppType::Gemini => {
+        AppType::Claude | AppType::Gemini | AppType::OpenCode => {
             let common: Value = serde_json::from_str(snippet).map_err(|e| {
                 crate::cli::i18n::texts::common_config_snippet_invalid_json(&e.to_string())
             })?;

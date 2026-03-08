@@ -20,6 +20,9 @@ pub(super) enum LiveSnapshot {
         env: Option<HashMap<String, String>>,
         config: Option<Value>,
     },
+    OpenCode {
+        config: Option<Value>,
+    },
 }
 
 impl LiveSnapshot {
@@ -71,6 +74,14 @@ impl LiveSnapshot {
                     _ => {}
                 }
             }
+            LiveSnapshot::OpenCode { config } => {
+                let path = crate::opencode_config::get_opencode_config_path();
+                if let Some(value) = config {
+                    write_json_file(&path, value)?;
+                } else if path.exists() {
+                    delete_file(&path)?;
+                }
+            }
         }
         Ok(())
     }
@@ -120,6 +131,15 @@ pub(super) fn capture_live_snapshot(app_type: &AppType) -> Result<LiveSnapshot, 
                 None
             };
             Ok(LiveSnapshot::Gemini { env, config })
+        }
+        AppType::OpenCode => {
+            let path = crate::opencode_config::get_opencode_config_path();
+            let config = if path.exists() {
+                Some(crate::opencode_config::read_opencode_config()?)
+            } else {
+                None
+            };
+            Ok(LiveSnapshot::OpenCode { config })
         }
     }
 }

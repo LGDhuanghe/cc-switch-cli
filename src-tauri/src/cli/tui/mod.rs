@@ -1866,6 +1866,7 @@ fn handle_action(
                 AppType::Claude => McpService::import_from_claude(&state)?,
                 AppType::Codex => McpService::import_from_codex(&state)?,
                 AppType::Gemini => McpService::import_from_gemini(&state)?,
+                AppType::OpenCode => 0,
             };
             app.push_toast(texts::tui_toast_mcp_imported(count), ToastKind::Success);
             *data = UiData::load(&app.app_type)?;
