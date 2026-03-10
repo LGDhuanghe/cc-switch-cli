@@ -244,3 +244,57 @@ impl ProviderManager {
         &self.providers
     }
 }
+
+/// OpenCode 供应商配置。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenCodeProviderConfig {
+    pub npm: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub options: OpenCodeProviderOptions,
+    #[serde(default)]
+    pub models: HashMap<String, OpenCodeModel>,
+}
+
+impl Default for OpenCodeProviderConfig {
+    fn default() -> Self {
+        Self {
+            npm: "@ai-sdk/openai-compatible".to_string(),
+            name: None,
+            options: OpenCodeProviderOptions::default(),
+            models: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpenCodeProviderOptions {
+    #[serde(rename = "baseURL", skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(rename = "apiKey", skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenCodeModel {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<OpenCodeModelLimit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<HashMap<String, Value>>,
+    #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
+    pub extra: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OpenCodeModelLimit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<u64>,
+}

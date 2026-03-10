@@ -200,12 +200,20 @@ fn switch_provider(app_type: AppType, id: &str) -> Result<(), AppError> {
 
     // 检查 provider 是否存在
     let providers = ProviderService::list(&state, app_type.clone())?;
-    if !providers.contains_key(id) {
+    let Some(provider) = providers.get(id).cloned() else {
         return Err(AppError::Message(format!("Provider '{}' not found", id)));
-    }
+    };
 
     // 执行切换
-    ProviderService::switch(&state, app_type, id)?;
+    ProviderService::switch(&state, app_type.clone(), id)?;
+    if let Err(err) =
+        crate::claude_plugin::sync_claude_plugin_on_provider_switch(&app_type, &provider)
+    {
+        println!(
+            "{}",
+            warning(&texts::claude_plugin_sync_failed_warning(&err.to_string()))
+        );
+    }
 
     println!("{}", success(&format!("✓ Switched to provider '{}'", id)));
     println!("{}", info(&format!("  Application: {}", app_str)));
@@ -582,6 +590,11 @@ fn extract_api_url(settings_config: &serde_json::Value, app_type: &AppType) -> O
             .get("env")?
             .get("GEMINI_BASE_URL")
             .or_else(|| settings_config.get("env")?.get("BASE_URL"))?
+            .as_str()
+            .map(|s| s.to_string()),
+        AppType::OpenCode => settings_config
+            .get("options")?
+            .get("baseURL")?
             .as_str()
             .map(|s| s.to_string()),
     }

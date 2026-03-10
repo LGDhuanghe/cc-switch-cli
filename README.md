@@ -2,7 +2,7 @@
 
 # CC-Switch CLI
 
-[![Version](https://img.shields.io/badge/version-4.7.2-blue.svg)](https://github.com/saladday/cc-switch-cli/releases)
+[![Version](https://img.shields.io/badge/version-4.8.0-blue.svg)](https://github.com/saladday/cc-switch-cli/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/saladday/cc-switch-cli/releases)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -19,7 +19,9 @@ Unified management for Claude Code, Codex & Gemini CLI provider configurations, 
 
 ## 📖 About
 
-This project is a **CLI fork** of [CC-Switch](https://github.com/farion1231/cc-switch).
+This project is a **CLI fork** of [CC-Switch](https://github.com/farion1231/cc-switch). 
+
+🔄 The WebDAV sync feature is fully compatible with the upstream project.
 
 
 **Credits:** Original architecture and core functionality from [farion1231/cc-switch](https://github.com/farion1231/cc-switch)
@@ -38,6 +40,17 @@ This project is a **CLI fork** of [CC-Switch](https://github.com/farion1231/cc-s
     <td>
       Thanks to <b>PackyCode</b> for sponsoring this project! PackyCode is a reliable and efficient API relay service provider, offering relay services for Claude Code, Codex, Gemini, and more. <br/>
       PackyCode provides special discounts for our software users: register via <a href="https://www.packyapi.com/register?aff=cc-switch-cli">this link</a> and use promo code <code>cc-switch-cli</code> when recharging to get <b>10% off</b>.
+    </td>
+  </tr>
+  <tr>
+    <td width="180">
+      <a href="https://www.right.codes/register?aff=ccswitch-cli">
+        <img src="assets/partners/logos/rightcode.jpg" alt="RightCode" width="150">
+      </a>
+    </td>
+    <td>
+      Thanks to <b>RightCode</b> for sponsoring this project! RightCode reliably provides routing services for models such as Claude Code, Codex, and Gemini. It features a highly cost-effective Codex monthly subscription plan and <b>supports quota rollovers—unused quota from one day can be carried over and used the next day.</b> <br/>
+      RightCode offers a special deal for CC-Switch CLI users: register via <a href="https://www.right.codes/register?aff=ccswitch-cli">this link</a> and get <b>25% bonus pay-as-you-go credits</b> on every top-up!
     </td>
   </tr>
 </table>
@@ -107,7 +120,107 @@ cc-switch --app gemini prompts list     # List Gemini prompts
 # Supported apps: `claude` (default), `codex`, `gemini`
 ```
 
-See the "Features" section below for full command list.
+See the "Features" section for full command list.
+
+---
+
+## 📥 Installation
+
+### Method 1: Quick Install (macOS / Linux)
+
+> Windows users: see Manual Installation below.
+
+```bash
+curl -fsSL https://github.com/SaladDay/cc-switch-cli/releases/latest/download/install.sh | bash
+```
+
+This installs `cc-switch` to `~/.local/bin`. Set `CC_SWITCH_INSTALL_DIR` to change the target directory.
+
+<details>
+<summary>Manual Installation</summary>
+
+#### macOS
+
+```bash
+# Download Universal Binary (recommended, supports Apple Silicon + Intel)
+curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-darwin-universal.tar.gz
+
+# Extract
+tar -xzf cc-switch-cli-darwin-universal.tar.gz
+
+# Add execute permission
+chmod +x cc-switch
+
+# Move to PATH
+sudo mv cc-switch /usr/local/bin/
+
+# If you encounter "cannot be verified" warning
+xattr -cr /usr/local/bin/cc-switch
+```
+
+#### Linux (x64)
+
+```bash
+# Download
+curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-linux-x64-musl.tar.gz
+
+# Extract
+tar -xzf cc-switch-cli-linux-x64-musl.tar.gz
+
+# Add execute permission
+chmod +x cc-switch
+
+# Move to PATH
+sudo mv cc-switch /usr/local/bin/
+```
+
+#### Linux (ARM64)
+
+```bash
+# For Raspberry Pi or ARM servers
+curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-linux-arm64-musl.tar.gz
+tar -xzf cc-switch-cli-linux-arm64-musl.tar.gz
+chmod +x cc-switch
+sudo mv cc-switch /usr/local/bin/
+```
+
+#### Windows
+
+```powershell
+# Download the zip file
+# https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-windows-x64.zip
+
+# After extracting, move cc-switch.exe to a PATH directory, e.g.:
+move cc-switch.exe C:\Windows\System32\
+
+# Or run directly
+.\cc-switch.exe
+```
+
+</details>
+
+### Method 2: Build from Source
+
+**Prerequisites:**
+- Rust 1.85+ ([install via rustup](https://rustup.rs/))
+
+**Build:**
+```bash
+git clone https://github.com/saladday/cc-switch-cli.git
+cd cc-switch-cli/src-tauri
+cargo build --release
+
+# Binary location: ./target/release/cc-switch
+```
+
+**Install to System:**
+```bash
+# macOS/Linux
+sudo cp target/release/cc-switch /usr/local/bin/
+
+# Windows
+copy target\release\cc-switch.exe C:\Windows\System32\
+```
 
 ---
 
@@ -129,17 +242,6 @@ cc-switch provider duplicate <id>    # Duplicate a provider
 cc-switch provider delete <id>       # Delete provider
 cc-switch provider speedtest <id>    # Test API latency
 ```
-
-#### PackyCode preset (Sponsor)
-
-In the TUI "Add Provider" form, choose the `★ PackyCode` template to prefill endpoints:
-
-- Website: `https://www.packyapi.com`
-- Register: `https://www.packyapi.com/register?aff=cc-switch-cli`
-- Promo code: `cc-switch-cli` (10% off)
-- Claude (Anthropic): `https://www.packyapi.com`
-- Codex (OpenAI): `https://www.packyapi.com/v1`
-- Gemini: `https://www.packyapi.com`
 
 ### 🛠️ MCP Server Management
 
@@ -184,7 +286,7 @@ Manage and extend Claude Code/Codex/Gemini capabilities with community skills.
 
 ```bash
 cc-switch skills list                # List installed skills
-cc-switch skills search <query>      # Search available skills
+cc-switch skills discover <query>      # Discover available skills (alias: search)
 cc-switch skills install <name>      # Install a skill
 cc-switch skills uninstall <name>    # Uninstall a skill
 cc-switch skills enable <name>       # Enable for current app (--app)
@@ -253,95 +355,6 @@ cc-switch env list                   # List environment variables
 # Self-update
 cc-switch update                     # Update to latest release
 cc-switch update --version v4.7.2    # Update to a specific version
-```
-
----
-
-## 📥 Installation
-
-### Method 1: Download Pre-built Binaries (Recommended)
-
-Download the latest release from [GitHub Releases](https://github.com/saladday/cc-switch-cli/releases).
-
-#### macOS
-
-```bash
-# Download Universal Binary (recommended, supports Apple Silicon + Intel)
-curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-darwin-universal.tar.gz
-
-# Extract
-tar -xzf cc-switch-cli-darwin-universal.tar.gz
-
-# Add execute permission
-chmod +x cc-switch
-
-# Move to PATH
-sudo mv cc-switch /usr/local/bin/
-
-# If you encounter "cannot be verified" warning
-xattr -cr /usr/local/bin/cc-switch
-```
-
-#### Linux (x64)
-
-```bash
-# Download
-curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-linux-x64-musl.tar.gz
-
-# Extract
-tar -xzf cc-switch-cli-linux-x64-musl.tar.gz
-
-# Add execute permission
-chmod +x cc-switch
-
-# Move to PATH
-sudo mv cc-switch /usr/local/bin/
-```
-
-#### Linux (ARM64)
-
-```bash
-# For Raspberry Pi or ARM servers
-curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-linux-arm64-musl.tar.gz
-tar -xzf cc-switch-cli-linux-arm64-musl.tar.gz
-chmod +x cc-switch
-sudo mv cc-switch /usr/local/bin/
-```
-
-#### Windows
-
-```powershell
-# Download the zip file
-# https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-windows-x64.zip
-
-# After extracting, move cc-switch.exe to a PATH directory, e.g.:
-move cc-switch.exe C:\Windows\System32\
-
-# Or run directly
-.\cc-switch.exe
-```
-
-### Method 2: Build from Source
-
-**Prerequisites:**
-- Rust 1.85+ ([install via rustup](https://rustup.rs/))
-
-**Build:**
-```bash
-git clone https://github.com/saladday/cc-switch-cli.git
-cd cc-switch-cli/src-tauri
-cargo build --release
-
-# Binary location: ./target/release/cc-switch
-```
-
-**Install to System:**
-```bash
-# macOS/Linux
-sudo cp target/release/cc-switch /usr/local/bin/
-
-# Windows
-copy target\release\cc-switch.exe C:\Windows\System32\
 ```
 
 ---
@@ -464,12 +477,14 @@ cargo test                           # Run tests
 ```
 src-tauri/src/
 ├── cli/
-│   ├── commands/          # CLI subcommands (provider, mcp, prompts, config)
-│   ├── interactive/       # Interactive TUI mode
-│   └── ui.rs              # UI utilities (tables, colors)
-├── services/              # Business logic
+│   ├── commands/          # CLI subcommands (provider, mcp, prompts, env, skills, ...)
+│   ├── tui/               # Interactive TUI mode (ratatui)
+│   ├── interactive/       # Legacy interactive mode
+│   └── ui/                # UI utilities (tables, colors)
+├── services/              # Business logic (provider, mcp, prompt, webdav, ...)
+├── database/              # SQLite storage, migrations, backup
 ├── main.rs                # CLI entry point
-└── ...
+└── ...                    # App-specific configs, proxy, error handling
 ```
 
 

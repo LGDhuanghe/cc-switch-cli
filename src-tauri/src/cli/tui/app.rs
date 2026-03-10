@@ -84,8 +84,10 @@ pub enum ConfirmAction {
     ConfigRestoreBackup { id: String },
     ConfigReset,
     SettingsSetSkipClaudeOnboarding { enabled: bool },
+    SettingsSetClaudePluginIntegration { enabled: bool },
     EditorDiscard,
     EditorSaveBeforeClose,
+    WebDavMigrateV1ToV2,
 }
 
 #[derive(Debug, Clone)]
@@ -100,7 +102,6 @@ pub enum TextSubmit {
     ConfigExport,
     ConfigImport,
     ConfigBackupName,
-    McpValidateCommand,
     SkillsInstallSpec,
     SkillsDiscoverQuery,
     SkillsRepoAdd,
@@ -152,11 +153,33 @@ pub enum Overlay {
         selected: usize,
         editing: bool,
     },
+    ModelFetchPicker {
+        request_id: u64,
+        field: ProviderAddField,
+        claude_idx: Option<usize>,
+        input: String,
+        query: String,
+        fetching: bool,
+        models: Vec<String>,
+        error: Option<String>,
+        selected_idx: usize,
+    },
     McpAppsPicker {
         id: String,
         name: String,
         selected: usize,
         apps: crate::app_config::McpApps,
+    },
+    SkillsAppsPicker {
+        directory: String,
+        name: String,
+        selected: usize,
+        apps: crate::app_config::SkillApps,
+    },
+    SkillsImportPicker {
+        skills: Vec<crate::services::skill::UnmanagedSkill>,
+        selected_idx: usize,
+        selected: HashSet<String>,
     },
     SkillsSyncMethodPicker {
         selected: usize,
@@ -171,6 +194,15 @@ pub enum Overlay {
     },
     SpeedtestResult {
         url: String,
+        lines: Vec<String>,
+        scroll: usize,
+    },
+    StreamCheckRunning {
+        provider_id: String,
+        provider_name: String,
+    },
+    StreamCheckResult {
+        provider_name: String,
         lines: Vec<String>,
         scroll: usize,
     },
@@ -268,6 +300,19 @@ impl EditorState {
 
     pub fn text(&self) -> String {
         self.lines.join("\n")
+    }
+
+    pub(crate) fn replace_text(&mut self, updated: impl Into<String>) {
+        let updated = updated.into();
+        let mut lines = updated.lines().map(|s| s.to_string()).collect::<Vec<_>>();
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+
+        self.lines = lines;
+        self.cursor_row = self.cursor_row.min(self.lines.len().saturating_sub(1));
+        self.cursor_col = self.cursor_col.min(self.line_len_chars(self.cursor_row));
+        self.scroll = self.scroll.min(self.cursor_row);
     }
 
     fn line_len_chars(&self, row: usize) -> usize {
@@ -497,6 +542,10 @@ pub enum Action {
         directory: String,
         enabled: bool,
     },
+    SkillsSetApps {
+        directory: String,
+        apps: crate::app_config::SkillApps,
+    },
     SkillsInstall {
         spec: String,
     },
@@ -524,6 +573,7 @@ pub enum Action {
         name: String,
         enabled: bool,
     },
+    SkillsOpenImport,
     SkillsScanUnmanaged,
     SkillsImportFromApps {
         directories: Vec<String>,
@@ -538,6 +588,15 @@ pub enum Action {
     ProviderSpeedtest {
         url: String,
     },
+    ProviderStreamCheck {
+        id: String,
+    },
+    ProviderModelFetch {
+        base_url: String,
+        api_key: Option<String>,
+        field: ProviderAddField,
+        claude_idx: Option<usize>,
+    },
 
     McpToggle {
         id: String,
@@ -551,9 +610,6 @@ pub enum Action {
         id: String,
     },
     McpImport,
-    McpValidate {
-        command: String,
-    },
 
     PromptActivate {
         id: String,
@@ -588,6 +644,7 @@ pub enum Action {
     ConfigWebDavCheckConnection,
     ConfigWebDavUpload,
     ConfigWebDavDownload,
+    ConfigWebDavMigrateV1ToV2,
     ConfigWebDavReset,
     ConfigWebDavJianguoyunQuickSetup {
         username: String,
@@ -600,8 +657,12 @@ pub enum Action {
         content: String,
     },
     EditorDiscard,
+    EditorOpenExternal,
 
     SetSkipClaudeOnboarding {
+        enabled: bool,
+    },
+    SetClaudePluginIntegration {
         enabled: bool,
     },
     SetLanguage(Language),
@@ -645,13 +706,15 @@ impl ConfigItem {
 pub enum SettingsItem {
     Language,
     SkipClaudeOnboarding,
+    ClaudePluginIntegration,
     CheckForUpdates,
 }
 
 impl SettingsItem {
-    pub const ALL: [SettingsItem; 3] = [
+    pub const ALL: [SettingsItem; 4] = [
         SettingsItem::Language,
         SettingsItem::SkipClaudeOnboarding,
+        SettingsItem::ClaudePluginIntegration,
         SettingsItem::CheckForUpdates,
     ];
 }
@@ -861,6 +924,15 @@ impl App {
             return self.on_filter_key(key);
         }
 
+        // Vim-style hjkl navigation
+        let key = match key.code {
+            KeyCode::Char('h') => KeyEvent::new(KeyCode::Left, key.modifiers),
+            KeyCode::Char('j') => KeyEvent::new(KeyCode::Down, key.modifiers),
+            KeyCode::Char('k') => KeyEvent::new(KeyCode::Up, key.modifiers),
+            KeyCode::Char('l') => KeyEvent::new(KeyCode::Right, key.modifiers),
+            _ => key,
+        };
+
         // Global actions.
         match key.code {
             KeyCode::Char('?') => {
@@ -1013,7 +1085,36 @@ impl App {
                     enabled,
                 }
             }
-            KeyCode::Char('i') => self.push_route_and_switch(Route::SkillsUnmanaged),
+            KeyCode::Char('m') => {
+                let Some(skill) = visible.get(self.skills_idx) else {
+                    return Action::None;
+                };
+                self.overlay = Overlay::SkillsAppsPicker {
+                    directory: skill.directory.clone(),
+                    name: skill.name.clone(),
+                    selected: app_type_picker_index(&self.app_type),
+                    apps: skill.apps.clone(),
+                };
+                Action::None
+            }
+            KeyCode::Char('d') => {
+                let Some(skill) = visible.get(self.skills_idx) else {
+                    return Action::None;
+                };
+                self.overlay = Overlay::Confirm(ConfirmOverlay {
+                    title: texts::tui_skills_uninstall_title().to_string(),
+                    message: texts::tui_confirm_uninstall_skill_message(
+                        &skill.name,
+                        &skill.directory,
+                    ),
+                    action: ConfirmAction::SkillsUninstall {
+                        directory: skill.directory.clone(),
+                    },
+                });
+                Action::None
+            }
+            KeyCode::Char('i') => Action::SkillsOpenImport,
+            KeyCode::Char('f') => self.push_route_and_switch(Route::SkillsDiscover),
             _ => Action::None,
         }
     }
@@ -1170,6 +1271,15 @@ impl App {
                 directory: skill.directory.clone(),
                 enabled: !skill.apps.is_enabled_for(&self.app_type),
             },
+            KeyCode::Char('m') => {
+                self.overlay = Overlay::SkillsAppsPicker {
+                    directory: skill.directory.clone(),
+                    name: skill.name.clone(),
+                    selected: app_type_picker_index(&self.app_type),
+                    apps: skill.apps.clone(),
+                };
+                Action::None
+            }
             KeyCode::Char('d') => {
                 self.overlay = Overlay::Confirm(ConfirmOverlay {
                     title: texts::tui_skills_uninstall_title().to_string(),
@@ -1263,6 +1373,16 @@ impl App {
                 self.overlay = Overlay::SpeedtestRunning { url: url.clone() };
                 Action::ProviderSpeedtest { url }
             }
+            KeyCode::Char('c') => {
+                let Some(row) = visible.get(self.provider_idx) else {
+                    return Action::None;
+                };
+                self.overlay = Overlay::StreamCheckRunning {
+                    provider_id: row.id.clone(),
+                    provider_name: row.provider.name.clone(),
+                };
+                Action::ProviderStreamCheck { id: row.id.clone() }
+            }
             _ => Action::None,
         }
     }
@@ -1292,6 +1412,13 @@ impl App {
                 };
                 self.overlay = Overlay::SpeedtestRunning { url: url.clone() };
                 Action::ProviderSpeedtest { url }
+            }
+            KeyCode::Char('c') => {
+                self.overlay = Overlay::StreamCheckRunning {
+                    provider_id: row.id.clone(),
+                    provider_name: row.provider.name.clone(),
+                };
+                Action::ProviderStreamCheck { id: row.id.clone() }
             }
             _ => Action::None,
         }
@@ -1344,16 +1471,6 @@ impl App {
                 Action::None
             }
             KeyCode::Char('i') => Action::McpImport,
-            KeyCode::Char('v') => {
-                self.overlay = Overlay::TextInput(TextInputState {
-                    title: texts::tui_input_validate_command_title().to_string(),
-                    prompt: texts::tui_input_validate_command_prompt().to_string(),
-                    buffer: String::new(),
-                    submit: TextSubmit::McpValidateCommand,
-                    secret: false,
-                });
-                Action::None
-            }
             KeyCode::Char('d') => {
                 let Some(row) = visible.get(self.mcp_idx) else {
                     return Action::None;
@@ -1664,6 +1781,24 @@ impl App {
                     });
                     Action::None
                 }
+                Some(SettingsItem::ClaudePluginIntegration) => {
+                    let current = crate::settings::get_enable_claude_plugin_integration();
+                    let next = !current;
+                    let path = match crate::claude_plugin::claude_config_path() {
+                        Ok(path) => path,
+                        Err(_) => std::path::PathBuf::from("~/.claude/config.json"),
+                    };
+
+                    self.overlay = Overlay::Confirm(ConfirmOverlay {
+                        title: texts::tui_confirm_title().to_string(),
+                        message: texts::enable_claude_plugin_integration_confirm(
+                            next,
+                            path.to_string_lossy().as_ref(),
+                        ),
+                        action: ConfirmAction::SettingsSetClaudePluginIntegration { enabled: next },
+                    });
+                    Action::None
+                }
                 Some(SettingsItem::CheckForUpdates) => Action::CheckUpdate,
                 None => Action::None,
             },
@@ -1728,6 +1863,9 @@ impl App {
                         ConfirmAction::SettingsSetSkipClaudeOnboarding { enabled } => {
                             Action::SetSkipClaudeOnboarding { enabled: *enabled }
                         }
+                        ConfirmAction::SettingsSetClaudePluginIntegration { enabled } => {
+                            Action::SetClaudePluginIntegration { enabled: *enabled }
+                        }
                         ConfirmAction::EditorDiscard => Action::EditorDiscard,
                         ConfirmAction::EditorSaveBeforeClose => {
                             if let Some(editor) = self.editor.as_ref() {
@@ -1739,6 +1877,7 @@ impl App {
                                 Action::None
                             }
                         }
+                        ConfirmAction::WebDavMigrateV1ToV2 => Action::ConfigWebDavMigrateV1ToV2,
                     };
                     self.overlay = Overlay::None;
                     action
@@ -1803,16 +1942,6 @@ impl App {
                         TextSubmit::ConfigBackupName => {
                             let name = if raw.is_empty() { None } else { Some(raw) };
                             Action::ConfigBackup { name }
-                        }
-                        TextSubmit::McpValidateCommand => {
-                            if raw.is_empty() {
-                                self.push_toast(
-                                    texts::tui_toast_command_empty(),
-                                    ToastKind::Warning,
-                                );
-                                return Action::None;
-                            }
-                            Action::McpValidate { command: raw }
                         }
                         TextSubmit::SkillsInstallSpec => {
                             if raw.is_empty() {
@@ -1970,7 +2099,7 @@ impl App {
                     Action::None
                 }
                 KeyCode::Down => {
-                    *selected = (*selected + 1).min(2);
+                    *selected = (*selected + 1).min(3);
                     Action::None
                 }
                 KeyCode::Enter => {
@@ -2013,7 +2142,7 @@ impl App {
                     Action::None
                 }
                 KeyCode::Down => {
-                    *selected = (*selected + 1).min(2);
+                    *selected = (*selected + 1).min(3);
                     Action::None
                 }
                 KeyCode::Enter => {
@@ -2113,12 +2242,120 @@ impl App {
                             *selected = (*selected + 1).min(4);
                             Action::None
                         }
-                        KeyCode::Char(' ') | KeyCode::Enter => {
+                        KeyCode::Enter => {
+                            if let Some(FormState::ProviderAdd(provider)) = self.form.as_ref() {
+                                return Action::ProviderModelFetch {
+                                    base_url: provider.claude_base_url.value.clone(),
+                                    api_key: if provider.claude_api_key.value.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(provider.claude_api_key.value.clone())
+                                    },
+                                    field: ProviderAddField::ClaudeModelConfig,
+                                    claude_idx: Some(*selected),
+                                };
+                            }
+                            Action::None
+                        }
+                        KeyCode::Char(' ') => {
                             *editing = true;
                             Action::None
                         }
                         _ => Action::None,
                     }
+                }
+            }
+            Overlay::ModelFetchPicker {
+                field,
+                claude_idx,
+                input,
+                query,
+                fetching: _,
+                models,
+                selected_idx,
+                ..
+            } => {
+                let filtered: Vec<&String> = if query.trim().is_empty() {
+                    models.iter().collect()
+                } else {
+                    let q = query.trim().to_lowercase();
+                    models
+                        .iter()
+                        .filter(|m| m.to_lowercase().contains(&q))
+                        .collect()
+                };
+
+                match key.code {
+                    KeyCode::Esc => {
+                        self.overlay = Overlay::None;
+                        Action::None
+                    }
+                    KeyCode::Up => {
+                        *selected_idx = selected_idx.saturating_sub(1);
+                        if let Some(m) = filtered.get(*selected_idx) {
+                            *input = (*m).to_string();
+                        }
+                        Action::None
+                    }
+                    KeyCode::Down => {
+                        if !filtered.is_empty() {
+                            *selected_idx = (*selected_idx + 1).min(filtered.len() - 1);
+                            if let Some(m) = filtered.get(*selected_idx) {
+                                *input = (*m).to_string();
+                            }
+                        }
+                        Action::None
+                    }
+                    KeyCode::Tab => {
+                        if let Some(m) = filtered.get(*selected_idx) {
+                            *input = (*m).to_string();
+                            *query = (*m).to_string();
+                            *selected_idx = 0;
+                        }
+                        Action::None
+                    }
+                    KeyCode::Backspace => {
+                        if !input.is_empty() {
+                            input.pop();
+                            *query = input.clone();
+                            *selected_idx = 0;
+                        }
+                        Action::None
+                    }
+                    KeyCode::Char(c) if !c.is_control() => {
+                        input.push(c);
+                        *query = input.clone();
+                        *selected_idx = 0;
+                        Action::None
+                    }
+                    KeyCode::Enter => {
+                        let selected_model = input.trim().to_string();
+
+                        if selected_model.is_empty() {
+                            self.overlay = Overlay::None;
+                            return Action::None;
+                        }
+
+                        let field = *field;
+                        let claude_idx = *claude_idx;
+                        self.overlay = Overlay::None;
+
+                        if let Some(FormState::ProviderAdd(provider)) = self.form.as_mut() {
+                            if field == ProviderAddField::ClaudeModelConfig {
+                                if let Some(idx) = claude_idx {
+                                    if let Some(input_field) = provider.claude_model_input_mut(idx)
+                                    {
+                                        input_field.set(selected_model);
+                                        provider.mark_claude_model_config_touched();
+                                    }
+                                }
+                            } else if let Some(input_field) = provider.input_mut(field) {
+                                input_field.set(selected_model);
+                            }
+                        }
+                        Action::None
+                    }
+                    _ => Action::None,
                 }
             }
             Overlay::Loading { kind, .. } => match key.code {
@@ -2145,7 +2382,7 @@ impl App {
                     Action::None
                 }
                 KeyCode::Down => {
-                    *selected = (*selected + 1).min(2);
+                    *selected = (*selected + 1).min(3);
                     Action::None
                 }
                 KeyCode::Char('x') | KeyCode::Char(' ') => {
@@ -2174,6 +2411,100 @@ impl App {
                 }
                 _ => Action::None,
             },
+            Overlay::SkillsAppsPicker {
+                directory,
+                selected,
+                apps,
+                ..
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = Overlay::None;
+                    Action::None
+                }
+                KeyCode::Up => {
+                    *selected = selected.saturating_sub(1);
+                    Action::None
+                }
+                KeyCode::Down => {
+                    *selected = (*selected + 1).min(3);
+                    Action::None
+                }
+                KeyCode::Char('x') | KeyCode::Char(' ') => {
+                    let app_type = app_type_for_picker_index(*selected);
+                    let enabled = apps.is_enabled_for(&app_type);
+                    apps.set_enabled_for(&app_type, !enabled);
+                    Action::None
+                }
+                KeyCode::Enter => {
+                    let directory = directory.clone();
+                    let next = apps.clone();
+                    let unchanged = data
+                        .skills
+                        .installed
+                        .iter()
+                        .find(|skill| skill.directory == directory)
+                        .map(|skill| skill.apps == next)
+                        .unwrap_or(false);
+
+                    self.overlay = Overlay::None;
+                    if unchanged {
+                        Action::None
+                    } else {
+                        Action::SkillsSetApps {
+                            directory,
+                            apps: next,
+                        }
+                    }
+                }
+                _ => Action::None,
+            },
+            Overlay::SkillsImportPicker {
+                skills,
+                selected_idx,
+                selected,
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = Overlay::None;
+                    Action::None
+                }
+                KeyCode::Up => {
+                    *selected_idx = selected_idx.saturating_sub(1);
+                    Action::None
+                }
+                KeyCode::Down => {
+                    if !skills.is_empty() {
+                        *selected_idx = (*selected_idx + 1).min(skills.len() - 1);
+                    }
+                    Action::None
+                }
+                KeyCode::Char('x') | KeyCode::Char(' ') => {
+                    let Some(skill) = skills.get(*selected_idx) else {
+                        return Action::None;
+                    };
+                    if selected.contains(&skill.directory) {
+                        selected.remove(&skill.directory);
+                    } else {
+                        selected.insert(skill.directory.clone());
+                    }
+                    Action::None
+                }
+                KeyCode::Char('r') => Action::SkillsOpenImport,
+                KeyCode::Char('i') | KeyCode::Enter => {
+                    if selected.is_empty() {
+                        self.push_toast(texts::tui_toast_no_unmanaged_selected(), ToastKind::Info);
+                        return Action::None;
+                    }
+
+                    let directories = skills
+                        .iter()
+                        .filter(|skill| selected.contains(&skill.directory))
+                        .map(|skill| skill.directory.clone())
+                        .collect();
+                    self.overlay = Overlay::None;
+                    Action::SkillsImportFromApps { directories }
+                }
+                _ => Action::None,
+            },
             Overlay::SpeedtestRunning { .. } => match key.code {
                 KeyCode::Esc => {
                     self.overlay = Overlay::None;
@@ -2182,6 +2513,30 @@ impl App {
                 _ => Action::None,
             },
             Overlay::SpeedtestResult { scroll, lines, .. } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::None;
+                    Action::None
+                }
+                KeyCode::Up => {
+                    *scroll = scroll.saturating_sub(1);
+                    Action::None
+                }
+                KeyCode::Down => {
+                    if !lines.is_empty() {
+                        *scroll = (*scroll + 1).min(lines.len() - 1);
+                    }
+                    Action::None
+                }
+                _ => Action::None,
+            },
+            Overlay::StreamCheckRunning { .. } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = Overlay::None;
+                    Action::None
+                }
+                _ => Action::None,
+            },
+            Overlay::StreamCheckResult { scroll, lines, .. } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.overlay = Overlay::None;
                     Action::None
@@ -2710,6 +3065,57 @@ impl App {
                                 }
                                 return Action::None;
                             }
+                            ProviderAddField::CodexModel
+                            | ProviderAddField::GeminiModel
+                            | ProviderAddField::OpenCodeModelId => {
+                                if matches!(key.code, KeyCode::Enter) {
+                                    let api_key = match selected {
+                                        ProviderAddField::CodexModel => {
+                                            if provider.codex_api_key.value.trim().is_empty() {
+                                                None
+                                            } else {
+                                                Some(provider.codex_api_key.value.clone())
+                                            }
+                                        }
+                                        ProviderAddField::GeminiModel => {
+                                            if provider.gemini_api_key.value.trim().is_empty() {
+                                                None
+                                            } else {
+                                                Some(provider.gemini_api_key.value.clone())
+                                            }
+                                        }
+                                        ProviderAddField::OpenCodeModelId => {
+                                            if provider.opencode_api_key.value.trim().is_empty() {
+                                                None
+                                            } else {
+                                                Some(provider.opencode_api_key.value.clone())
+                                            }
+                                        }
+                                        _ => None,
+                                    };
+                                    let base_url = match selected {
+                                        ProviderAddField::CodexModel => {
+                                            provider.codex_base_url.value.clone()
+                                        }
+                                        ProviderAddField::GeminiModel => {
+                                            provider.gemini_base_url.value.clone()
+                                        }
+                                        ProviderAddField::OpenCodeModelId => {
+                                            provider.opencode_base_url.value.clone()
+                                        }
+                                        _ => String::new(),
+                                    };
+                                    return Action::ProviderModelFetch {
+                                        base_url,
+                                        api_key,
+                                        field: selected,
+                                        claude_idx: None,
+                                    };
+                                } else {
+                                    provider.editing = true;
+                                    return Action::None;
+                                }
+                            }
                             _ => {
                                 if selected == ProviderAddField::Id && !provider.is_id_editable() {
                                     return Action::None;
@@ -3094,6 +3500,10 @@ impl App {
                 submit: editor.submit.clone(),
                 content: editor.text(),
             };
+        }
+
+        if is_open_external_editor_shortcut(key) {
+            return Action::EditorOpenExternal;
         }
 
         match key.code {
@@ -3506,10 +3916,12 @@ fn cycle_app_type(current: &AppType, dir: i8) -> AppType {
     match (current, dir) {
         (AppType::Claude, 1) => AppType::Codex,
         (AppType::Codex, 1) => AppType::Gemini,
-        (AppType::Gemini, 1) => AppType::Claude,
-        (AppType::Claude, -1) => AppType::Gemini,
+        (AppType::Gemini, 1) => AppType::OpenCode,
+        (AppType::OpenCode, 1) => AppType::Claude,
+        (AppType::Claude, -1) => AppType::OpenCode,
         (AppType::Codex, -1) => AppType::Claude,
         (AppType::Gemini, -1) => AppType::Codex,
+        (AppType::OpenCode, -1) => AppType::Gemini,
         (other, _) => other.clone(),
     }
 }
@@ -3519,6 +3931,7 @@ fn app_type_picker_index(app_type: &AppType) -> usize {
         AppType::Claude => 0,
         AppType::Codex => 1,
         AppType::Gemini => 2,
+        AppType::OpenCode => 3,
     }
 }
 
@@ -3526,6 +3939,7 @@ fn app_type_for_picker_index(index: usize) -> AppType {
     match index {
         1 => AppType::Codex,
         2 => AppType::Gemini,
+        3 => AppType::OpenCode,
         _ => AppType::Claude,
     }
 }
@@ -3558,6 +3972,13 @@ fn is_save_shortcut(key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('s' | 'S') => key.modifiers.contains(KeyModifiers::CONTROL),
         KeyCode::Char('\u{13}') => true,
+        _ => false,
+    }
+}
+
+fn is_open_external_editor_shortcut(key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char('o' | 'O') => key.modifiers.contains(KeyModifiers::CONTROL),
         _ => false,
     }
 }
@@ -3604,33 +4025,136 @@ mod tests {
     }
 
     #[test]
-    fn skills_f_does_nothing_when_discover_is_disabled() {
-        let mut app = App::new(Some(AppType::Claude));
-        app.route = Route::Skills;
-        app.focus = Focus::Content;
-
-        let action = app.on_key(key(KeyCode::Char('f')), &data());
-        assert!(
-            matches!(action, Action::None),
-            "Discover is disabled; f should do nothing on Skills page"
-        );
-        assert!(
-            matches!(&app.overlay, Overlay::None),
-            "Discover is disabled; overlay should stay closed"
-        );
-    }
-
-    #[test]
-    fn skills_i_opens_import_existing_page() {
+    fn skills_i_requests_import_picker() {
         let mut app = App::new(Some(AppType::Claude));
         app.route = Route::Skills;
         app.focus = Focus::Content;
 
         let action = app.on_key(key(KeyCode::Char('i')), &data());
         assert!(
-            matches!(action, Action::SwitchRoute(Route::SkillsUnmanaged)),
-            "i in Skills page should navigate to Import Existing"
+            matches!(action, Action::SkillsOpenImport),
+            "i in Skills page should open the import picker flow"
         );
+    }
+
+    #[test]
+    fn skills_f_opens_discover_page() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Skills;
+        app.focus = Focus::Content;
+
+        let action = app.on_key(key(KeyCode::Char('f')), &data());
+        assert!(
+            matches!(action, Action::SwitchRoute(Route::SkillsDiscover)),
+            "f in Skills page should navigate to Discover"
+        );
+    }
+
+    #[test]
+    fn skills_m_opens_apps_picker_overlay() {
+        let mut app = App::new(Some(AppType::Codex));
+        app.route = Route::Skills;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.skills
+            .installed
+            .push(crate::services::skill::InstalledSkill {
+                id: "local:hello-skill".to_string(),
+                name: "Hello Skill".to_string(),
+                description: None,
+                directory: "hello-skill".to_string(),
+                repo_owner: None,
+                repo_name: None,
+                repo_branch: None,
+                readme_url: None,
+                apps: crate::app_config::SkillApps::default(),
+                installed_at: 0,
+            });
+
+        let action = app.on_key(key(KeyCode::Char('m')), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::SkillsAppsPicker {
+                directory,
+                name,
+                selected: 1,
+                ..
+            } if directory == "hello-skill" && name == "Hello Skill"
+        ));
+    }
+
+    #[test]
+    fn skills_apps_picker_x_toggles_selected_app_and_enter_emits_action() {
+        let mut app = App::new(Some(AppType::Codex));
+        app.route = Route::Skills;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.skills
+            .installed
+            .push(crate::services::skill::InstalledSkill {
+                id: "local:hello-skill".to_string(),
+                name: "Hello Skill".to_string(),
+                description: None,
+                directory: "hello-skill".to_string(),
+                repo_owner: None,
+                repo_name: None,
+                repo_branch: None,
+                readme_url: None,
+                apps: crate::app_config::SkillApps::default(),
+                installed_at: 0,
+            });
+
+        app.on_key(key(KeyCode::Char('m')), &data);
+
+        let action = app.on_key(key(KeyCode::Char('x')), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::SkillsAppsPicker { apps, .. } if apps.codex
+        ));
+
+        let action = app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(
+            action,
+            Action::SkillsSetApps { directory, apps }
+                if directory == "hello-skill" && apps.codex && !apps.claude && !apps.gemini
+        ));
+    }
+
+    #[test]
+    fn skills_d_opens_uninstall_confirm_from_list() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Skills;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.skills
+            .installed
+            .push(crate::services::skill::InstalledSkill {
+                id: "local:hello-skill".to_string(),
+                name: "Hello Skill".to_string(),
+                description: None,
+                directory: "hello-skill".to_string(),
+                repo_owner: None,
+                repo_name: None,
+                repo_branch: None,
+                readme_url: None,
+                apps: crate::app_config::SkillApps::default(),
+                installed_at: 0,
+            });
+
+        let action = app.on_key(key(KeyCode::Char('d')), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::Confirm(ConfirmOverlay {
+                action: ConfirmAction::SkillsUninstall { directory },
+                ..
+            }) if directory == "hello-skill"
+        ));
     }
 
     #[test]
@@ -3654,6 +4178,25 @@ mod tests {
         assert!(matches!(
             app.on_key(key(KeyCode::Char(']')), &data()),
             Action::SetAppType(AppType::Codex)
+        ));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Char('[')), &data()),
+            Action::SetAppType(AppType::OpenCode)
+        ));
+    }
+
+    #[test]
+    fn app_cycles_through_opencode() {
+        let mut app = App::new(Some(AppType::Gemini));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Char(']')), &data()),
+            Action::SetAppType(AppType::OpenCode)
+        ));
+
+        let mut app = App::new(Some(AppType::OpenCode));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Char(']')), &data()),
+            Action::SetAppType(AppType::Claude)
         ));
         assert!(matches!(
             app.on_key(key(KeyCode::Char('[')), &data()),
@@ -3820,6 +4363,60 @@ mod tests {
     }
 
     #[test]
+    fn providers_c_key_requests_stream_check() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.providers.rows.push(super::super::data::ProviderRow {
+            id: "p1".to_string(),
+            provider: crate::provider::Provider::with_id(
+                "p1".to_string(),
+                "Provider One".to_string(),
+                json!({"env":{"ANTHROPIC_BASE_URL":"https://example.com","ANTHROPIC_AUTH_TOKEN":"sk-demo"}}),
+                None,
+            ),
+            api_url: Some("https://example.com".to_string()),
+            is_current: false,
+        });
+
+        let action = app.on_key(key(KeyCode::Char('c')), &data);
+        assert!(matches!(action, Action::ProviderStreamCheck { id } if id == "p1"));
+        assert!(
+            matches!(app.overlay, Overlay::StreamCheckRunning { ref provider_name, .. } if provider_name == "Provider One")
+        );
+    }
+
+    #[test]
+    fn provider_detail_c_key_requests_stream_check() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::ProviderDetail {
+            id: "p1".to_string(),
+        };
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.providers.rows.push(super::super::data::ProviderRow {
+            id: "p1".to_string(),
+            provider: crate::provider::Provider::with_id(
+                "p1".to_string(),
+                "Provider One".to_string(),
+                json!({"env":{"ANTHROPIC_BASE_URL":"https://example.com","ANTHROPIC_AUTH_TOKEN":"sk-demo"}}),
+                None,
+            ),
+            api_url: Some("https://example.com".to_string()),
+            is_current: false,
+        });
+
+        let action = app.on_key(key(KeyCode::Char('c')), &data);
+        assert!(matches!(action, Action::ProviderStreamCheck { id } if id == "p1"));
+        assert!(
+            matches!(app.overlay, Overlay::StreamCheckRunning { ref provider_name, .. } if provider_name == "Provider One")
+        );
+    }
+
+    #[test]
     fn provider_detail_s_key_triggers_switch_action_and_enter_is_noop() {
         let mut app = App::new(Some(AppType::Claude));
         app.route = Route::ProviderDetail {
@@ -3894,6 +4491,17 @@ mod tests {
     }
 
     #[test]
+    fn mcp_v_does_nothing() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Mcp;
+        app.focus = Focus::Content;
+
+        let action = app.on_key(key(KeyCode::Char('v')), &data());
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    #[test]
     fn mcp_m_opens_apps_picker_overlay() {
         let mut app = App::new(Some(AppType::Codex));
         app.route = Route::Mcp;
@@ -3961,6 +4569,47 @@ mod tests {
         assert!(matches!(
             action,
             Action::McpSetApps { id, apps } if id == "m1" && apps.codex && !apps.claude && !apps.gemini
+        ));
+    }
+
+    #[test]
+    fn mcp_apps_picker_can_select_opencode() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Mcp;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.mcp.rows.push(super::super::data::McpRow {
+            id: "m1".to_string(),
+            server: crate::app_config::McpServer {
+                id: "m1".to_string(),
+                name: "Server".to_string(),
+                server: json!({}),
+                apps: crate::app_config::McpApps::default(),
+                description: None,
+                homepage: None,
+                docs: None,
+                tags: vec![],
+            },
+        });
+
+        app.on_key(key(KeyCode::Char('m')), &data);
+        app.on_key(key(KeyCode::Down), &data);
+        app.on_key(key(KeyCode::Down), &data);
+        app.on_key(key(KeyCode::Down), &data);
+
+        let action = app.on_key(key(KeyCode::Char('x')), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::McpAppsPicker { selected, apps, .. } if *selected == 3 && apps.opencode
+        ));
+
+        let action = app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(
+            action,
+            Action::McpSetApps { id, apps }
+                if id == "m1" && !apps.claude && !apps.codex && !apps.gemini && apps.opencode
         ));
     }
 
@@ -4677,6 +5326,38 @@ mod tests {
     }
 
     #[test]
+    fn prompts_editor_ctrl_o_requests_external_editor() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Prompts;
+        app.focus = Focus::Content;
+
+        let mut data = UiData::default();
+        data.prompts.rows.push(super::super::data::PromptRow {
+            id: "pr1".to_string(),
+            prompt: crate::prompt::Prompt {
+                id: "pr1".to_string(),
+                name: "Demo".to_string(),
+                content: "hello".to_string(),
+                description: None,
+                enabled: false,
+                created_at: None,
+                updated_at: None,
+            },
+        });
+
+        let action = app.on_key(key(KeyCode::Char('e')), &data);
+        assert!(matches!(action, Action::None));
+        assert!(app.editor.is_some(), "prompt editor should be opened first");
+
+        let action = app.on_key(ctrl(KeyCode::Char('o')), &data);
+        assert_eq!(format!("{action:?}"), "EditorOpenExternal");
+        assert!(
+            app.editor.is_some(),
+            "Ctrl+O should keep the editor session open"
+        );
+    }
+
+    #[test]
     fn prompts_editor_esc_dirty_opens_save_before_close_confirm() {
         let mut app = App::new(Some(AppType::Claude));
         app.route = Route::Prompts;
@@ -5208,7 +5889,7 @@ mod tests {
         }
 
         app.on_key(key(KeyCode::Enter), &data);
-        app.on_key(key(KeyCode::Enter), &data); // enter editing mode in overlay
+        app.on_key(key(KeyCode::Char(' ')), &data); // enter editing mode in overlay
         app.on_key(key(KeyCode::Char('m')), &data);
         app.on_key(key(KeyCode::Char('1')), &data);
 

@@ -20,7 +20,8 @@ impl AppState {
 
         if db_path.exists() {
             let db = Arc::new(Database::init()?);
-            let config = export_db_to_multi_app_config(&db)?;
+            let mut config = export_db_to_multi_app_config(&db)?;
+            migrate_legacy_codex_configs(&db, &mut config);
             return Ok(Self {
                 db,
                 config: RwLock::new(config),
@@ -76,7 +77,8 @@ impl AppState {
         // Ensure default repos exist (insert-missing only).
         let _ = db.init_default_skill_repos();
 
-        let config = export_db_to_multi_app_config(&db)?;
+        let mut config = export_db_to_multi_app_config(&db)?;
+        migrate_legacy_codex_configs(&db, &mut config);
         Ok(Self {
             db,
             config: RwLock::new(config),
@@ -96,7 +98,12 @@ fn export_db_to_multi_app_config(db: &Database) -> Result<MultiAppConfig, AppErr
 
     let mut config = MultiAppConfig::default();
 
-    for app in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+    for app in [
+        AppType::Claude,
+        AppType::Codex,
+        AppType::Gemini,
+        AppType::OpenCode,
+    ] {
         let app_key = app.as_str();
         let providers = db.get_all_providers(app_key)?;
         let current = db.get_current_provider(app_key)?.unwrap_or_default();
@@ -109,6 +116,7 @@ fn export_db_to_multi_app_config(db: &Database) -> Result<MultiAppConfig, AppErr
             AppType::Claude => config.prompts.claude.prompts = prompts.into_iter().collect(),
             AppType::Codex => config.prompts.codex.prompts = prompts.into_iter().collect(),
             AppType::Gemini => config.prompts.gemini.prompts = prompts.into_iter().collect(),
+            AppType::OpenCode => config.prompts.opencode.prompts = prompts.into_iter().collect(),
         }
 
         // common snippet
@@ -126,7 +134,12 @@ fn export_db_to_multi_app_config(db: &Database) -> Result<MultiAppConfig, AppErr
 fn persist_multi_app_config_to_db(db: &Database, config: &MultiAppConfig) -> Result<(), AppError> {
     use crate::app_config::AppType;
 
-    for app in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+    for app in [
+        AppType::Claude,
+        AppType::Codex,
+        AppType::Gemini,
+        AppType::OpenCode,
+    ] {
         let app_key = app.as_str();
         let manager = config.get_manager(&app);
 
@@ -163,6 +176,7 @@ fn persist_multi_app_config_to_db(db: &Database, config: &MultiAppConfig) -> Res
             AppType::Claude => &config.prompts.claude.prompts,
             AppType::Codex => &config.prompts.codex.prompts,
             AppType::Gemini => &config.prompts.gemini.prompts,
+            AppType::OpenCode => &config.prompts.opencode.prompts,
         };
         let existing_prompts = db.get_prompts(app_key)?;
         for prompt in desired_prompts.values() {
@@ -265,4 +279,48 @@ fn archive_legacy_file(path: &Path, suffix: &str) -> Result<Option<PathBuf>, App
 
     std::fs::rename(path, &candidate).map_err(|e| AppError::io(path, e))?;
     Ok(Some(candidate))
+}
+
+/// One-time migration: convert legacy flat Codex configs to the upstream
+/// `model_provider + [model_providers.<key>]` format and persist to DB.
+///
+/// After this runs, all Codex providers in memory and DB use the new format.
+fn migrate_legacy_codex_configs(db: &Database, config: &mut MultiAppConfig) {
+    use crate::app_config::AppType;
+    use crate::services::provider::migrate_legacy_codex_config;
+
+    let manager = match config.get_manager_mut(&AppType::Codex) {
+        Some(m) => m,
+        None => return,
+    };
+
+    for (provider_id, provider) in manager.providers.iter_mut() {
+        let cfg_text = match provider
+            .settings_config
+            .get("config")
+            .and_then(|v| v.as_str())
+        {
+            Some(t) => t,
+            None => continue,
+        };
+
+        if let Some(migrated) = migrate_legacy_codex_config(cfg_text, provider) {
+            // Update in-memory
+            if let Some(obj) = provider.settings_config.as_object_mut() {
+                obj.insert("config".to_string(), serde_json::Value::String(migrated));
+            }
+            // Persist to DB
+            if let Err(e) = db.update_provider_settings_config(
+                AppType::Codex.as_str(),
+                provider_id,
+                &provider.settings_config,
+            ) {
+                log::warn!(
+                    "Failed to persist migrated Codex config for provider '{}': {}",
+                    provider_id,
+                    e
+                );
+            }
+        }
+    }
 }

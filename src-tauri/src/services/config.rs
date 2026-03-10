@@ -250,6 +250,7 @@ impl ConfigService {
         Self::sync_current_provider_for_app(config, &AppType::Claude)?;
         Self::sync_current_provider_for_app(config, &AppType::Codex)?;
         Self::sync_current_provider_for_app(config, &AppType::Gemini)?;
+        Self::sync_current_provider_for_app(config, &AppType::OpenCode)?;
         Ok(())
     }
 
@@ -284,6 +285,7 @@ impl ConfigService {
             AppType::Codex => Self::sync_codex_live(config, &current_id, &provider)?,
             AppType::Claude => Self::sync_claude_live(config, &current_id, &provider)?,
             AppType::Gemini => Self::sync_gemini_live(config, &current_id, &provider)?,
+            AppType::OpenCode => {}
         }
 
         Ok(())

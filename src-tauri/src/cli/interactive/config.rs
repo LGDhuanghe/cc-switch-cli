@@ -242,8 +242,7 @@ fn retry_prompt() -> Result<bool, AppError> {
 }
 
 fn open_external_editor(initial_content: &str) -> Result<String, AppError> {
-    edit::edit(initial_content)
-        .map_err(|e| AppError::Message(format!("{}: {}", texts::editor_failed(), e)))
+    crate::cli::editor::open_external_editor(initial_content)
 }
 
 fn show_config_path_interactive() -> Result<(), AppError> {
@@ -343,6 +342,11 @@ fn import_config_interactive(path: &str) -> Result<(), AppError> {
 
     let state = get_state()?;
     let backup_id = ConfigService::import_config_from_path(file_path, &state)?;
+
+    // 导入后同步 live 配置
+    if let Err(e) = crate::services::provider::ProviderService::sync_current_to_live(&state) {
+        log::warn!("配置导入后同步 live 配置失败: {e}");
+    }
 
     println!("\n{}", success(&texts::imported_from(path)));
     println!("{}", info(&format!("Backup created: {}", backup_id)));
@@ -459,6 +463,11 @@ fn restore_config_interactive() -> Result<(), AppError> {
 
     let state = get_state()?;
     let pre_restore_backup = ConfigService::restore_from_backup_id(&selected_backup.id, &state)?;
+
+    // 恢复后同步 live 配置
+    if let Err(e) = crate::services::provider::ProviderService::sync_current_to_live(&state) {
+        log::warn!("备份恢复后同步 live 配置失败: {e}");
+    }
 
     println!(
         "\n{}",

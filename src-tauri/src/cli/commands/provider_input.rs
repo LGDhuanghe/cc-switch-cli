@@ -54,7 +54,13 @@ pub fn prompt_settings_config_for_add(
         (AppType::Codex, ProviderAddMode::Official) => prompt_codex_official_config(None),
         (AppType::Codex, ProviderAddMode::ThirdParty) => prompt_codex_config(None),
         (AppType::Gemini, _) => prompt_gemini_config(None),
+        (AppType::OpenCode, _) => Ok(json!({})),
     }
+}
+
+/// Generate a clean TOML key from a provider name/id for use in model_provider and [model_providers.<key>].
+fn clean_codex_provider_key(raw: &str) -> String {
+    crate::codex_config::clean_codex_provider_key(raw)
 }
 
 fn build_codex_settings_config(
@@ -62,6 +68,7 @@ fn build_codex_settings_config(
     base_url: &str,
     model: &str,
     wire_api: &str,
+    provider_key: &str,
 ) -> Value {
     let model = if model.trim().is_empty() {
         "gpt-5.2-codex"
@@ -73,14 +80,21 @@ fn build_codex_settings_config(
     } else {
         base_url.trim()
     };
+    let provider_key = clean_codex_provider_key(provider_key);
 
+    // Align with upstream: use full config.toml format with [model_providers.<key>]
     let config_toml = [
-        format!("base_url = \"{}\"", base_url),
+        format!("model_provider = \"{}\"", provider_key),
         format!("model = \"{}\"", model),
         "model_reasoning_effort = \"high\"".to_string(),
         "disable_response_storage = true".to_string(),
+        String::new(),
+        format!("[model_providers.{}]", provider_key),
+        format!("name = \"{}\"", provider_key),
+        format!("base_url = \"{}\"", base_url),
         format!("wire_api = \"{}\"", wire_api),
         "requires_openai_auth = true".to_string(),
+        String::new(),
     ]
     .join("\n");
 
@@ -96,7 +110,7 @@ fn build_codex_settings_config(
 }
 
 fn build_codex_official_settings_config(model: &str, _wire_api: &str) -> Value {
-    build_codex_settings_config(None, CODEX_OFFICIAL_BASE_URL, model, "responses")
+    build_codex_settings_config(None, CODEX_OFFICIAL_BASE_URL, model, "responses", "openai")
 }
 
 /// 可选字段集合
@@ -260,6 +274,7 @@ pub fn prompt_settings_config(
             }
         }
         AppType::Gemini => prompt_gemini_config(current),
+        AppType::OpenCode => Ok(current.cloned().unwrap_or_else(|| json!({}))),
     }
 }
 
@@ -521,6 +536,7 @@ fn prompt_codex_config(current: Option<&Value>) -> Result<Value, AppError> {
         &base_url,
         model.trim(),
         "responses",
+        "custom",
     ))
 }
 
@@ -594,6 +610,7 @@ fn prompt_codex_official_config(current: Option<&Value>) -> Result<Value, AppErr
         base_url.trim(),
         model.trim(),
         "responses",
+        "openai",
     ))
 }
 
@@ -804,6 +821,27 @@ pub fn display_provider_summary(provider: &Provider, app_type: &AppType) {
                 {
                     println!("  {}: {}", texts::base_url_display_label(), base_url);
                 }
+            }
+        }
+        AppType::OpenCode => {
+            if let Some(options) = provider.settings_config.get("options") {
+                if let Some(api_key) = options.get("apiKey").and_then(|v| v.as_str()) {
+                    println!(
+                        "  {}: {}",
+                        texts::api_key_display_label(),
+                        mask_api_key(api_key)
+                    );
+                }
+                if let Some(base_url) = options.get("baseURL").and_then(|v| v.as_str()) {
+                    println!("  {}: {}", texts::base_url_display_label(), base_url);
+                }
+            }
+            if let Some(models) = provider
+                .settings_config
+                .get("models")
+                .and_then(|v| v.as_object())
+            {
+                println!("  {}: {}", texts::model_label(), models.len());
             }
         }
     }

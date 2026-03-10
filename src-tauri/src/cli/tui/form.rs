@@ -161,6 +161,13 @@ pub enum ProviderAddField {
     GeminiApiKey,
     GeminiBaseUrl,
     GeminiModel,
+    OpenCodeNpmPackage,
+    OpenCodeApiKey,
+    OpenCodeBaseUrl,
+    OpenCodeModelId,
+    OpenCodeModelName,
+    OpenCodeModelContextLimit,
+    OpenCodeModelOutputLimit,
     CommonConfigDivider,
     CommonSnippet,
     IncludeCommonConfig,
@@ -171,7 +178,6 @@ enum ProviderTemplateId {
     Custom,
     ClaudeOfficial,
     OpenAiOfficial,
-    RightCode,
     GoogleOAuth,
 }
 
@@ -198,20 +204,34 @@ struct SponsorProviderPreset {
 // Add new sponsor presets here.
 // They will automatically show up as extra templates in the TUI "Add Provider" form
 // for Claude/Codex/Gemini (appended after the built-in templates).
-const SPONSOR_PROVIDER_PRESETS: [SponsorProviderPreset; 1] = [SponsorProviderPreset {
-    id: "packycode",
-    provider_name: "PackyCode",
-    chip_label: "* PackyCode",
-    website_url: "https://www.packyapi.com",
-    register_url: "https://www.packyapi.com/register?aff=cc-switch-cli",
-    promo_code: "cc-switch-cli",
-    partner_promotion_key: "packycode",
-    claude_base_url: "https://www.packyapi.com",
-    codex_base_url: "https://www.packyapi.com/v1",
-    gemini_base_url: "https://www.packyapi.com",
-}];
+const SPONSOR_PROVIDER_PRESETS: [SponsorProviderPreset; 2] = [
+    SponsorProviderPreset {
+        id: "packycode",
+        provider_name: "PackyCode",
+        chip_label: "* PackyCode",
+        website_url: "https://www.packyapi.com",
+        register_url: "https://www.packyapi.com/register?aff=cc-switch-cli",
+        promo_code: "cc-switch-cli",
+        partner_promotion_key: "packycode",
+        claude_base_url: "https://www.packyapi.com",
+        codex_base_url: "https://www.packyapi.com/v1",
+        gemini_base_url: "https://www.packyapi.com",
+    },
+    SponsorProviderPreset {
+        id: "rightcode",
+        provider_name: "RightCode",
+        chip_label: "* RightCode",
+        website_url: "https://right.codes",
+        register_url: "https://www.right.codes/register?aff=ccswitch-cli",
+        promo_code: "",
+        partner_promotion_key: "rightcode",
+        claude_base_url: "https://www.right.codes/claude",
+        codex_base_url: "https://right.codes/codex/v1",
+        gemini_base_url: "https://www.right.codes",
+    },
+];
 
-const PROVIDER_TEMPLATE_DEFS_CLAUDE: [ProviderTemplateDef; 3] = [
+const PROVIDER_TEMPLATE_DEFS_CLAUDE: [ProviderTemplateDef; 2] = [
     ProviderTemplateDef {
         id: ProviderTemplateId::Custom,
         label: "Custom",
@@ -220,13 +240,9 @@ const PROVIDER_TEMPLATE_DEFS_CLAUDE: [ProviderTemplateDef; 3] = [
         id: ProviderTemplateId::ClaudeOfficial,
         label: "Claude Official",
     },
-    ProviderTemplateDef {
-        id: ProviderTemplateId::RightCode,
-        label: "RightCode",
-    },
 ];
 
-const PROVIDER_TEMPLATE_DEFS_CODEX: [ProviderTemplateDef; 3] = [
+const PROVIDER_TEMPLATE_DEFS_CODEX: [ProviderTemplateDef; 2] = [
     ProviderTemplateDef {
         id: ProviderTemplateId::Custom,
         label: "Custom",
@@ -234,10 +250,6 @@ const PROVIDER_TEMPLATE_DEFS_CODEX: [ProviderTemplateDef; 3] = [
     ProviderTemplateDef {
         id: ProviderTemplateId::OpenAiOfficial,
         label: "OpenAI Official",
-    },
-    ProviderTemplateDef {
-        id: ProviderTemplateId::RightCode,
-        label: "RightCode",
     },
 ];
 
@@ -252,11 +264,26 @@ const PROVIDER_TEMPLATE_DEFS_GEMINI: [ProviderTemplateDef; 2] = [
     },
 ];
 
+const PROVIDER_TEMPLATE_DEFS_OPENCODE: [ProviderTemplateDef; 1] = [ProviderTemplateDef {
+    id: ProviderTemplateId::Custom,
+    label: "Custom",
+}];
+
+const NO_SPONSOR_PROVIDER_PRESETS: [SponsorProviderPreset; 0] = [];
+
 fn provider_builtin_template_defs(app_type: &AppType) -> &'static [ProviderTemplateDef] {
     match app_type {
         AppType::Claude => &PROVIDER_TEMPLATE_DEFS_CLAUDE,
         AppType::Codex => &PROVIDER_TEMPLATE_DEFS_CODEX,
         AppType::Gemini => &PROVIDER_TEMPLATE_DEFS_GEMINI,
+        AppType::OpenCode => &PROVIDER_TEMPLATE_DEFS_OPENCODE,
+    }
+}
+
+fn provider_sponsor_presets(app_type: &AppType) -> &'static [SponsorProviderPreset] {
+    match app_type {
+        AppType::OpenCode => &NO_SPONSOR_PROVIDER_PRESETS,
+        _ => &SPONSOR_PROVIDER_PRESETS,
     }
 }
 
@@ -314,6 +341,16 @@ pub struct ProviderAddFormState {
     pub gemini_api_key: TextInput,
     pub gemini_base_url: TextInput,
     pub gemini_model: TextInput,
+
+    // OpenCode
+    pub opencode_npm_package: TextInput,
+    pub opencode_api_key: TextInput,
+    pub opencode_base_url: TextInput,
+    pub opencode_model_id: TextInput,
+    pub opencode_model_name: TextInput,
+    pub opencode_model_context_limit: TextInput,
+    pub opencode_model_output_limit: TextInput,
+    opencode_model_original_id: Option<String>,
 }
 
 impl ProviderAddFormState {
@@ -369,6 +406,15 @@ impl ProviderAddFormState {
             gemini_api_key: TextInput::new(""),
             gemini_base_url: TextInput::new(gemini_base_url_default),
             gemini_model: TextInput::new(""),
+
+            opencode_npm_package: TextInput::new("@ai-sdk/openai-compatible"),
+            opencode_api_key: TextInput::new(""),
+            opencode_base_url: TextInput::new(""),
+            opencode_model_id: TextInput::new(""),
+            opencode_model_name: TextInput::new(""),
+            opencode_model_context_limit: TextInput::new(""),
+            opencode_model_output_limit: TextInput::new(""),
+            opencode_model_original_id: None,
         }
     }
 
@@ -510,6 +556,52 @@ impl ProviderAddFormState {
                     form.gemini_auth_type = GeminiAuthType::OAuth;
                 }
             }
+            AppType::OpenCode => {
+                if let Some(npm) = provider.settings_config.get("npm").and_then(|v| v.as_str()) {
+                    form.opencode_npm_package.set(npm);
+                }
+                if let Some(options) = provider
+                    .settings_config
+                    .get("options")
+                    .and_then(|v| v.as_object())
+                {
+                    if let Some(api_key) = options.get("apiKey").and_then(|v| v.as_str()) {
+                        form.opencode_api_key.set(api_key);
+                    }
+                    if let Some(base_url) = options.get("baseURL").and_then(|v| v.as_str()) {
+                        form.opencode_base_url.set(base_url);
+                    }
+                }
+                if let Some(models) = provider
+                    .settings_config
+                    .get("models")
+                    .and_then(|v| v.as_object())
+                {
+                    if let Some((model_id, model_value)) =
+                        models.iter().max_by(|(id_a, model_a), (id_b, model_b)| {
+                            opencode_model_rank(model_a)
+                                .cmp(&opencode_model_rank(model_b))
+                                .then_with(|| id_b.cmp(id_a))
+                        })
+                    {
+                        form.opencode_model_original_id = Some(model_id.clone());
+                        form.opencode_model_id.set(model_id);
+                        if let Some(name) = model_value.get("name").and_then(|v| v.as_str()) {
+                            form.opencode_model_name.set(name);
+                        } else {
+                            form.opencode_model_name.set(model_id);
+                        }
+                        if let Some(limit) = model_value.get("limit").and_then(|v| v.as_object()) {
+                            if let Some(context) = limit.get("context").and_then(|v| v.as_u64()) {
+                                form.opencode_model_context_limit.set(context.to_string());
+                            }
+                            if let Some(output) = limit.get("output").and_then(|v| v.as_u64()) {
+                                form.opencode_model_output_limit.set(output.to_string());
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         form
@@ -524,7 +616,8 @@ impl ProviderAddFormState {
     }
 
     pub fn template_count(&self) -> usize {
-        provider_builtin_template_defs(&self.app_type).len() + SPONSOR_PROVIDER_PRESETS.len()
+        provider_builtin_template_defs(&self.app_type).len()
+            + provider_sponsor_presets(&self.app_type).len()
     }
 
     pub fn template_labels(&self) -> Vec<&'static str> {
@@ -533,7 +626,7 @@ impl ProviderAddFormState {
             .map(|def| def.label)
             .collect::<Vec<_>>();
         labels.extend(
-            SPONSOR_PROVIDER_PRESETS
+            provider_sponsor_presets(&self.app_type)
                 .iter()
                 .map(|preset| preset.chip_label),
         );
@@ -568,6 +661,15 @@ impl ProviderAddFormState {
                     fields.push(ProviderAddField::GeminiModel);
                 }
             }
+            AppType::OpenCode => {
+                fields.push(ProviderAddField::OpenCodeNpmPackage);
+                fields.push(ProviderAddField::OpenCodeApiKey);
+                fields.push(ProviderAddField::OpenCodeBaseUrl);
+                fields.push(ProviderAddField::OpenCodeModelId);
+                fields.push(ProviderAddField::OpenCodeModelName);
+                fields.push(ProviderAddField::OpenCodeModelContextLimit);
+                fields.push(ProviderAddField::OpenCodeModelOutputLimit);
+            }
         }
 
         fields.push(ProviderAddField::CommonConfigDivider);
@@ -591,6 +693,13 @@ impl ProviderAddFormState {
             ProviderAddField::GeminiApiKey => Some(&self.gemini_api_key),
             ProviderAddField::GeminiBaseUrl => Some(&self.gemini_base_url),
             ProviderAddField::GeminiModel => Some(&self.gemini_model),
+            ProviderAddField::OpenCodeNpmPackage => Some(&self.opencode_npm_package),
+            ProviderAddField::OpenCodeApiKey => Some(&self.opencode_api_key),
+            ProviderAddField::OpenCodeBaseUrl => Some(&self.opencode_base_url),
+            ProviderAddField::OpenCodeModelId => Some(&self.opencode_model_id),
+            ProviderAddField::OpenCodeModelName => Some(&self.opencode_model_name),
+            ProviderAddField::OpenCodeModelContextLimit => Some(&self.opencode_model_context_limit),
+            ProviderAddField::OpenCodeModelOutputLimit => Some(&self.opencode_model_output_limit),
             ProviderAddField::CodexWireApi
             | ProviderAddField::CodexRequiresOpenaiAuth
             | ProviderAddField::ClaudeModelConfig
@@ -616,6 +725,17 @@ impl ProviderAddFormState {
             ProviderAddField::GeminiApiKey => Some(&mut self.gemini_api_key),
             ProviderAddField::GeminiBaseUrl => Some(&mut self.gemini_base_url),
             ProviderAddField::GeminiModel => Some(&mut self.gemini_model),
+            ProviderAddField::OpenCodeNpmPackage => Some(&mut self.opencode_npm_package),
+            ProviderAddField::OpenCodeApiKey => Some(&mut self.opencode_api_key),
+            ProviderAddField::OpenCodeBaseUrl => Some(&mut self.opencode_base_url),
+            ProviderAddField::OpenCodeModelId => Some(&mut self.opencode_model_id),
+            ProviderAddField::OpenCodeModelName => Some(&mut self.opencode_model_name),
+            ProviderAddField::OpenCodeModelContextLimit => {
+                Some(&mut self.opencode_model_context_limit)
+            }
+            ProviderAddField::OpenCodeModelOutputLimit => {
+                Some(&mut self.opencode_model_output_limit)
+            }
             ProviderAddField::CodexWireApi
             | ProviderAddField::CodexRequiresOpenaiAuth
             | ProviderAddField::ClaudeModelConfig
@@ -665,16 +785,31 @@ impl ProviderAddFormState {
         self.claude_model_config_touched = true;
     }
 
+    fn opencode_primary_model_id(&self) -> Option<String> {
+        let model_id = self.opencode_model_id.value.trim();
+        if !model_id.is_empty() {
+            return Some(model_id.to_string());
+        }
+
+        let model_name = self.opencode_model_name.value.trim();
+        if !model_name.is_empty() {
+            return Some(model_name.to_string());
+        }
+
+        None
+    }
+
     pub fn apply_template(&mut self, idx: usize, existing_ids: &[String]) {
         let builtin_defs = provider_builtin_template_defs(&self.app_type);
-        let total_templates = builtin_defs.len() + SPONSOR_PROVIDER_PRESETS.len();
+        let sponsor_presets = provider_sponsor_presets(&self.app_type);
+        let total_templates = builtin_defs.len() + sponsor_presets.len();
         let idx = idx.min(total_templates.saturating_sub(1));
         self.template_idx = idx;
         self.id_is_manual = false;
 
         if idx >= builtin_defs.len() {
             let sponsor_idx = idx.saturating_sub(builtin_defs.len());
-            if let Some(preset) = SPONSOR_PROVIDER_PRESETS.get(sponsor_idx) {
+            if let Some(preset) = sponsor_presets.get(sponsor_idx) {
                 self.apply_sponsor_preset(preset);
             }
         } else {
@@ -714,6 +849,14 @@ impl ProviderAddFormState {
                     self.gemini_api_key = defaults.gemini_api_key;
                     self.gemini_base_url = defaults.gemini_base_url;
                     self.gemini_model = defaults.gemini_model;
+                    self.opencode_npm_package = defaults.opencode_npm_package;
+                    self.opencode_api_key = defaults.opencode_api_key;
+                    self.opencode_base_url = defaults.opencode_base_url;
+                    self.opencode_model_id = defaults.opencode_model_id;
+                    self.opencode_model_name = defaults.opencode_model_name;
+                    self.opencode_model_context_limit = defaults.opencode_model_context_limit;
+                    self.opencode_model_output_limit = defaults.opencode_model_output_limit;
+                    self.opencode_model_original_id = defaults.opencode_model_original_id;
                 }
                 return;
             }
@@ -740,21 +883,6 @@ impl ProviderAddFormState {
                     self.codex_model.set("gpt-5.2-codex");
                     self.codex_wire_api = CodexWireApi::Responses;
                     self.codex_requires_openai_auth = true;
-                }
-                ProviderTemplateId::RightCode => {
-                    self.name.set("RightCode");
-                    self.website_url.set("https://right.codes");
-                    match self.app_type {
-                        AppType::Claude => {
-                            self.claude_base_url.set("https://www.right.codes/claude");
-                        }
-                        AppType::Codex => {
-                            self.codex_base_url.set("https://right.codes/codex/v1");
-                            self.codex_model.set("gpt-5.2-codex");
-                            self.codex_wire_api = CodexWireApi::Responses;
-                        }
-                        AppType::Gemini => {}
-                    }
                 }
                 ProviderTemplateId::GoogleOAuth => {
                     self.name.set("Google OAuth");
@@ -797,6 +925,7 @@ impl ProviderAddFormState {
                 self.gemini_auth_type = GeminiAuthType::ApiKey;
                 self.gemini_base_url.set(preset.gemini_base_url);
             }
+            AppType::OpenCode => {}
         }
     }
 
@@ -1004,6 +1133,91 @@ impl ProviderAddFormState {
                     }
                 }
             }
+            AppType::OpenCode => {
+                let npm_package = self.opencode_npm_package.value.trim();
+                settings_obj.insert(
+                    "npm".to_string(),
+                    json!(if npm_package.is_empty() {
+                        "@ai-sdk/openai-compatible"
+                    } else {
+                        npm_package
+                    }),
+                );
+
+                let options_value = settings_obj
+                    .entry("options".to_string())
+                    .or_insert_with(|| json!({}));
+                if !options_value.is_object() {
+                    *options_value = json!({});
+                }
+                let options_obj = options_value
+                    .as_object_mut()
+                    .expect("options must be a JSON object");
+                set_or_remove_trimmed(options_obj, "apiKey", &self.opencode_api_key.value);
+                set_or_remove_trimmed(options_obj, "baseURL", &self.opencode_base_url.value);
+                if options_obj.is_empty() {
+                    settings_obj.remove("options");
+                }
+
+                let mut models_value = settings_obj
+                    .remove("models")
+                    .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                if !models_value.is_object() {
+                    models_value = Value::Object(serde_json::Map::new());
+                }
+                let models_obj = models_value
+                    .as_object_mut()
+                    .expect("models must be a JSON object");
+
+                let current_model_id = self.opencode_primary_model_id();
+                if let Some(original_id) = self.opencode_model_original_id.as_deref() {
+                    if current_model_id.as_deref() != Some(original_id) {
+                        models_obj.remove(original_id);
+                    }
+                }
+
+                if let Some(model_id) = current_model_id {
+                    let mut model_obj = match models_obj.remove(&model_id) {
+                        Some(Value::Object(map)) => map,
+                        _ => serde_json::Map::new(),
+                    };
+                    let model_name = self.opencode_model_name.value.trim().to_string();
+                    model_obj.insert(
+                        "name".to_string(),
+                        json!(if model_name.is_empty() {
+                            model_id.as_str()
+                        } else {
+                            model_name.as_str()
+                        }),
+                    );
+
+                    let limit_value = model_obj
+                        .entry("limit".to_string())
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if !limit_value.is_object() {
+                        *limit_value = Value::Object(serde_json::Map::new());
+                    }
+                    let limit_obj = limit_value
+                        .as_object_mut()
+                        .expect("limit must be a JSON object");
+
+                    set_or_remove_u64(
+                        limit_obj,
+                        "context",
+                        &self.opencode_model_context_limit.value,
+                    );
+                    set_or_remove_u64(limit_obj, "output", &self.opencode_model_output_limit.value);
+                    if limit_obj.is_empty() {
+                        model_obj.remove("limit");
+                    }
+
+                    models_obj.insert(model_id, Value::Object(model_obj));
+                }
+
+                if !models_obj.is_empty() {
+                    settings_obj.insert("models".to_string(), models_value);
+                }
+            }
         }
 
         Value::Object(provider_obj)
@@ -1031,7 +1245,7 @@ impl ProviderAddFormState {
         };
 
         match self.app_type {
-            AppType::Claude | AppType::Gemini => {
+            AppType::Claude | AppType::Gemini | AppType::OpenCode => {
                 let mut common: Value = serde_json::from_str(snippet).map_err(|e| {
                     crate::cli::i18n::texts::common_config_snippet_invalid_json(&e.to_string())
                 })?;
@@ -1400,6 +1614,38 @@ fn set_or_remove_trimmed(obj: &mut serde_json::Map<String, Value>, key: &str, ra
     }
 }
 
+fn set_or_remove_u64(obj: &mut serde_json::Map<String, Value>, key: &str, raw: &str) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        obj.remove(key);
+    } else if let Ok(value) = trimmed.parse::<u64>() {
+        obj.insert(key.to_string(), json!(value));
+    } else {
+        obj.remove(key);
+    }
+}
+
+fn opencode_model_rank(model: &Value) -> usize {
+    let mut score = 0;
+    if model
+        .get("limit")
+        .and_then(|value| value.as_object())
+        .map(|limit| !limit.is_empty())
+        .unwrap_or(false)
+    {
+        score += 1;
+    }
+    if model
+        .get("options")
+        .and_then(|value| value.as_object())
+        .map(|options| !options.is_empty())
+        .unwrap_or(false)
+    {
+        score += 1;
+    }
+    score
+}
+
 #[derive(Debug, Default)]
 struct ParsedCodexConfigSnippet {
     base_url: Option<String>,
@@ -1411,37 +1657,51 @@ struct ParsedCodexConfigSnippet {
 
 fn parse_codex_config_snippet(cfg: &str) -> ParsedCodexConfigSnippet {
     let mut out = ParsedCodexConfigSnippet::default();
-    for line in cfg.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let raw = value.trim().trim_matches('"').trim_matches('\'');
-        match key {
-            "base_url" => out.base_url = Some(raw.to_string()),
-            "model" => out.model = Some(raw.to_string()),
-            "wire_api" => {
-                out.wire_api = match raw {
-                    "chat" => Some(CodexWireApi::Chat),
-                    "responses" => Some(CodexWireApi::Responses),
-                    _ => None,
-                }
-            }
-            "requires_openai_auth" => {
-                out.requires_openai_auth = match raw {
-                    "true" => Some(true),
-                    "false" => Some(false),
-                    _ => None,
-                }
-            }
-            "env_key" => out.env_key = Some(raw.to_string()),
-            _ => {}
-        }
+    let table: toml::Table = match toml::from_str(cfg.trim()) {
+        Ok(t) => t,
+        Err(_) => return out,
+    };
+
+    // Root-level keys
+    out.model = table
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    // Provider-specific keys live under [model_providers.<key>]
+    let section = table
+        .get("model_provider")
+        .and_then(|v| v.as_str())
+        .and_then(|key| {
+            table
+                .get("model_providers")
+                .and_then(|v| v.as_table())
+                .and_then(|t| t.get(key))
+                .and_then(|v| v.as_table())
+        });
+
+    if let Some(section) = section {
+        out.base_url = section
+            .get("base_url")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        out.wire_api = section
+            .get("wire_api")
+            .and_then(|v| v.as_str())
+            .and_then(|s| match s {
+                "chat" => Some(CodexWireApi::Chat),
+                "responses" => Some(CodexWireApi::Responses),
+                _ => None,
+            });
+        out.requires_openai_auth = section
+            .get("requires_openai_auth")
+            .and_then(|v| v.as_bool());
+        out.env_key = section
+            .get("env_key")
+            .and_then(|v| v.as_str())
+            .map(String::from);
     }
+
     out
 }
 
@@ -1453,34 +1713,70 @@ fn update_codex_config_snippet(
     requires_openai_auth: bool,
     env_key: &str,
 ) -> String {
-    let mut lines = original.lines().map(|s| s.to_string()).collect::<Vec<_>>();
+    let mut doc = match original.trim().parse::<toml_edit::DocumentMut>() {
+        Ok(d) => d,
+        Err(_) => return original.to_string(),
+    };
 
-    toml_set_string(&mut lines, "base_url", non_empty(base_url));
-    toml_set_string(&mut lines, "model", non_empty(model));
-    toml_set_string(&mut lines, "wire_api", Some(wire_api.as_str()));
-    toml_set_bool(
-        &mut lines,
-        "requires_openai_auth",
-        Some(requires_openai_auth),
-    );
-
-    if requires_openai_auth {
-        toml_set_string(&mut lines, "env_key", None);
+    // Root-level: model
+    if let Some(m) = non_empty(model) {
+        doc["model"] = toml_edit::value(m);
     } else {
-        let env_key = non_empty(env_key).unwrap_or("OPENAI_API_KEY");
-        toml_set_string(&mut lines, "env_key", Some(env_key));
+        doc.remove("model");
     }
 
-    // Keep user formatting/comments; only trim leading/trailing empty lines after updates.
-    let mut start = 0;
-    while start < lines.len() && lines[start].trim().is_empty() {
-        start += 1;
+    // Provider-specific keys live under [model_providers.<key>]
+    let mp_key = doc
+        .get("model_provider")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    if let Some(key) = mp_key {
+        // Ensure [model_providers.<key>] exists
+        if doc.get("model_providers").is_none() {
+            doc["model_providers"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let providers = doc["model_providers"]
+            .as_table_like_mut()
+            .expect("model_providers should be a table");
+        if providers.get(&key).is_none() {
+            providers.insert(&key, toml_edit::Item::Table(toml_edit::Table::new()));
+        }
+        if let Some(section) = providers.get_mut(&key).and_then(|v| v.as_table_like_mut()) {
+            // base_url
+            if let Some(url) = non_empty(base_url) {
+                section.insert("base_url", toml_edit::value(url));
+            } else {
+                section.remove("base_url");
+            }
+
+            // wire_api
+            section.insert("wire_api", toml_edit::value(wire_api.as_str()));
+
+            // requires_openai_auth
+            section.insert(
+                "requires_openai_auth",
+                toml_edit::value(requires_openai_auth),
+            );
+
+            // env_key
+            if requires_openai_auth {
+                section.remove("env_key");
+            } else {
+                let ek = non_empty(env_key).unwrap_or("OPENAI_API_KEY");
+                section.insert("env_key", toml_edit::value(ek));
+            }
+        }
     }
-    let mut end = lines.len();
-    while end > start && lines[end - 1].trim().is_empty() {
-        end -= 1;
+
+    let result = doc.to_string();
+    // Trim leading/trailing blank lines
+    let trimmed = result.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        trimmed.to_string()
     }
-    lines[start..end].join("\n")
 }
 
 fn non_empty(value: &str) -> Option<&str> {
@@ -1492,88 +1788,17 @@ fn non_empty(value: &str) -> Option<&str> {
     }
 }
 
-fn is_toml_key_line(line: &str, key: &str) -> bool {
-    if !line.starts_with(key) {
-        return false;
-    }
-    let rest = &line[key.len()..];
-    rest.starts_with(|c: char| c.is_whitespace() || c == '=')
-}
-
-fn toml_set_string(lines: &mut Vec<String>, key: &str, value: Option<&str>) {
-    if let Some(idx) = lines
-        .iter()
-        .position(|line| is_toml_key_line(line.trim_start(), key))
-    {
-        if let Some(value) = value {
-            lines[idx] = format!("{key} = \"{}\"", escape_toml_string(value));
-        } else {
-            lines.remove(idx);
-        }
-        return;
-    }
-
-    if let Some(value) = value {
-        lines.push(format!("{key} = \"{}\"", escape_toml_string(value)));
-    }
-}
-
-fn toml_set_bool(lines: &mut Vec<String>, key: &str, value: Option<bool>) {
-    if let Some(idx) = lines
-        .iter()
-        .position(|line| is_toml_key_line(line.trim_start(), key))
-    {
-        if let Some(value) = value {
-            lines[idx] = format!("{key} = {value}");
-        } else {
-            lines.remove(idx);
-        }
-        return;
-    }
-
-    if let Some(value) = value {
-        lines.push(format!("{key} = {value}"));
-    }
-}
-
 fn escape_toml_string(value: &str) -> String {
     value.replace('"', "\\\"")
 }
 
 fn clean_codex_provider_key(provider_id: &str, provider_name: &str) -> String {
-    // Follow upstream's style: lowercase + underscores, trimmed.
-    // This key is used for:
-    // - model_provider = "<key>"
-    // - [model_providers.<key>]
     let raw = if provider_id.trim().is_empty() {
         provider_name.trim()
     } else {
         provider_id.trim()
     };
-
-    let mut key = raw
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-
-    while key.starts_with('_') {
-        key.remove(0);
-    }
-    while key.ends_with('_') {
-        key.pop();
-    }
-
-    if key.is_empty() {
-        "custom".to_string()
-    } else {
-        key
-    }
+    crate::codex_config::clean_codex_provider_key(raw)
 }
 
 fn build_codex_provider_config_toml(
@@ -1678,7 +1903,7 @@ fn strip_common_config_from_settings(
     }
 
     match app_type {
-        AppType::Claude | AppType::Gemini => {
+        AppType::Claude | AppType::Gemini | AppType::OpenCode => {
             let common: Value = serde_json::from_str(snippet).map_err(|e| {
                 crate::cli::i18n::texts::common_config_snippet_invalid_json(&e.to_string())
             })?;
@@ -1892,42 +2117,26 @@ mod tests {
     }
 
     #[test]
-    fn provider_add_form_template_labels_include_rightcode_for_claude_and_codex() {
+    fn provider_add_form_template_labels_include_rightcode_for_all_app_types() {
         let claude_form = ProviderAddFormState::new(AppType::Claude);
         let claude_labels = claude_form.template_labels();
         assert!(
-            claude_labels.contains(&"RightCode"),
-            "expected RightCode template label to exist for Claude"
-        );
-        assert!(
-            !claude_labels.contains(&"* RightCode"),
-            "expected RightCode template label to not include '*' prefix"
+            claude_labels.contains(&"* RightCode"),
+            "expected RightCode sponsor label to exist for Claude"
         );
 
         let codex_form = ProviderAddFormState::new(AppType::Codex);
         let codex_labels = codex_form.template_labels();
         assert!(
-            codex_labels.contains(&"RightCode"),
-            "expected RightCode template label to exist for Codex"
+            codex_labels.contains(&"* RightCode"),
+            "expected RightCode sponsor label to exist for Codex"
         );
-        assert!(
-            !codex_labels.contains(&"* RightCode"),
-            "expected RightCode template label to not include '*' prefix"
-        );
-    }
 
-    #[test]
-    fn provider_add_form_template_labels_exclude_rightcode_for_gemini() {
-        let form = ProviderAddFormState::new(AppType::Gemini);
-        let labels = form.template_labels();
-
+        let gemini_form = ProviderAddFormState::new(AppType::Gemini);
+        let gemini_labels = gemini_form.template_labels();
         assert!(
-            !labels.contains(&"RightCode"),
-            "expected RightCode template label to not exist for Gemini"
-        );
-        assert!(
-            !labels.contains(&"* RightCode"),
-            "expected RightCode template label to not exist for Gemini"
+            gemini_labels.contains(&"* RightCode"),
+            "expected RightCode sponsor label to exist for Gemini"
         );
     }
 
@@ -1935,12 +2144,12 @@ mod tests {
         ProviderAddFormState::new(app_type)
             .template_labels()
             .iter()
-            .position(|label| *label == "RightCode")
-            .expect("RightCode template should exist")
+            .position(|label| *label == "* RightCode")
+            .expect("RightCode sponsor template should exist")
     }
 
     #[test]
-    fn provider_add_form_rightcode_template_claude_sets_base_url_and_no_partner_meta() {
+    fn provider_add_form_rightcode_template_claude_sets_base_url_and_partner_meta() {
         let mut form = ProviderAddFormState::new(AppType::Claude);
         let existing_ids = Vec::<String>::new();
 
@@ -1957,18 +2166,20 @@ mod tests {
         let meta = provider["meta"]
             .as_object()
             .expect("meta should be an object");
-        assert!(
-            meta.get("isPartner").is_none(),
-            "expected RightCode template to not set meta.isPartner"
+        assert_eq!(
+            meta.get("isPartner").and_then(|v| v.as_bool()),
+            Some(true),
+            "expected RightCode sponsor to set meta.isPartner"
         );
-        assert!(
-            meta.get("partnerPromotionKey").is_none(),
-            "expected RightCode template to not set meta.partnerPromotionKey"
+        assert_eq!(
+            meta.get("partnerPromotionKey").and_then(|v| v.as_str()),
+            Some("rightcode"),
+            "expected RightCode sponsor to set meta.partnerPromotionKey"
         );
     }
 
     #[test]
-    fn provider_add_form_rightcode_template_codex_sets_base_url_and_no_partner_meta() {
+    fn provider_add_form_rightcode_template_codex_sets_base_url_and_partner_meta() {
         let mut form = ProviderAddFormState::new(AppType::Codex);
         let existing_ids = Vec::<String>::new();
 
@@ -1985,19 +2196,21 @@ mod tests {
         let meta = provider["meta"]
             .as_object()
             .expect("meta should be an object");
-        assert!(
-            meta.get("isPartner").is_none(),
-            "expected RightCode template to not set meta.isPartner"
+        assert_eq!(
+            meta.get("isPartner").and_then(|v| v.as_bool()),
+            Some(true),
+            "expected RightCode sponsor to set meta.isPartner"
         );
-        assert!(
-            meta.get("partnerPromotionKey").is_none(),
-            "expected RightCode template to not set meta.partnerPromotionKey"
+        assert_eq!(
+            meta.get("partnerPromotionKey").and_then(|v| v.as_str()),
+            Some("rightcode"),
+            "expected RightCode sponsor to set meta.partnerPromotionKey"
         );
     }
 
     #[test]
     fn provider_add_form_fields_include_notes() {
-        for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+        for app_type in AppType::all() {
             let form = ProviderAddFormState::new(app_type.clone());
             let fields = form.fields();
 
@@ -2708,6 +2921,122 @@ requires_openai_auth = true
                 .and_then(|value| value.as_str()),
             Some("sk-provider"),
             "provider-specific env keys should be preserved"
+        );
+    }
+
+    #[test]
+    fn provider_add_form_opencode_uses_custom_template_only() {
+        let form = ProviderAddFormState::new(AppType::OpenCode);
+        let labels = form.template_labels();
+
+        assert_eq!(labels, vec!["Custom"]);
+    }
+
+    #[test]
+    fn provider_add_form_opencode_includes_dedicated_fields() {
+        let form = ProviderAddFormState::new(AppType::OpenCode);
+        let fields = form.fields();
+
+        assert!(
+            fields.len() > 6,
+            "OpenCode should expose dedicated provider/model fields instead of only common metadata"
+        );
+    }
+
+    #[test]
+    fn provider_add_form_opencode_builds_settings_from_dedicated_fields() {
+        let mut form = ProviderAddFormState::new(AppType::OpenCode);
+        form.id.set("oc1");
+        form.name.set("OpenCode Provider");
+        form.opencode_npm_package.set("@ai-sdk/openai-compatible");
+        form.opencode_api_key.set("sk-oc");
+        form.opencode_base_url.set("https://api.example.com/v1");
+        form.opencode_model_id.set("gpt-4.1-mini");
+        form.opencode_model_name.set("GPT 4.1 Mini");
+        form.opencode_model_context_limit.set("128000");
+        form.opencode_model_output_limit.set("8192");
+
+        let provider = form.to_provider_json_value();
+        assert_eq!(provider["id"], "oc1");
+        assert_eq!(
+            provider["settingsConfig"]["npm"],
+            "@ai-sdk/openai-compatible"
+        );
+        assert_eq!(provider["settingsConfig"]["options"]["apiKey"], "sk-oc");
+        assert_eq!(
+            provider["settingsConfig"]["options"]["baseURL"],
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            provider["settingsConfig"]["models"]["gpt-4.1-mini"]["name"],
+            "GPT 4.1 Mini"
+        );
+        assert_eq!(
+            provider["settingsConfig"]["models"]["gpt-4.1-mini"]["limit"]["context"],
+            128000
+        );
+        assert_eq!(
+            provider["settingsConfig"]["models"]["gpt-4.1-mini"]["limit"]["output"],
+            8192
+        );
+    }
+
+    #[test]
+    fn provider_add_form_opencode_from_provider_backfills_and_preserves_extra_settings() {
+        let provider = Provider::with_id(
+            "oc1".to_string(),
+            "OpenCode Provider".to_string(),
+            json!({
+                "npm": "@ai-sdk/openai-compatible",
+                "options": {
+                    "apiKey": "sk-oc",
+                    "baseURL": "https://api.example.com/v1",
+                    "headers": {
+                        "X-Test": "1"
+                    },
+                    "timeout": 30
+                },
+                "models": {
+                    "gpt-4.1-mini": {
+                        "name": "GPT 4.1 Mini",
+                        "limit": {
+                            "context": 128000,
+                            "output": 8192
+                        },
+                        "options": {
+                            "reasoningEffort": "medium"
+                        }
+                    },
+                    "gpt-4.1": {
+                        "name": "GPT 4.1"
+                    }
+                }
+            }),
+            Some("https://provider.example".to_string()),
+        );
+
+        let form = ProviderAddFormState::from_provider(AppType::OpenCode, &provider);
+        assert_eq!(form.opencode_npm_package.value, "@ai-sdk/openai-compatible");
+        assert_eq!(form.opencode_api_key.value, "sk-oc");
+        assert_eq!(form.opencode_base_url.value, "https://api.example.com/v1");
+        assert_eq!(form.opencode_model_id.value, "gpt-4.1-mini");
+        assert_eq!(form.opencode_model_name.value, "GPT 4.1 Mini");
+        assert_eq!(form.opencode_model_context_limit.value, "128000");
+        assert_eq!(form.opencode_model_output_limit.value, "8192");
+
+        let roundtrip = form.to_provider_json_value();
+        assert_eq!(
+            roundtrip["settingsConfig"]["options"]["headers"]["X-Test"],
+            "1"
+        );
+        assert_eq!(roundtrip["settingsConfig"]["options"]["timeout"], 30);
+        assert_eq!(
+            roundtrip["settingsConfig"]["models"]["gpt-4.1"]["name"],
+            "GPT 4.1"
+        );
+        assert_eq!(
+            roundtrip["settingsConfig"]["models"]["gpt-4.1-mini"]["options"]["reasoningEffort"],
+            "medium"
         );
     }
 }

@@ -12,6 +12,7 @@ mod gemini_mcp;
 mod import_export;
 mod init_status;
 mod mcp;
+mod opencode_config;
 mod prompt;
 mod prompt_files;
 mod provider;
@@ -28,6 +29,9 @@ pub mod cli;
 
 // Public exports
 pub use app_config::{AppType, McpApps, McpServer, MultiAppConfig};
+pub use claude_plugin::{
+    sync_claude_plugin_on_provider_switch, sync_claude_plugin_on_settings_toggle,
+};
 pub use codex_config::{get_codex_auth_path, get_codex_config_path, write_codex_live_atomic};
 pub use config::{get_claude_mcp_path, get_claude_settings_path, read_json_file};
 pub use database::{Database, FailoverQueueItem};
@@ -42,12 +46,14 @@ pub use mcp::{
 };
 pub use provider::{Provider, ProviderMeta};
 pub use services::{
-    ConfigService, EndpointLatency, McpService, PromptService, ProviderService, SkillService,
-    SpeedtestService, SyncDecision, WebDavSyncService, WebDavSyncSummary,
+    ConfigService, EndpointLatency, HealthStatus, McpService, PromptService, ProviderService,
+    SkillService, SpeedtestService, StreamCheckConfig, StreamCheckResult, StreamCheckService,
+    SyncDecision, WebDavSyncService, WebDavSyncSummary,
 };
 pub use settings::{
-    get_skip_claude_onboarding, get_webdav_sync_settings, set_skip_claude_onboarding,
-    set_webdav_sync_settings, update_settings, webdav_jianguoyun_preset, AppSettings,
+    get_enable_claude_plugin_integration, get_skip_claude_onboarding, get_webdav_sync_settings,
+    set_enable_claude_plugin_integration, set_skip_claude_onboarding, set_webdav_sync_settings,
+    update_settings, update_webdav_sync_status, webdav_jianguoyun_preset, AppSettings,
     WebDavSyncSettings, WebDavSyncStatus,
 };
 pub use store::AppState;

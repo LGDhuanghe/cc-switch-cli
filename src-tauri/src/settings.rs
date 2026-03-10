@@ -39,6 +39,8 @@ pub struct WebDavSyncStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_remote_etag: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_local_manifest_hash: Option<String>,
@@ -62,9 +64,7 @@ pub struct WebDavSyncSettings {
     #[serde(default)]
     pub password: String,
     #[serde(default)]
-    pub device_id: String,
-    #[serde(default = "default_webdav_timeout_secs")]
-    pub timeout_secs: u64,
+    pub auto_sync: bool,
     #[serde(default)]
     pub status: WebDavSyncStatus,
 }
@@ -75,10 +75,6 @@ fn default_webdav_remote_root() -> String {
 
 fn default_webdav_profile() -> String {
     "default".to_string()
-}
-
-fn default_webdav_timeout_secs() -> u64 {
-    20
 }
 
 const JIANGUOYUN_WEBDAV_BASE_URL: &str = "https://dav.jianguoyun.com/dav";
@@ -92,8 +88,7 @@ impl Default for WebDavSyncSettings {
             profile: default_webdav_profile(),
             username: String::new(),
             password: String::new(),
-            device_id: format!("device-{}", chrono::Utc::now().timestamp()),
-            timeout_secs: default_webdav_timeout_secs(),
+            auto_sync: false,
             status: WebDavSyncStatus::default(),
         }
     }
@@ -120,14 +115,6 @@ impl WebDavSyncSettings {
         self.profile = sanitize_path_segment(&self.profile);
         self.username = self.username.trim().to_string();
         self.password = self.password.trim().to_string();
-        if self.timeout_secs == 0 {
-            self.timeout_secs = default_webdav_timeout_secs();
-        }
-        if self.device_id.trim().is_empty() {
-            self.device_id = format!("device-{}", chrono::Utc::now().timestamp());
-        } else {
-            self.device_id = self.device_id.trim().to_string();
-        }
     }
 
     pub fn validate(&self) -> Result<(), AppError> {
@@ -191,6 +178,8 @@ pub struct AppSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gemini_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opencode_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     /// 是否开机自启
     #[serde(default)]
@@ -228,6 +217,7 @@ impl Default for AppSettings {
             claude_config_dir: None,
             codex_config_dir: None,
             gemini_config_dir: None,
+            opencode_config_dir: None,
             language: None,
             launch_on_startup: false,
             skill_sync_method: crate::services::skill::SyncMethod::default(),
@@ -266,6 +256,13 @@ impl AppSettings {
 
         self.gemini_config_dir = self
             .gemini_config_dir
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        self.opencode_config_dir = self
+            .opencode_config_dir
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -402,6 +399,14 @@ pub fn get_gemini_override_dir() -> Option<PathBuf> {
         .map(|p| resolve_override_path(p))
 }
 
+pub fn get_opencode_override_dir() -> Option<PathBuf> {
+    let settings = settings_store().read().ok()?;
+    settings
+        .opencode_config_dir
+        .as_ref()
+        .map(|p| resolve_override_path(p))
+}
+
 pub fn get_skill_sync_method() -> crate::services::skill::SyncMethod {
     settings_store()
         .read()
@@ -435,6 +440,14 @@ pub fn set_webdav_sync_settings(webdav_sync: Option<WebDavSyncSettings>) -> Resu
     update_settings(settings)
 }
 
+pub fn update_webdav_sync_status(status: WebDavSyncStatus) -> Result<(), AppError> {
+    let mut settings = get_settings();
+    if let Some(ref mut webdav) = settings.webdav_sync {
+        webdav.status = status;
+    }
+    update_settings(settings)
+}
+
 pub fn webdav_jianguoyun_preset(username: &str, password: &str) -> WebDavSyncSettings {
     WebDavSyncSettings::jianguoyun_preset(username, password)
 }
@@ -444,6 +457,19 @@ pub fn get_skip_claude_onboarding() -> bool {
         .read()
         .map(|s| s.skip_claude_onboarding)
         .unwrap_or(false)
+}
+
+pub fn get_enable_claude_plugin_integration() -> bool {
+    settings_store()
+        .read()
+        .map(|s| s.enable_claude_plugin_integration)
+        .unwrap_or(false)
+}
+
+pub fn set_enable_claude_plugin_integration(enabled: bool) -> Result<(), AppError> {
+    let mut settings = get_settings();
+    settings.enable_claude_plugin_integration = enabled;
+    update_settings(settings)
 }
 
 pub fn set_skip_claude_onboarding(enabled: bool) -> Result<(), AppError> {

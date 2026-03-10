@@ -7,6 +7,76 @@ All notable changes to CC Switch CLI will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.0] - 2026-02-28
+
+### Added
+
+- **Install Script**: One-liner `curl | sh` installation for macOS and Linux. (#41)
+- **TUI**: Claude VSCode plugin takeover toggle and sync. (#47)
+- **TUI**: Model auto-fetch picker with search filtering. (#45)
+
+### Changed
+
+- **Docs**: Revamp installation section with quick install as primary method, manual install in collapsible details.
+- **Docs**: Update code structure to reflect current architecture (tui, database, ui directory).
+- **Docs**: Fix `skills search` → `skills discover` command name.
+
+### Commits (since v4.7.4)
+
+- bedd43e docs: fix skills search -> discover in README
+- a5ce614 feat: add install.sh for one-liner curl | sh installation (#41)
+- 3249c29 merge: issue #47 Claude VSCode plugin takeover
+- 83212f0 feat(tui): add Claude VSCode plugin takeover toggle and sync
+- 20e81a7 feat(tui): add model auto-fetch picker with search filtering (#45)
+
+## [4.7.4] - 2026-02-28
+
+### Added
+
+- **WebDAV Sync**: Add automatic V1 -> V2 migration with legacy artifact cleanup.
+
+### Changed
+
+- **WebDAV Sync**: Align sync protocol implementation with upstream v2.
+- **Codex**: Migrate legacy config at startup instead of runtime compatibility fallback.
+- **Sponsors**: Update RightCode offer to 25% bonus pay-as-you-go credits and update affiliate link.
+- **Docs**: Refresh WebDAV compatibility notes and remove duplicated sponsor descriptions.
+
+### Fixed
+
+- **WebDAV Sync**: Sync live config files after WebDAV download, backup restore, and config import.
+- **Codex**: Align provider keys with upstream `model_provider` + `model_providers` format.
+- **MCP**: Skip MCP sync when target app is not installed. (#43)
+- **Deeplink/Codex**: Fix missing `requires_openai_auth`, strip loop bug, and deduplicate `clean_codex_provider_key`.
+- **WebDAV Sync**: Correct `webdav_status_error` parameter order in `delete_collection`.
+
+### Commits (since v4.7.3)
+
+- 16b556f fix: update RightCode affiliate link to ccswitch-cli
+- b883a28 feat: update RightCode promotion to 25% bonus credits, remove promo code
+- 67f8262 fix: sync live config files after WebDAV download, backup restore, and config import
+- faab17f fix: align Codex config with upstream model_provider + model_providers format
+- 29b9bb3 fix: skip MCP sync when target app is not installed (#43)
+- 5ac3fa5 refactor: align WebDAV sync with upstream v2 protocol
+- 6a8ca50 feat: add V1 → V2 WebDAV sync migration with automatic detection and cleanup
+- df0fb0e Update README.md
+- 5d48583 Update README with WebDAV sync compatibility
+- 2c1cfe5 refactor: migrate legacy Codex config at startup instead of runtime compat
+- a5d1de9 fix: deeplink missing requires_openai_auth, strip loop bug, dedup clean_codex_provider_key
+- 53d5139 fix: correct webdav_status_error param order in delete_collection
+- 81eec41 docs: remove duplicate PackyCode README descriptions
+
+## [4.7.3] - 2026-02-24
+
+### Fixed
+
+- **TUI**: Normalize Ctrl+H to Backspace for SSH terminal compatibility (e.g. Xshell sends `\x08` instead of `\x7F`). Fixes #38.
+
+### Changed
+
+- **Providers (TUI)**: Promote RightCode from built-in template to sponsor preset with partner meta, now available for all app types (Claude/Codex/Gemini) with `* ` prefix.
+- **Docs**: Add RightCode sponsor section to README (EN/ZH).
+
 ## [4.7.2] - 2026-02-08
 
 ### Added

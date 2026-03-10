@@ -2,7 +2,7 @@
 
 # CC-Switch CLI
 
-[![Version](https://img.shields.io/badge/version-4.7.2-blue.svg)](https://github.com/saladday/cc-switch-cli/releases)
+[![Version](https://img.shields.io/badge/version-4.8.0-blue.svg)](https://github.com/saladday/cc-switch-cli/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/saladday/cc-switch-cli/releases)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -19,7 +19,7 @@
 
 ## 📖 关于本项目
 
-本项目是原版 [CC-Switch](https://github.com/farion1231/cc-switch) 的 **CLI 分支**。
+本项目是原版 [CC-Switch](https://github.com/farion1231/cc-switch) 的 **CLI 分支**。🔄 WebDAV 同步功能与上游项目完全兼容。
 
 
 **致谢：** 原始架构和核心功能来自 [farion1231/cc-switch](https://github.com/farion1231/cc-switch)
@@ -41,6 +41,18 @@
       CC-Switch CLI 专属优惠：通过
       <a href="https://www.packyapi.com/register?aff=cc-switch-cli">此链接</a>
       注册，并在充值时填写优惠码 <code>cc-switch-cli</code>，即可享受 <b>9 折优惠</b>。
+    </td>
+  </tr>
+  <tr>
+    <td width="180">
+      <a href="https://www.right.codes/register?aff=ccswitch-cli">
+        <img src="assets/partners/logos/rightcode.jpg" alt="RightCode" width="150">
+      </a>
+    </td>
+    <td>
+      感谢 <b>RightCode</b> 赞助本项目！<br/>
+      RightCode 为 Claude Code、Codex、Gemini 等模型提供稳定的路由服务，拥有高性价比的 Codex 月付方案，且<b>支持额度滚存——当天未用完的额度可顺延至次日使用。</b><br/>
+      RightCode 为 CC-Switch CLI 用户提供了特别优惠：通过<a href="https://www.right.codes/register?aff=ccswitch-cli">此链接</a>注册，每次充值均可获得实付金额 <b>25%</b> 的按量额度！
     </td>
   </tr>
 </table>
@@ -110,7 +122,107 @@ cc-switch --app gemini prompts list     # 列出 Gemini 提示词
 # 支持的应用：`claude`（默认）、`codex`、`gemini`
 ```
 
-完整命令列表请参考下方「功能特性」章节。
+完整命令列表请参考「功能特性」章节。
+
+---
+
+## 📥 安装
+
+### 方法 1：快速安装（macOS / Linux）
+
+> Windows 用户请参考下方手动安装。
+
+```bash
+curl -fsSL https://github.com/SaladDay/cc-switch-cli/releases/latest/download/install.sh | bash
+```
+
+默认安装到 `~/.local/bin`。设置 `CC_SWITCH_INSTALL_DIR` 可自定义安装目录。
+
+<details>
+<summary>手动安装</summary>
+
+#### macOS
+
+```bash
+# 下载 Universal Binary（推荐，支持 Apple Silicon + Intel）
+curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-darwin-universal.tar.gz
+
+# 解压
+tar -xzf cc-switch-cli-darwin-universal.tar.gz
+
+# 添加执行权限
+chmod +x cc-switch
+
+# 移动到 PATH
+sudo mv cc-switch /usr/local/bin/
+
+# 如遇 "无法验证开发者" 提示
+xattr -cr /usr/local/bin/cc-switch
+```
+
+#### Linux (x64)
+
+```bash
+# 下载
+curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-linux-x64-musl.tar.gz
+
+# 解压
+tar -xzf cc-switch-cli-linux-x64-musl.tar.gz
+
+# 添加执行权限
+chmod +x cc-switch
+
+# 移动到 PATH
+sudo mv cc-switch /usr/local/bin/
+```
+
+#### Linux (ARM64)
+
+```bash
+# 适用于树莓派或 ARM 服务器
+curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-linux-arm64-musl.tar.gz
+tar -xzf cc-switch-cli-linux-arm64-musl.tar.gz
+chmod +x cc-switch
+sudo mv cc-switch /usr/local/bin/
+```
+
+#### Windows
+
+```powershell
+# 下载 zip 文件
+# https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-windows-x64.zip
+
+# 解压后将 cc-switch.exe 移动到 PATH 目录，例如：
+move cc-switch.exe C:\Windows\System32\
+
+# 或者直接运行
+.\cc-switch.exe
+```
+
+</details>
+
+### 方法 2：从源码构建
+
+**前提条件：**
+- Rust 1.85+（[通过 rustup 安装](https://rustup.rs/)）
+
+**构建：**
+```bash
+git clone https://github.com/saladday/cc-switch-cli.git
+cd cc-switch-cli/src-tauri
+cargo build --release
+
+# 二进制位置：./target/release/cc-switch
+```
+
+**安装到系统：**
+```bash
+# macOS/Linux
+sudo cp target/release/cc-switch /usr/local/bin/
+
+# Windows
+copy target\release\cc-switch.exe C:\Windows\System32\
+```
 
 ---
 
@@ -132,17 +244,6 @@ cc-switch provider duplicate <id>    # 复制供应商
 cc-switch provider delete <id>       # 删除供应商
 cc-switch provider speedtest <id>    # 测试 API 延迟
 ```
-
-#### PackyCode 预设（赞助商）
-
-在新版 TUI 的「添加供应商」表单中，可选择 `★ PackyCode` 模板自动填充端点：
-
-- 官网：`https://www.packyapi.com`
-- 注册链接：`https://www.packyapi.com/register?aff=cc-switch-cli`
-- 优惠码：`cc-switch-cli`（9 折）
-- Claude（Anthropic）：`https://www.packyapi.com`
-- Codex（OpenAI）：`https://www.packyapi.com/v1`
-- Gemini：`https://www.packyapi.com`
 
 ### 🛠️ MCP 服务器管理
 
@@ -187,7 +288,7 @@ cc-switch prompts delete <id>        # 删除提示词
 
 ```bash
 cc-switch skills list                # 列出已安装技能
-cc-switch skills search <query>      # 搜索可用技能
+cc-switch skills discover <query>      # 发现可用技能（别名：search）
 cc-switch skills install <name>      # 安装技能
 cc-switch skills uninstall <name>    # 卸载技能
 cc-switch skills enable <name>       # 为当前应用启用（配合 --app）
@@ -256,95 +357,6 @@ cc-switch env list                   # 列出环境变量
 # 自更新
 cc-switch update                     # 更新到最新版本
 cc-switch update --version v4.7.2    # 更新到指定版本
-```
-
----
-
-## 📥 安装
-
-### 方法 1：下载预编译二进制（推荐）
-
-从 [GitHub Releases](https://github.com/saladday/cc-switch-cli/releases) 下载最新版本。
-
-#### macOS
-
-```bash
-# 下载 Universal Binary（推荐，支持 Apple Silicon + Intel）
-curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-darwin-universal.tar.gz
-
-# 解压
-tar -xzf cc-switch-cli-darwin-universal.tar.gz
-
-# 添加执行权限
-chmod +x cc-switch
-
-# 移动到 PATH
-sudo mv cc-switch /usr/local/bin/
-
-# 如遇 "无法验证开发者" 提示
-xattr -cr /usr/local/bin/cc-switch
-```
-
-#### Linux (x64)
-
-```bash
-# 下载
-curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-linux-x64-musl.tar.gz
-
-# 解压
-tar -xzf cc-switch-cli-linux-x64-musl.tar.gz
-
-# 添加执行权限
-chmod +x cc-switch
-
-# 移动到 PATH
-sudo mv cc-switch /usr/local/bin/
-```
-
-#### Linux (ARM64)
-
-```bash
-# 适用于树莓派或 ARM 服务器
-curl -LO https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-linux-arm64-musl.tar.gz
-tar -xzf cc-switch-cli-linux-arm64-musl.tar.gz
-chmod +x cc-switch
-sudo mv cc-switch /usr/local/bin/
-```
-
-#### Windows
-
-```powershell
-# 下载 zip 文件
-# https://github.com/saladday/cc-switch-cli/releases/latest/download/cc-switch-cli-windows-x64.zip
-
-# 解压后将 cc-switch.exe 移动到 PATH 目录，例如：
-move cc-switch.exe C:\Windows\System32\
-
-# 或者直接运行
-.\cc-switch.exe
-```
-
-### 方法 2：从源码构建
-
-**前提条件：**
-- Rust 1.85+（[通过 rustup 安装](https://rustup.rs/)）
-
-**构建：**
-```bash
-git clone https://github.com/saladday/cc-switch-cli.git
-cd cc-switch-cli/src-tauri
-cargo build --release
-
-# 二进制位置：./target/release/cc-switch
-```
-
-**安装到系统：**
-```bash
-# macOS/Linux
-sudo cp target/release/cc-switch /usr/local/bin/
-
-# Windows
-copy target\release\cc-switch.exe C:\Windows\System32\
 ```
 
 ---
@@ -467,12 +479,14 @@ cargo test                           # 运行测试
 ```
 src-tauri/src/
 ├── cli/
-│   ├── commands/          # CLI 子命令（provider, mcp, prompts, config）
-│   ├── interactive/       # 交互式 TUI 模式
-│   └── ui.rs              # UI 实用工具（表格、颜色）
-├── services/              # 业务逻辑
+│   ├── commands/          # CLI 子命令（provider, mcp, prompts, env, skills, ...）
+│   ├── tui/               # 交互式 TUI 模式（ratatui）
+│   ├── interactive/       # 旧版交互模式
+│   └── ui/                # UI 实用工具（表格、颜色）
+├── services/              # 业务逻辑（provider, mcp, prompt, webdav, ...）
+├── database/              # SQLite 存储、迁移、备份
 ├── main.rs                # CLI 入口点
-└── ...
+└── ...                    # 各应用配置、代理、错误处理
 ```
 
 

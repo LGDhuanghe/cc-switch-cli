@@ -6,11 +6,13 @@ mod terminal;
 mod theme;
 mod ui;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, KeyEventKind};
+use crossterm::event::{self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind};
 use serde_json::json;
 use serde_json::Value;
 
@@ -19,27 +21,47 @@ use crate::cli::i18n::{set_language, texts};
 use crate::error::AppError;
 use crate::provider::Provider;
 use crate::services::{
-    skill::SkillRepo, ConfigService, EndpointLatency, McpService, PromptService, ProviderService,
-    SkillService, SyncDecision, WebDavSyncService,
+    skill::SkillRepo, ConfigService, EndpointLatency, HealthStatus, McpService, PromptService,
+    ProviderService, SkillService, StreamCheckResult, StreamCheckService, SyncDecision,
+    WebDavSyncService,
 };
 use crate::settings::{
     get_webdav_sync_settings, set_webdav_sync_settings, webdav_jianguoyun_preset,
     WebDavSyncSettings,
 };
 
-use app::{Action, App, EditorSubmit, LoadingKind, Overlay, TextViewState, ToastKind};
+use app::{
+    Action, App, ConfirmAction, ConfirmOverlay, EditorSubmit, LoadingKind, Overlay, TextViewState,
+    ToastKind,
+};
 use data::{load_state, UiData};
-use form::FormState;
+use form::{FormState, ProviderAddField};
 use terminal::{PanicRestoreHookGuard, TuiTerminal};
 
-fn command_lookup_name(raw: &str) -> Option<&str> {
-    raw.split_whitespace().next()
+fn next_model_fetch_request_id() -> u64 {
+    static NEXT_MODEL_FETCH_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+    NEXT_MODEL_FETCH_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 enum SpeedtestMsg {
     Finished {
         url: String,
         result: Result<Vec<EndpointLatency>, String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct StreamCheckReq {
+    app_type: AppType,
+    provider_id: String,
+    provider_name: String,
+    provider: Provider,
+}
+
+enum StreamCheckMsg {
+    Finished {
+        req: StreamCheckReq,
+        result: Result<StreamCheckResult, String>,
     },
 }
 
@@ -74,6 +96,7 @@ enum WebDavReqKind {
     CheckConnection,
     Upload,
     Download,
+    MigrateV1ToV2,
     JianguoyunQuickSetup { username: String, password: String },
 }
 
@@ -92,6 +115,9 @@ enum WebDavDone {
     },
     Downloaded {
         decision: SyncDecision,
+        message: String,
+    },
+    V1Migrated {
         message: String,
     },
     JianguoyunConfigured,
@@ -115,6 +141,12 @@ enum WebDavMsg {
 struct SpeedtestSystem {
     req_tx: mpsc::Sender<String>,
     result_rx: mpsc::Receiver<SpeedtestMsg>,
+    _handle: std::thread::JoinHandle<()>,
+}
+
+struct StreamCheckSystem {
+    req_tx: mpsc::Sender<StreamCheckReq>,
+    result_rx: mpsc::Receiver<StreamCheckMsg>,
     _handle: std::thread::JoinHandle<()>,
 }
 
@@ -157,6 +189,179 @@ struct UpdateSystem {
     req_tx: mpsc::Sender<UpdateReq>,
     result_rx: mpsc::Receiver<UpdateMsg>,
     _handle: std::thread::JoinHandle<()>,
+}
+
+pub enum ModelFetchReq {
+    Fetch {
+        request_id: u64,
+        base_url: String,
+        api_key: Option<String>,
+        field: ProviderAddField,
+        claude_idx: Option<usize>,
+    },
+}
+
+pub enum ModelFetchMsg {
+    Finished {
+        request_id: u64,
+        field: ProviderAddField,
+        claude_idx: Option<usize>,
+        result: Result<Vec<String>, String>,
+    },
+}
+
+struct ModelFetchSystem {
+    req_tx: mpsc::Sender<ModelFetchReq>,
+    result_rx: mpsc::Receiver<ModelFetchMsg>,
+    _handle: std::thread::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelFetchStrategy {
+    Bearer,
+    Anthropic,
+    GoogleApiKey,
+}
+
+fn model_fetch_strategy_for_field(field: ProviderAddField) -> ModelFetchStrategy {
+    match field {
+        ProviderAddField::GeminiModel => ModelFetchStrategy::GoogleApiKey,
+        ProviderAddField::ClaudeModelConfig => ModelFetchStrategy::Anthropic,
+        _ => ModelFetchStrategy::Bearer,
+    }
+}
+
+fn build_model_fetch_candidate_urls(base_url: &str, strategy: ModelFetchStrategy) -> Vec<String> {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Vec::new();
+    }
+    if base.ends_with("/models") {
+        return vec![base.to_string()];
+    }
+
+    let append_models = format!("{base}/models");
+    let append_v1_models = if base.ends_with("/v1") || base.ends_with("/v1beta") {
+        None
+    } else {
+        Some(format!("{base}/v1/models"))
+    };
+
+    let mut urls: Vec<String> = Vec::new();
+    match strategy {
+        ModelFetchStrategy::Anthropic => {
+            if let Some(v1) = append_v1_models.as_ref() {
+                urls.push(v1.clone());
+            }
+            urls.push(append_models);
+        }
+        ModelFetchStrategy::Bearer | ModelFetchStrategy::GoogleApiKey => {
+            urls.push(append_models);
+            if let Some(v1) = append_v1_models.as_ref() {
+                urls.push(v1.clone());
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    urls.retain(|url| seen.insert(url.clone()));
+    urls
+}
+
+fn parse_model_ids_from_response(payload: &Value) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    if let Some(data) = payload.get("data").and_then(|v| v.as_array()) {
+        for item in data {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                out.push(id.to_string());
+            }
+        }
+    }
+
+    if out.is_empty() {
+        if let Some(models) = payload.get("models").and_then(|v| v.as_array()) {
+            for item in models {
+                if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                    out.push(name.strip_prefix("models/").unwrap_or(name).to_string());
+                }
+            }
+        }
+    }
+
+    if out.is_empty() {
+        if let Some(arr) = payload.as_array() {
+            for item in arr {
+                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                    out.push(id.to_string());
+                }
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    out.retain(|model| seen.insert(model.clone()));
+    out
+}
+
+async fn fetch_provider_models_for_tui(
+    base_url: &str,
+    api_key: Option<&str>,
+    strategy: ModelFetchStrategy,
+) -> Result<Vec<String>, String> {
+    let candidate_urls = build_model_fetch_candidate_urls(base_url, strategy);
+    if candidate_urls.is_empty() {
+        return Err("URL cannot be empty".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("build http client failed: {e}"))?;
+
+    let key = api_key.map(str::trim).filter(|k| !k.is_empty());
+    let mut last_err = String::from("unknown error");
+
+    for url in candidate_urls {
+        let mut req = client.get(&url);
+        if let Some(key) = key {
+            req = match strategy {
+                ModelFetchStrategy::Bearer => req.header("Authorization", format!("Bearer {key}")),
+                ModelFetchStrategy::Anthropic => req
+                    .header("Authorization", format!("Bearer {key}"))
+                    .header("x-api-key", key)
+                    .header("anthropic-version", "2023-06-01"),
+                ModelFetchStrategy::GoogleApiKey => req.header("x-goog-api-key", key),
+            };
+        }
+
+        match req.send().await {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    last_err = format!("HTTP {} ({url})", resp.status());
+                    continue;
+                }
+                match resp.json::<Value>().await {
+                    Ok(payload) => {
+                        let models = parse_model_ids_from_response(&payload);
+                        if models.is_empty() {
+                            last_err = format!("No model list found in response ({url})");
+                        } else {
+                            return Ok(models);
+                        }
+                    }
+                    Err(err) => {
+                        last_err = format!("Invalid JSON response ({url}): {err}");
+                    }
+                }
+            }
+            Err(err) => {
+                last_err = err.to_string();
+            }
+        }
+    }
+
+    Err(last_err)
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -206,6 +411,17 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
         Err(err) => {
             app.push_toast(
                 texts::tui_toast_speedtest_unavailable(&err.to_string()),
+                ToastKind::Warning,
+            );
+            None
+        }
+    };
+
+    let stream_check = match start_stream_check_system() {
+        Ok(system) => Some(system),
+        Err(err) => {
+            app.push_toast(
+                texts::tui_toast_stream_check_unavailable(&err.to_string()),
                 ToastKind::Warning,
             );
             None
@@ -266,6 +482,17 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
         }
     };
 
+    let model_fetch = match start_model_fetch_system() {
+        Ok(system) => Some(system),
+        Err(err) => {
+            app.push_toast(
+                texts::tui_toast_model_fetch_worker_unavailable(&err.to_string()),
+                ToastKind::Warning,
+            );
+            None
+        }
+    };
+
     loop {
         app.last_size = terminal.size()?;
         terminal.draw(|f| ui::render(f, &app, &data))?;
@@ -274,6 +501,12 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
         if let Some(speedtest) = speedtest.as_ref() {
             while let Ok(msg) = speedtest.result_rx.try_recv() {
                 handle_speedtest_msg(&mut app, msg);
+            }
+        }
+
+        if let Some(stream_check) = stream_check.as_ref() {
+            while let Ok(msg) = stream_check.result_rx.try_recv() {
+                handle_stream_check_msg(&mut app, msg);
             }
         }
 
@@ -309,22 +542,32 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
             }
         }
 
+        // Handle async model fetch results
+        if let Some(mf) = model_fetch.as_ref() {
+            while let Ok(msg) = mf.result_rx.try_recv() {
+                handle_model_fetch_msg(&mut app, msg);
+            }
+        }
+
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout).map_err(|e| AppError::Message(e.to_string()))? {
             match event::read().map_err(|e| AppError::Message(e.to_string()))? {
                 event::Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    let key = normalize_key_event(key);
                     let action = app.on_key(key, &data);
                     if let Err(err) = handle_action(
                         &mut terminal,
                         &mut app,
                         &mut data,
                         speedtest.as_ref().map(|s| &s.req_tx),
+                        stream_check.as_ref().map(|s| &s.req_tx),
                         skills.as_ref().map(|s| &s.req_tx),
                         local_env.as_ref().map(|s| &s.req_tx),
                         webdav.as_ref().map(|s| &s.req_tx),
                         &mut webdav_loading,
                         update_system.as_ref().map(|s| &s.req_tx),
                         &mut update_check,
+                        model_fetch.as_ref().map(|s| &s.req_tx),
                         action,
                     ) {
                         if matches!(
@@ -334,6 +577,40 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
                             return Err(err);
                         }
                         app.push_toast(err.to_string(), ToastKind::Error);
+                    }
+                }
+                event::Event::Mouse(mouse) => {
+                    if let MouseEventKind::ScrollUp | MouseEventKind::ScrollDown = mouse.kind {
+                        let code = if matches!(mouse.kind, MouseEventKind::ScrollUp) {
+                            event::KeyCode::Up
+                        } else {
+                            event::KeyCode::Down
+                        };
+                        let key = event::KeyEvent::new(code, event::KeyModifiers::NONE);
+                        let action = app.on_key(key, &data);
+                        if let Err(err) = handle_action(
+                            &mut terminal,
+                            &mut app,
+                            &mut data,
+                            speedtest.as_ref().map(|s| &s.req_tx),
+                            stream_check.as_ref().map(|s| &s.req_tx),
+                            skills.as_ref().map(|s| &s.req_tx),
+                            local_env.as_ref().map(|s| &s.req_tx),
+                            webdav.as_ref().map(|s| &s.req_tx),
+                            &mut webdav_loading,
+                            update_system.as_ref().map(|s| &s.req_tx),
+                            &mut update_check,
+                            model_fetch.as_ref().map(|s| &s.req_tx),
+                            action,
+                        ) {
+                            if matches!(
+                                &err,
+                                AppError::Localized { key, .. } if *key == "tui_terminal_error"
+                            ) {
+                                return Err(err);
+                            }
+                            app.push_toast(err.to_string(), ToastKind::Error);
+                        }
                     }
                 }
                 event::Event::Resize(_, _) => {}
@@ -352,6 +629,74 @@ pub fn run(app_override: Option<AppType>) -> Result<(), AppError> {
     }
 
     Ok(())
+}
+
+fn stream_check_status_label(status: &HealthStatus) -> &'static str {
+    match status {
+        HealthStatus::Operational => texts::tui_stream_check_status_operational(),
+        HealthStatus::Degraded => texts::tui_stream_check_status_degraded(),
+        HealthStatus::Failed => texts::tui_stream_check_status_failed(),
+    }
+}
+
+fn build_stream_check_result_lines(provider_name: &str, result: &StreamCheckResult) -> Vec<String> {
+    let response_time = result
+        .response_time_ms
+        .map(|ms| texts::tui_latency_ms(ms as u128))
+        .unwrap_or_else(|| texts::tui_na().to_string());
+    let http_status = result
+        .http_status
+        .map(|status| status.to_string())
+        .unwrap_or_else(|| texts::tui_na().to_string());
+    let model = if result.model_used.trim().is_empty() {
+        texts::tui_na().to_string()
+    } else {
+        result.model_used.clone()
+    };
+
+    vec![
+        texts::tui_stream_check_line_provider(provider_name),
+        texts::tui_stream_check_line_status(stream_check_status_label(&result.status)),
+        texts::tui_stream_check_line_response_time(&response_time),
+        texts::tui_stream_check_line_http_status(&http_status),
+        texts::tui_stream_check_line_model(&model),
+        texts::tui_stream_check_line_retries(&result.retry_count.to_string()),
+        texts::tui_stream_check_line_message(&result.message),
+    ]
+}
+
+fn handle_stream_check_msg(app: &mut App, msg: StreamCheckMsg) {
+    match msg {
+        StreamCheckMsg::Finished { req, result } => match result {
+            Ok(result) => {
+                let lines = build_stream_check_result_lines(&req.provider_name, &result);
+                match &app.overlay {
+                    Overlay::StreamCheckRunning { provider_id, .. }
+                        if provider_id == &req.provider_id =>
+                    {
+                        app.overlay = Overlay::StreamCheckResult {
+                            provider_name: req.provider_name,
+                            lines,
+                            scroll: 0,
+                        };
+                    }
+                    _ => {
+                        app.push_toast(
+                            texts::tui_toast_stream_check_finished(),
+                            ToastKind::Success,
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                app.push_toast(texts::tui_toast_stream_check_failed(&err), ToastKind::Error);
+                if matches!(&app.overlay, Overlay::StreamCheckRunning { provider_id, .. } if provider_id == &req.provider_id)
+                {
+                    app.overlay = Overlay::None;
+                }
+            }
+        },
+    }
 }
 
 fn handle_speedtest_msg(app: &mut App, msg: SpeedtestMsg) {
@@ -407,6 +752,48 @@ fn handle_local_env_msg(app: &mut App, msg: LocalEnvMsg) {
         LocalEnvMsg::Finished { result } => {
             app.local_env_results = result;
             app.local_env_loading = false;
+        }
+    }
+}
+
+fn handle_model_fetch_msg(app: &mut App, msg: ModelFetchMsg) {
+    match msg {
+        ModelFetchMsg::Finished {
+            request_id,
+            field,
+            claude_idx,
+            result,
+        } => {
+            if let Overlay::ModelFetchPicker {
+                request_id: current_request_id,
+                fetching: ref mut f,
+                models: ref mut m,
+                error: ref mut e,
+                field: ref current_field,
+                claude_idx: ref current_claude_idx,
+                ..
+            } = app.overlay
+            {
+                if current_request_id != request_id {
+                    return;
+                }
+                if current_field == &field && current_claude_idx == &claude_idx {
+                    *f = false;
+                    match result {
+                        Ok(fetched_models) => {
+                            if fetched_models.is_empty() {
+                                *e = Some(texts::tui_model_fetch_no_models().to_string());
+                            } else {
+                                *m = fetched_models;
+                                *e = None;
+                            }
+                        }
+                        Err(err) => {
+                            *e = Some(texts::tui_model_fetch_error_hint(&err));
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -507,13 +894,52 @@ fn handle_webdav_msg(
                         app.push_toast(msg, ToastKind::Success);
                     }
                     WebDavDone::Downloaded { decision, message } => {
-                        let msg = match decision {
-                            SyncDecision::Download => {
-                                texts::tui_toast_webdav_download_ok().to_string()
+                        match decision {
+                            SyncDecision::V1MigrationNeeded => {
+                                // 弹出确认框，让用户决定是否迁移
+                                app.overlay = Overlay::Confirm(ConfirmOverlay {
+                                    title: texts::tui_webdav_v1_migration_title().to_string(),
+                                    message: texts::tui_webdav_v1_migration_message().to_string(),
+                                    action: ConfirmAction::WebDavMigrateV1ToV2,
+                                });
                             }
-                            _ => message,
-                        };
-                        app.push_toast(msg, ToastKind::Success);
+                            _ => {
+                                let msg = match decision {
+                                    SyncDecision::Download => {
+                                        texts::tui_toast_webdav_download_ok().to_string()
+                                    }
+                                    _ => message,
+                                };
+                                // Post-download: 将数据库中的当前供应商配置同步到 live 文件，
+                                // 对齐上游 run_post_import_sync 行为。Best-effort，不阻塞 UI。
+                                if let Ok(state) = load_state() {
+                                    if let Err(e) =
+                                        crate::services::provider::ProviderService::sync_current_to_live(
+                                            &state,
+                                        )
+                                    {
+                                        log::warn!("WebDAV 下载后同步 live 配置失败: {e}");
+                                    }
+                                }
+                                app.push_toast(msg, ToastKind::Success);
+                            }
+                        }
+                    }
+                    WebDavDone::V1Migrated { message: _ } => {
+                        // 迁移完成后也需要同步 live 配置
+                        if let Ok(state) = load_state() {
+                            if let Err(e) =
+                                crate::services::provider::ProviderService::sync_current_to_live(
+                                    &state,
+                                )
+                            {
+                                log::warn!("WebDAV V1 迁移后同步 live 配置失败: {e}");
+                            }
+                        }
+                        app.push_toast(
+                            texts::tui_toast_webdav_v1_migration_ok(),
+                            ToastKind::Success,
+                        );
                     }
                     WebDavDone::JianguoyunConfigured => {
                         app.push_toast(
@@ -572,6 +998,17 @@ fn handle_webdav_msg(
                             &detail,
                         )
                     }
+                    WebDavReqKind::MigrateV1ToV2 => {
+                        let detail = match err {
+                            WebDavErr::Generic(e)
+                            | WebDavErr::QuickSetupSave(e)
+                            | WebDavErr::QuickSetupCheck(e) => e,
+                        };
+                        texts::tui_toast_webdav_action_failed(
+                            texts::tui_webdav_loading_title_v1_migration(),
+                            &detail,
+                        )
+                    }
                     WebDavReqKind::JianguoyunQuickSetup { .. } => match err {
                         WebDavErr::QuickSetupCheck(e) => {
                             texts::tui_toast_webdav_quick_setup_failed(&e)
@@ -592,17 +1029,121 @@ fn handle_webdav_msg(
     Ok(())
 }
 
+fn scan_unmanaged_skills_with<F>(app: &mut App, scan: F) -> Result<(), AppError>
+where
+    F: FnOnce() -> Result<Vec<crate::services::skill::UnmanagedSkill>, AppError>,
+{
+    app.skills_unmanaged_results = scan()?;
+    app.skills_unmanaged_selected.clear();
+    app.skills_unmanaged_idx = 0;
+    app.push_toast(
+        texts::tui_toast_unmanaged_scanned(app.skills_unmanaged_results.len()),
+        ToastKind::Info,
+    );
+    Ok(())
+}
+
+fn scan_unmanaged_skills(app: &mut App) -> Result<(), AppError> {
+    scan_unmanaged_skills_with(app, SkillService::scan_unmanaged)
+}
+
+fn open_skills_import_picker_with<F>(app: &mut App, scan: F) -> Result<(), AppError>
+where
+    F: FnOnce() -> Result<Vec<crate::services::skill::UnmanagedSkill>, AppError>,
+{
+    let skills = scan()?;
+    app.skills_unmanaged_results = skills.clone();
+    app.skills_unmanaged_selected.clear();
+    app.skills_unmanaged_idx = 0;
+
+    if skills.is_empty() {
+        app.overlay = Overlay::None;
+        app.push_toast(texts::skills_no_unmanaged_found(), ToastKind::Info);
+        return Ok(());
+    }
+
+    let selected = skills
+        .iter()
+        .map(|skill| skill.directory.clone())
+        .collect::<HashSet<_>>();
+    app.overlay = Overlay::SkillsImportPicker {
+        skills,
+        selected_idx: 0,
+        selected,
+    };
+    Ok(())
+}
+
+fn open_skills_import_picker(app: &mut App) -> Result<(), AppError> {
+    open_skills_import_picker_with(app, SkillService::scan_unmanaged)
+}
+
+fn finish_skills_import_with<FImport, FLoad>(
+    app: &mut App,
+    data: &mut UiData,
+    import: FImport,
+    load_data: FLoad,
+) -> Result<(), AppError>
+where
+    FImport: FnOnce() -> Result<Vec<crate::app_config::InstalledSkill>, AppError>,
+    FLoad: FnOnce(&AppType) -> Result<UiData, AppError>,
+{
+    let imported = import()?;
+    app.overlay = Overlay::None;
+    *data = load_data(&app.app_type)?;
+    app.push_toast(
+        texts::tui_toast_unmanaged_imported(imported.len()),
+        ToastKind::Info,
+    );
+    Ok(())
+}
+
+fn import_mcp_for_current_app_with<FImport, FLoad>(
+    app: &mut App,
+    data: &mut UiData,
+    import: FImport,
+    load_data: FLoad,
+) -> Result<(), AppError>
+where
+    FImport: FnOnce(&AppType) -> Result<usize, AppError>,
+    FLoad: FnOnce(&AppType) -> Result<UiData, AppError>,
+{
+    let count = import(&app.app_type)?;
+    app.push_toast(texts::tui_toast_mcp_imported(count), ToastKind::Info);
+    *data = load_data(&app.app_type)?;
+    Ok(())
+}
+
+fn import_mcp_for_current_app(app: &mut App, data: &mut UiData) -> Result<(), AppError> {
+    import_mcp_for_current_app_with(
+        app,
+        data,
+        |app_type| {
+            let state = load_state()?;
+            match app_type {
+                AppType::Claude => McpService::import_from_claude(&state),
+                AppType::Codex => McpService::import_from_codex(&state),
+                AppType::Gemini => McpService::import_from_gemini(&state),
+                AppType::OpenCode => McpService::import_from_opencode(&state),
+            }
+        },
+        UiData::load,
+    )
+}
+
 fn handle_action(
-    _terminal: &mut TuiTerminal,
+    terminal: &mut TuiTerminal,
     app: &mut App,
     data: &mut UiData,
     speedtest_req_tx: Option<&mpsc::Sender<String>>,
+    stream_check_req_tx: Option<&mpsc::Sender<StreamCheckReq>>,
     skills_req_tx: Option<&mpsc::Sender<SkillsReq>>,
     local_env_req_tx: Option<&mpsc::Sender<LocalEnvReq>>,
     webdav_req_tx: Option<&mpsc::Sender<WebDavReq>>,
     webdav_loading: &mut RequestTracker,
     update_req_tx: Option<&mpsc::Sender<UpdateReq>>,
     update_check: &mut RequestTracker,
+    model_fetch_req_tx: Option<&mpsc::Sender<ModelFetchReq>>,
     action: Action,
 ) -> Result<(), AppError> {
     match action {
@@ -659,6 +1200,34 @@ fn handle_action(
             );
             Ok(())
         }
+        Action::SkillsSetApps { directory, apps } => {
+            let Some(before) = data
+                .skills
+                .installed
+                .iter()
+                .find(|skill| skill.directory == directory)
+                .map(|skill| skill.apps.clone())
+            else {
+                app.push_toast(texts::tui_skill_not_found(), ToastKind::Warning);
+                return Ok(());
+            };
+
+            let mut changed = false;
+            for app_type in AppType::all() {
+                let next_enabled = apps.is_enabled_for(&app_type);
+                if before.is_enabled_for(&app_type) == next_enabled {
+                    continue;
+                }
+                changed = true;
+                SkillService::toggle_app(&directory, &app_type, next_enabled)?;
+            }
+
+            *data = UiData::load(&app.app_type)?;
+            if changed {
+                app.push_toast(texts::tui_toast_skill_apps_updated(), ToastKind::Success);
+            }
+            Ok(())
+        }
         Action::SkillsInstall { spec } => {
             let Some(tx) = skills_req_tx else {
                 return Err(AppError::Message(
@@ -689,6 +1258,12 @@ fn handle_action(
                 crate::cli::tui::route::Route::SkillDetail { directory: current }
                     if current.eq_ignore_ascii_case(&directory)
             ) {
+                if matches!(
+                    app.route_stack.last(),
+                    Some(crate::cli::tui::route::Route::Skills)
+                ) {
+                    app.route_stack.pop();
+                }
                 app.route = crate::cli::tui::route::Route::Skills;
             }
             Ok(())
@@ -755,33 +1330,33 @@ fn handle_action(
             app.push_toast(texts::tui_toast_repo_toggled(enabled), ToastKind::Success);
             Ok(())
         }
+        Action::SkillsOpenImport => {
+            open_skills_import_picker(app)?;
+            Ok(())
+        }
         Action::SkillsScanUnmanaged => {
-            app.skills_unmanaged_results = SkillService::scan_unmanaged()?;
-            app.skills_unmanaged_selected.clear();
-            app.skills_unmanaged_idx = 0;
-            app.push_toast(
-                texts::tui_toast_unmanaged_scanned(app.skills_unmanaged_results.len()),
-                ToastKind::Success,
-            );
+            scan_unmanaged_skills(app)?;
             Ok(())
         }
         Action::SkillsImportFromApps { directories } => {
-            let imported = SkillService::import_from_apps(directories)?;
-            *data = UiData::load(&app.app_type)?;
-            // Refresh unmanaged list after import.
+            finish_skills_import_with(
+                app,
+                data,
+                || SkillService::import_from_apps(directories),
+                UiData::load,
+            )?;
             app.skills_unmanaged_results = SkillService::scan_unmanaged()?;
             app.skills_unmanaged_selected.clear();
             app.skills_unmanaged_idx = 0;
-            app.push_toast(
-                texts::tui_toast_unmanaged_imported(imported.len()),
-                ToastKind::Success,
-            );
             Ok(())
         }
         Action::EditorDiscard => {
             app.editor = None;
             Ok(())
         }
+        Action::EditorOpenExternal => terminal.with_terminal_restored(|| {
+            run_external_editor_for_current_editor(app, crate::cli::editor::open_external_editor)
+        }),
         Action::EditorSubmit { submit, content } => match submit {
             EditorSubmit::PromptEdit { id } => {
                 let state = load_state()?;
@@ -1207,7 +1782,24 @@ fn handle_action(
 
         Action::ProviderSwitch { id } => {
             let state = load_state()?;
+            let provider = data
+                .providers
+                .rows
+                .iter()
+                .find(|row| row.id == id)
+                .map(|row| row.provider.clone());
             ProviderService::switch(&state, app.app_type.clone(), &id)?;
+            if let Some(provider) = provider {
+                if let Err(err) = crate::claude_plugin::sync_claude_plugin_on_provider_switch(
+                    &app.app_type,
+                    &provider,
+                ) {
+                    app.push_toast(
+                        texts::tui_toast_claude_plugin_sync_failed(&err.to_string()),
+                        ToastKind::Warning,
+                    );
+                }
+            }
             if !crate::sync_policy::should_sync_live(&app.app_type) {
                 let mut message =
                     texts::tui_toast_live_sync_skipped_uninitialized(app.app_type.as_str());
@@ -1250,7 +1842,82 @@ fn handle_action(
             }
             Ok(())
         }
+        Action::ProviderStreamCheck { id } => {
+            let Some(tx) = stream_check_req_tx else {
+                if matches!(&app.overlay, Overlay::StreamCheckRunning { provider_id, .. } if provider_id == &id)
+                {
+                    app.overlay = Overlay::None;
+                }
+                app.push_toast(texts::tui_toast_stream_check_disabled(), ToastKind::Warning);
+                return Ok(());
+            };
 
+            let Some(row) = data.providers.rows.iter().find(|row| row.id == id) else {
+                return Ok(());
+            };
+            let req = StreamCheckReq {
+                app_type: app.app_type.clone(),
+                provider_id: row.id.clone(),
+                provider_name: row.provider.name.clone(),
+                provider: row.provider.clone(),
+            };
+
+            if let Err(err) = tx.send(req) {
+                if matches!(&app.overlay, Overlay::StreamCheckRunning { provider_id, .. } if provider_id == &id)
+                {
+                    app.overlay = Overlay::None;
+                }
+                app.push_toast(
+                    texts::tui_toast_stream_check_request_failed(&err.to_string()),
+                    ToastKind::Error,
+                );
+            }
+            Ok(())
+        }
+        Action::ProviderModelFetch {
+            base_url,
+            api_key,
+            field,
+            claude_idx,
+        } => {
+            let Some(tx) = model_fetch_req_tx else {
+                app.push_toast(
+                    texts::tui_toast_model_fetch_worker_disabled(),
+                    ToastKind::Warning,
+                );
+                return Ok(());
+            };
+            let request_id = next_model_fetch_request_id();
+
+            app.overlay = Overlay::ModelFetchPicker {
+                request_id,
+                field: field.clone(),
+                claude_idx,
+                input: String::new(),
+                query: String::new(),
+                fetching: true,
+                models: Vec::new(),
+                error: None,
+                selected_idx: 0,
+            };
+
+            if let Err(err) = tx.send(ModelFetchReq::Fetch {
+                request_id,
+                base_url,
+                api_key,
+                field,
+                claude_idx,
+            }) {
+                if let Overlay::ModelFetchPicker {
+                    fetching, error, ..
+                } = &mut app.overlay
+                {
+                    *fetching = false;
+                    *error = Some(texts::tui_model_fetch_error_hint(&err.to_string()));
+                }
+            }
+            Ok(())
+        }
         Action::McpToggle { id, enabled } => {
             let state = load_state()?;
             McpService::toggle_app(&state, &id, app.app_type.clone(), enabled)?;
@@ -1283,7 +1950,12 @@ fn handle_action(
             let mut skipped: Vec<&str> = Vec::new();
             let mut changed = false;
 
-            for app_type in [AppType::Claude, AppType::Codex, AppType::Gemini] {
+            for app_type in [
+                AppType::Claude,
+                AppType::Codex,
+                AppType::Gemini,
+                AppType::OpenCode,
+            ] {
                 let next_enabled = apps.is_enabled_for(&app_type);
                 if before.is_enabled_for(&app_type) == next_enabled {
                     continue;
@@ -1323,33 +1995,7 @@ fn handle_action(
             Ok(())
         }
         Action::McpImport => {
-            let state = load_state()?;
-            let count = match app.app_type {
-                AppType::Claude => McpService::import_from_claude(&state)?,
-                AppType::Codex => McpService::import_from_codex(&state)?,
-                AppType::Gemini => McpService::import_from_gemini(&state)?,
-            };
-            app.push_toast(texts::tui_toast_mcp_imported(count), ToastKind::Success);
-            *data = UiData::load(&app.app_type)?;
-            Ok(())
-        }
-        Action::McpValidate { command } => {
-            let Some(bin) = command_lookup_name(&command) else {
-                app.push_toast(texts::tui_toast_command_empty(), ToastKind::Warning);
-                return Ok(());
-            };
-
-            if which::which(bin).is_ok() {
-                app.push_toast(
-                    texts::tui_toast_command_available_in_path(bin),
-                    ToastKind::Success,
-                );
-            } else {
-                app.push_toast(
-                    texts::tui_toast_command_not_found_in_path(bin),
-                    ToastKind::Warning,
-                );
-            }
+            import_mcp_for_current_app(app, data)?;
             Ok(())
         }
 
@@ -1412,6 +2058,11 @@ fn handle_action(
             }
             let state = load_state()?;
             let backup_id = ConfigService::import_config_from_path(&source, &state)?;
+            // 导入后同步 live 配置
+            if let Err(e) = crate::services::provider::ProviderService::sync_current_to_live(&state)
+            {
+                log::warn!("配置导入后同步 live 配置失败: {e}");
+            }
             if backup_id.is_empty() {
                 app.push_toast(texts::tui_toast_imported_config(), ToastKind::Success);
             } else {
@@ -1437,6 +2088,11 @@ fn handle_action(
         Action::ConfigRestoreBackup { id } => {
             let state = load_state()?;
             let pre_backup = ConfigService::restore_from_backup_id(&id, &state)?;
+            // 备份恢复后同步 live 配置，与 WebDAV 下载后同理
+            if let Err(e) = crate::services::provider::ProviderService::sync_current_to_live(&state)
+            {
+                log::warn!("备份恢复后同步 live 配置失败: {e}");
+            }
             if pre_backup.is_empty() {
                 app.push_toast(texts::tui_toast_restored_from_backup(), ToastKind::Success);
             } else {
@@ -1590,6 +2246,33 @@ fn handle_action(
             }
             Ok(())
         }
+        Action::ConfigWebDavMigrateV1ToV2 => {
+            let Some(tx) = webdav_req_tx else {
+                app.push_toast(
+                    texts::tui_toast_webdav_worker_disabled(),
+                    ToastKind::Warning,
+                );
+                return Ok(());
+            };
+            let request_id = webdav_loading.start();
+            app.overlay = Overlay::Loading {
+                kind: LoadingKind::WebDav,
+                title: texts::tui_webdav_loading_title_v1_migration().to_string(),
+                message: texts::tui_webdav_loading_message().to_string(),
+            };
+            if let Err(err) = tx.send(WebDavReq {
+                request_id,
+                kind: WebDavReqKind::MigrateV1ToV2,
+            }) {
+                webdav_loading.cancel();
+                app.overlay = Overlay::None;
+                app.push_toast(
+                    texts::tui_toast_webdav_request_failed(&err.to_string()),
+                    ToastKind::Error,
+                );
+            }
+            Ok(())
+        }
         Action::ConfigWebDavReset => {
             set_webdav_sync_settings(None)?;
             app.push_toast(
@@ -1654,6 +2337,21 @@ fn handle_action(
             crate::settings::set_skip_claude_onboarding(enabled)?;
             app.push_toast(
                 texts::tui_toast_skip_claude_onboarding_toggled(enabled),
+                ToastKind::Success,
+            );
+            Ok(())
+        }
+
+        Action::SetClaudePluginIntegration { enabled } => {
+            crate::settings::set_enable_claude_plugin_integration(enabled)?;
+            if let Err(err) = crate::claude_plugin::sync_claude_plugin_on_settings_toggle(enabled) {
+                app.push_toast(
+                    texts::tui_toast_claude_plugin_sync_failed(&err.to_string()),
+                    ToastKind::Warning,
+                );
+            }
+            app.push_toast(
+                texts::tui_toast_claude_plugin_integration_toggled(enabled),
                 ToastKind::Success,
             );
             Ok(())
@@ -1971,6 +2669,11 @@ fn webdav_worker_loop(rx: mpsc::Receiver<WebDavReq>, tx: mpsc::Sender<WebDavMsg>
                     message: summary.message,
                 })
                 .map_err(|e| WebDavErr::Generic(e.to_string())),
+            WebDavReqKind::MigrateV1ToV2 => WebDavSyncService::migrate_v1_to_v2()
+                .map(|summary| WebDavDone::V1Migrated {
+                    message: summary.message,
+                })
+                .map_err(|e| WebDavErr::Generic(e.to_string())),
             WebDavReqKind::JianguoyunQuickSetup { username, password } => {
                 let cfg = webdav_jianguoyun_preset(&username, &password);
                 if let Err(err) = set_webdav_sync_settings(Some(cfg)) {
@@ -1988,6 +2691,89 @@ fn webdav_worker_loop(rx: mpsc::Receiver<WebDavReq>, tx: mpsc::Sender<WebDavMsg>
             req: req_for_msg,
             result,
         });
+    }
+}
+
+fn start_stream_check_system() -> Result<StreamCheckSystem, AppError> {
+    let (result_tx, result_rx) = mpsc::channel::<StreamCheckMsg>();
+    let (req_tx, req_rx) = mpsc::channel::<StreamCheckReq>();
+
+    let handle = std::thread::Builder::new()
+        .name("cc-switch-stream-check".to_string())
+        .spawn(move || stream_check_worker_loop(req_rx, result_tx))
+        .map_err(|e| AppError::IoContext {
+            context: "failed to spawn stream check worker thread".to_string(),
+            source: e,
+        })?;
+
+    Ok(StreamCheckSystem {
+        req_tx,
+        result_rx,
+        _handle: handle,
+    })
+}
+
+fn stream_check_worker_loop(rx: mpsc::Receiver<StreamCheckReq>, tx: mpsc::Sender<StreamCheckMsg>) {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            let err = e.to_string();
+            while let Ok(req) = rx.recv() {
+                let _ = tx.send(StreamCheckMsg::Finished {
+                    req,
+                    result: Err(err.clone()),
+                });
+            }
+            return;
+        }
+    };
+
+    while let Ok(mut req) = rx.recv() {
+        for next in rx.try_iter() {
+            req = next;
+        }
+
+        let db = match crate::Database::init() {
+            Ok(db) => db,
+            Err(err) => {
+                let _ = tx.send(StreamCheckMsg::Finished {
+                    req,
+                    result: Err(err.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let config = match db.get_stream_check_config() {
+            Ok(config) => config,
+            Err(err) => {
+                let _ = tx.send(StreamCheckMsg::Finished {
+                    req,
+                    result: Err(err.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let result = rt
+            .block_on(async {
+                StreamCheckService::check_with_retry(&req.app_type, &req.provider, &config).await
+            })
+            .map_err(|err| err.to_string());
+
+        if let Ok(ref ok) = result {
+            let _ = db.save_stream_check_log(
+                &req.provider_id,
+                &req.provider_name,
+                req.app_type.as_str(),
+                ok,
+            );
+        }
+
+        let _ = tx.send(StreamCheckMsg::Finished { req, result });
     }
 }
 
@@ -2040,6 +2826,75 @@ fn speedtest_worker_loop(rx: mpsc::Receiver<String>, tx: mpsc::Sender<SpeedtestM
             .map_err(|e| e.to_string());
 
         let _ = tx.send(SpeedtestMsg::Finished { url, result });
+    }
+}
+
+fn start_model_fetch_system() -> Result<ModelFetchSystem, AppError> {
+    let (result_tx, result_rx) = mpsc::channel::<ModelFetchMsg>();
+    let (req_tx, req_rx) = mpsc::channel::<ModelFetchReq>();
+
+    let handle = std::thread::Builder::new()
+        .name("cc-switch-modelfetch".to_string())
+        .spawn(move || model_fetch_worker_loop(req_rx, result_tx))
+        .map_err(|e| AppError::IoContext {
+            context: "failed to spawn model fetch worker thread".to_string(),
+            source: e,
+        })?;
+
+    Ok(ModelFetchSystem {
+        req_tx,
+        result_rx,
+        _handle: handle,
+    })
+}
+
+fn model_fetch_worker_loop(rx: mpsc::Receiver<ModelFetchReq>, tx: mpsc::Sender<ModelFetchMsg>) {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            let err = e.to_string();
+            while let Ok(req) = rx.recv() {
+                let ModelFetchReq::Fetch {
+                    request_id,
+                    field,
+                    claude_idx,
+                    ..
+                } = req;
+                let _ = tx.send(ModelFetchMsg::Finished {
+                    request_id,
+                    field,
+                    claude_idx,
+                    result: Err(err.clone()),
+                });
+            }
+            return;
+        }
+    };
+
+    while let Ok(req) = rx.recv() {
+        let ModelFetchReq::Fetch {
+            request_id,
+            base_url,
+            api_key,
+            field,
+            claude_idx,
+        } = req;
+        let strategy = model_fetch_strategy_for_field(field);
+        let result = rt
+            .block_on(async {
+                fetch_provider_models_for_tui(&base_url, api_key.as_deref(), strategy).await
+            })
+            .map_err(|e| e.to_string());
+
+        let _ = tx.send(ModelFetchMsg::Finished {
+            request_id,
+            field,
+            claude_idx,
+            result,
+        });
     }
 }
 
@@ -2217,24 +3072,150 @@ fn parse_repo_spec(raw: &str) -> Result<SkillRepo, AppError> {
     })
 }
 
+fn run_external_editor_for_current_editor(
+    app: &mut App,
+    open_external_editor: impl FnOnce(&str) -> Result<String, AppError>,
+) -> Result<(), AppError> {
+    let Some(current_text) = app.editor.as_ref().map(|editor| editor.text()) else {
+        return Ok(());
+    };
+
+    let edited_text = open_external_editor(&current_text)?;
+    if let Some(editor) = app.editor.as_mut() {
+        editor.replace_text(edited_text);
+    }
+
+    Ok(())
+}
+
+/// Normalize terminal-specific key event quirks before dispatching.
+///
+/// Some terminals (e.g. Xshell over SSH) send Backspace as `\x08` (Ctrl+H).
+/// crossterm 0.29 parses `\x08` as `Char('h') + CONTROL` instead of `Backspace`,
+/// because only `\x7F` is mapped to `KeyCode::Backspace`. This function remaps
+/// `Ctrl+H` → `Backspace` so all downstream handlers work correctly.
+fn normalize_key_event(mut key: KeyEvent) -> KeyEvent {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('h') {
+        key.code = KeyCode::Backspace;
+        key.modifiers.remove(KeyModifiers::CONTROL);
+    }
+    key
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
 
-    use super::app::{App, LoadingKind, Overlay};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use serde_json::json;
+
+    use super::app::{App, LoadingKind, Overlay, ToastKind};
     use crate::cli::i18n::texts;
-    use crate::AppError;
+    use crate::cli::tui::data::UiData;
+    use crate::cli::tui::form::ProviderAddField;
+    use crate::{AppError, AppType};
 
     #[test]
-    fn command_lookup_name_extracts_first_token() {
-        assert_eq!(super::command_lookup_name("node --version"), Some("node"));
-        assert_eq!(super::command_lookup_name("  rg   -n foo "), Some("rg"));
+    fn mcp_import_uses_info_toast_kind() {
+        let mut app = App::new(Some(AppType::OpenCode));
+        let mut data = UiData::default();
+
+        super::import_mcp_for_current_app_with(
+            &mut app,
+            &mut data,
+            |_app_type| Ok(0),
+            |_app_type| Ok(UiData::default()),
+        )
+        .expect("mcp import should work");
+
+        let toast = app.toast.as_ref().expect("mcp import should show toast");
+        assert_eq!(toast.kind, ToastKind::Info);
+        assert_eq!(toast.message, texts::tui_toast_mcp_imported(0));
     }
 
     #[test]
-    fn command_lookup_name_rejects_empty_or_whitespace() {
-        assert_eq!(super::command_lookup_name(""), None);
-        assert_eq!(super::command_lookup_name("   "), None);
+    fn skills_scan_unmanaged_uses_info_toast_kind() {
+        let mut app = App::new(Some(AppType::OpenCode));
+
+        super::scan_unmanaged_skills_with(&mut app, || Ok(Vec::new()))
+            .expect("skills scan should work");
+
+        let toast = app.toast.as_ref().expect("skills scan should show toast");
+        assert_eq!(toast.kind, ToastKind::Info);
+        assert_eq!(toast.message, texts::tui_toast_unmanaged_scanned(0));
+    }
+
+    #[test]
+    fn opening_skills_import_picker_selects_all_by_default() {
+        let mut app = App::new(Some(AppType::Claude));
+
+        super::open_skills_import_picker_with(&mut app, || {
+            Ok(vec![crate::services::skill::UnmanagedSkill {
+                directory: "hello-skill".to_string(),
+                name: "Hello Skill".to_string(),
+                description: Some("A local skill".to_string()),
+                found_in: vec!["claude".to_string()],
+            }])
+        })
+        .expect("import picker should open");
+
+        assert!(matches!(
+            &app.overlay,
+            Overlay::SkillsImportPicker {
+                skills,
+                selected_idx: 0,
+                selected,
+            } if skills.len() == 1
+                && skills[0].directory == "hello-skill"
+                && selected.contains("hello-skill")
+        ));
+    }
+
+    #[test]
+    fn skills_import_from_apps_uses_info_toast_kind() {
+        let mut app = App::new(Some(AppType::OpenCode));
+        let mut data = UiData::default();
+
+        super::finish_skills_import_with(
+            &mut app,
+            &mut data,
+            || Ok(vec![]),
+            |_app_type| Ok(UiData::default()),
+        )
+        .expect("skills import should work");
+
+        let toast = app.toast.as_ref().expect("skills import should show toast");
+        assert_eq!(toast.kind, ToastKind::Info);
+        assert_eq!(toast.message, texts::tui_toast_unmanaged_imported(0));
+    }
+
+    #[test]
+    fn normalize_ctrl_h_becomes_backspace() {
+        let key = KeyEvent::new_with_kind(
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        );
+        let normalized = super::normalize_key_event(key);
+        assert_eq!(normalized.code, KeyCode::Backspace);
+        assert!(!normalized.modifiers.contains(KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn normalize_plain_h_unchanged() {
+        let key =
+            KeyEvent::new_with_kind(KeyCode::Char('h'), KeyModifiers::NONE, KeyEventKind::Press);
+        let normalized = super::normalize_key_event(key);
+        assert_eq!(normalized.code, KeyCode::Char('h'));
+        assert_eq!(normalized.modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn normalize_real_backspace_unchanged() {
+        let key =
+            KeyEvent::new_with_kind(KeyCode::Backspace, KeyModifiers::NONE, KeyEventKind::Press);
+        let normalized = super::normalize_key_event(key);
+        assert_eq!(normalized.code, KeyCode::Backspace);
     }
 
     #[test]
@@ -2282,6 +3263,80 @@ mod tests {
 
         assert!(err.to_string().contains("save failed"));
         assert!(!checked, "connection check should not run when save fails");
+    }
+
+    #[test]
+    fn stream_check_result_lines_include_core_fields() {
+        let result = crate::services::stream_check::StreamCheckResult {
+            status: crate::services::stream_check::HealthStatus::Degraded,
+            success: true,
+            message: "slow but working".to_string(),
+            response_time_ms: Some(6789),
+            http_status: Some(200),
+            model_used: "gpt-5.1-codex".to_string(),
+            tested_at: 1_700_000_000,
+            retry_count: 1,
+        };
+
+        let lines = super::build_stream_check_result_lines("Provider One", &result);
+        let joined = lines.join("\n");
+
+        assert!(joined.contains("Provider One"));
+        assert!(joined.contains("gpt-5.1-codex"));
+        assert!(joined.contains("200"));
+        assert!(joined.contains("6789"));
+        assert!(joined.contains("slow but working"));
+    }
+
+    #[test]
+    fn external_editor_helper_replaces_editor_buffer_and_keeps_initial_text() {
+        let mut app = App::new(Some(crate::AppType::Claude));
+        app.open_editor(
+            "Prompt",
+            super::app::EditorKind::Plain,
+            "hello",
+            super::app::EditorSubmit::PromptEdit {
+                id: "pr1".to_string(),
+            },
+        );
+
+        super::run_external_editor_for_current_editor(&mut app, |current| {
+            assert_eq!(current, "hello");
+            Ok("hello from external\neditor".to_string())
+        })
+        .expect("external editor helper should succeed");
+
+        let editor = app.editor.as_ref().expect("editor should stay open");
+        assert_eq!(editor.text(), "hello from external\neditor");
+        assert_eq!(editor.initial_text, "hello");
+        assert!(editor.is_dirty(), "updated buffer should remain unsaved");
+    }
+
+    #[test]
+    fn external_editor_helper_preserves_buffer_on_error() {
+        let mut app = App::new(Some(crate::AppType::Claude));
+        app.open_editor(
+            "Prompt",
+            super::app::EditorKind::Plain,
+            "hello",
+            super::app::EditorSubmit::PromptEdit {
+                id: "pr1".to_string(),
+            },
+        );
+
+        let err = super::run_external_editor_for_current_editor(&mut app, |_current| {
+            Err(AppError::Message("boom".to_string()))
+        })
+        .expect_err("external editor helper should surface the edit error");
+
+        assert!(err.to_string().contains("boom"));
+        let editor = app.editor.as_ref().expect("editor should stay open");
+        assert_eq!(editor.text(), "hello");
+        assert_eq!(editor.initial_text, "hello");
+        assert!(
+            !editor.is_dirty(),
+            "failed external edit must not dirty the buffer"
+        );
     }
 
     #[test]
@@ -2481,5 +3536,75 @@ mod tests {
 
         assert_eq!(update_check.active, None);
         assert!(matches!(app.overlay, Overlay::UpdateAvailable { .. }));
+    }
+
+    #[test]
+    fn model_fetch_strategy_matches_provider_field() {
+        assert_eq!(
+            super::model_fetch_strategy_for_field(ProviderAddField::CodexModel),
+            super::ModelFetchStrategy::Bearer
+        );
+        assert_eq!(
+            super::model_fetch_strategy_for_field(ProviderAddField::GeminiModel),
+            super::ModelFetchStrategy::GoogleApiKey
+        );
+        assert_eq!(
+            super::model_fetch_strategy_for_field(ProviderAddField::ClaudeModelConfig),
+            super::ModelFetchStrategy::Anthropic
+        );
+    }
+
+    #[test]
+    fn model_fetch_candidate_urls_prefers_v1_for_anthropic_base() {
+        let urls = super::build_model_fetch_candidate_urls(
+            "https://api.anthropic.com",
+            super::ModelFetchStrategy::Anthropic,
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "https://api.anthropic.com/v1/models".to_string(),
+                "https://api.anthropic.com/models".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn model_fetch_candidate_urls_for_gemini_v1beta_keeps_models_endpoint() {
+        let urls = super::build_model_fetch_candidate_urls(
+            "https://generativelanguage.googleapis.com/v1beta",
+            super::ModelFetchStrategy::GoogleApiKey,
+        );
+        assert_eq!(
+            urls,
+            vec!["https://generativelanguage.googleapis.com/v1beta/models".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_model_ids_supports_multiple_shapes_and_dedups_stably() {
+        let data_payload = json!({
+            "data": [
+                {"id": "gpt-4o"},
+                {"id": "gpt-4o-mini"},
+                {"id": "gpt-4o"},
+                {"id": "o3"}
+            ]
+        });
+        assert_eq!(
+            super::parse_model_ids_from_response(&data_payload),
+            vec!["gpt-4o", "gpt-4o-mini", "o3"]
+        );
+
+        let gemini_payload = json!({
+            "models": [
+                {"name": "models/gemini-2.0-pro"},
+                {"name": "models/gemini-2.0-flash"}
+            ]
+        });
+        assert_eq!(
+            super::parse_model_ids_from_response(&gemini_payload),
+            vec!["gemini-2.0-pro", "gemini-2.0-flash"]
+        );
     }
 }

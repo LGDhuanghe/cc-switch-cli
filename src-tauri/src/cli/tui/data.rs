@@ -163,6 +163,11 @@ fn extract_api_url(settings_config: &Value, app_type: &AppType) -> Option<String
             })?
             .as_str()
             .map(|s| s.to_string()),
+        AppType::OpenCode => settings_config
+            .get("options")?
+            .get("baseURL")?
+            .as_str()
+            .map(|s| s.to_string()),
     }
 }
 
@@ -257,6 +262,20 @@ mod tests {
         assert_eq!(
             extract_api_url(&settings, &AppType::Gemini),
             Some("https://legacy.example".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_api_url_opencode_reads_options_base_url() {
+        let settings = json!({
+            "options": {
+                "baseURL": "https://opencode.example"
+            }
+        });
+
+        assert_eq!(
+            extract_api_url(&settings, &AppType::OpenCode),
+            Some("https://opencode.example".to_string())
         );
     }
 }

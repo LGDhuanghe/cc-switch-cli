@@ -264,6 +264,7 @@ fn import_servers(app_type: AppType) -> Result<(), AppError> {
         AppType::Claude => McpService::import_from_claude(&state)?,
         AppType::Codex => McpService::import_from_codex(&state)?,
         AppType::Gemini => McpService::import_from_gemini(&state)?,
+        AppType::OpenCode => 0,
     };
 
     if count > 0 {
@@ -312,8 +313,7 @@ fn add_server(_app_type: AppType) -> Result<(), AppError> {
 
     println!("{}", highlight("Add New MCP Server"));
     println!("{}", info("Opening external editor..."));
-    let edited =
-        edit::edit(&initial).map_err(|e| AppError::Message(format!("editor failed: {e}")))?;
+    let edited = crate::cli::editor::open_external_editor(&initial)?;
 
     let server: McpServer = serde_json::from_str(&edited)
         .map_err(|e| AppError::Message(format!("invalid JSON: {e}")))?;
@@ -347,8 +347,7 @@ fn edit_server(_app_type: AppType, id: &str) -> Result<(), AppError> {
 
     println!("{}", info(&format!("Editing MCP server '{}'...", id)));
     println!("{}", info("Opening external editor..."));
-    let edited =
-        edit::edit(&initial).map_err(|e| AppError::Message(format!("editor failed: {e}")))?;
+    let edited = crate::cli::editor::open_external_editor(&initial)?;
 
     if edited.trim_end() == initial.trim_end() {
         println!("{}", info("No changes detected."));

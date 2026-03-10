@@ -66,6 +66,7 @@ pub fn import_provider_from_deeplink(
                 Some("claude") => Some("https://anthropic.com".to_string()),
                 Some("codex") => Some("https://openai.com".to_string()),
                 Some("gemini") => Some("https://ai.google.dev".to_string()),
+                Some("opencode") => Some("https://opencode.ai".to_string()),
                 _ => None,
             };
         }
@@ -137,6 +138,7 @@ fn build_provider_from_request(
         AppType::Claude => build_claude_settings(request),
         AppType::Codex => build_codex_settings(request),
         AppType::Gemini => build_gemini_settings(request),
+        AppType::OpenCode => build_opencode_settings(request),
     };
 
     let meta = build_provider_meta(request)?;
@@ -265,9 +267,20 @@ fn build_codex_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
         .trim_end_matches('/')
         .to_string();
 
-    // CLI edition stores a *provider snippet* (not full `~/.codex/config.toml`).
+    // Generate a provider key from the name (same logic as clean_codex_provider_key)
+    let provider_key =
+        crate::codex_config::clean_codex_provider_key(request.name.as_deref().unwrap_or("custom"));
+
+    // Use upstream model_provider + [model_providers.<key>] format
     let config_snippet = format!(
-        "base_url = \"{endpoint}\"\nmodel = \"{model_name}\"\nwire_api = \"responses\"\nenv_key = \"OPENAI_API_KEY\""
+        "model_provider = \"{provider_key}\"\n\
+         model = \"{model_name}\"\n\
+         \n\
+         [model_providers.{provider_key}]\n\
+         base_url = \"{endpoint}\"\n\
+         wire_api = \"responses\"\n\
+         requires_openai_auth = false\n\
+         env_key = \"OPENAI_API_KEY\""
     );
 
     json!({
@@ -289,6 +302,29 @@ fn build_gemini_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
         env.insert("GEMINI_MODEL".to_string(), json!(model));
     }
     json!({ "env": env })
+}
+
+fn build_opencode_settings(request: &DeepLinkImportRequest) -> serde_json::Value {
+    let endpoint = get_primary_endpoint(request);
+
+    let mut options = serde_json::Map::new();
+    if !endpoint.is_empty() {
+        options.insert("baseURL".to_string(), json!(endpoint));
+    }
+    if let Some(api_key) = &request.api_key {
+        options.insert("apiKey".to_string(), json!(api_key));
+    }
+
+    let mut models = serde_json::Map::new();
+    if let Some(model) = &request.model {
+        models.insert(model.clone(), json!({ "name": model }));
+    }
+
+    json!({
+        "npm": "@ai-sdk/openai-compatible",
+        "options": options,
+        "models": models
+    })
 }
 
 /// Parse and merge configuration from Base64 encoded config or remote URL.
@@ -339,6 +375,7 @@ pub fn parse_and_merge_config(
         "claude" => merge_claude_config(&mut merged, &config_value)?,
         "codex" => merge_codex_config(&mut merged, &config_value)?,
         "gemini" => merge_gemini_config(&mut merged, &config_value)?,
+        "opencode" => merge_additive_config(&mut merged, &config_value)?,
         "" => return Ok(merged),
         other => return Err(AppError::InvalidInput(format!("Invalid app type: {other}"))),
     }
@@ -487,6 +524,49 @@ fn merge_gemini_config(
             if request.homepage.is_none() {
                 request.homepage = Some("https://ai.google.dev".to_string());
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn merge_additive_config(
+    request: &mut DeepLinkImportRequest,
+    config: &serde_json::Value,
+) -> Result<(), AppError> {
+    if request.api_key.as_ref().is_none_or(|s| s.is_empty()) {
+        if let Some(api_key) = config
+            .get("apiKey")
+            .or_else(|| config.get("api_key"))
+            .or_else(|| {
+                config
+                    .get("options")
+                    .and_then(|options| options.get("apiKey"))
+            })
+            .and_then(|value| value.as_str())
+        {
+            request.api_key = Some(api_key.to_string());
+        }
+    }
+
+    if request.endpoint.as_ref().is_none_or(|s| s.is_empty()) {
+        if let Some(base_url) = config
+            .get("baseUrl")
+            .or_else(|| config.get("base_url"))
+            .or_else(|| {
+                config
+                    .get("options")
+                    .and_then(|options| options.get("baseURL"))
+            })
+            .and_then(|value| value.as_str())
+        {
+            request.endpoint = Some(base_url.to_string());
+        }
+    }
+
+    if request.homepage.as_ref().is_none_or(|s| s.is_empty()) {
+        if let Some(endpoint) = request.endpoint.as_ref().filter(|value| !value.is_empty()) {
+            request.homepage = infer_homepage_from_endpoint(endpoint);
         }
     }
 
