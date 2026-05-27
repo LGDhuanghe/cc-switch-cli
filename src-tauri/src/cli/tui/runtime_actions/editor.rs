@@ -1619,11 +1619,13 @@ mod tests {
             proxy_req_tx: None,
             proxy_loading: &mut fixture.proxy_loading,
             local_env_req_tx: None,
+            session_req_tx: None,
             webdav_req_tx: None,
             webdav_loading: &mut fixture.webdav_loading,
             update_req_tx: None,
             update_check: &mut fixture.update_check,
             model_fetch_req_tx: None,
+            managed_auth_req_tx: None,
         };
 
         submit_provider_form_apply_json(
