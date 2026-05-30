@@ -47,6 +47,9 @@ impl RequestForwarder {
         let mut upstream_endpoint = self.router.upstream_endpoint(app_type, provider, endpoint);
         let base_url = adapter.extract_base_url(provider)?;
         let (mut mapped_body, _, _) = apply_model_mapping(body.clone(), provider);
+        let codex_responses_to_chat = should_convert_codex_responses_to_chat(provider, endpoint)
+            && matches!(app_type, AppType::Codex);
+        let needs_transform = adapter.needs_transform(provider);
 
         if is_claude_request && self.optimizer_config.enabled && is_bedrock_provider(provider) {
             if self.optimizer_config.thinking_optimizer {
@@ -60,9 +63,7 @@ impl RequestForwarder {
             }
         }
 
-        let request_body = if should_convert_codex_responses_to_chat(provider, endpoint)
-            && matches!(app_type, AppType::Codex)
-        {
+        let request_body = if codex_responses_to_chat {
             upstream_endpoint = rewrite_codex_responses_endpoint_to_chat(endpoint);
             if let Some(history) = self.codex_chat_history.as_ref() {
                 history.enrich_request(&mut mapped_body).await;
@@ -73,7 +74,7 @@ impl RequestForwarder {
                 mapped_body,
                 reasoning_config.as_ref(),
             )?
-        } else if adapter.needs_transform(provider) {
+        } else if needs_transform {
             if is_claude_request {
                 super::super::providers::transform_claude_request_for_api_format(
                     mapped_body,
@@ -89,6 +90,9 @@ impl RequestForwarder {
             mapped_body
         };
         let filtered_body = prepare_upstream_request_body(request_body);
+        let force_identity_encoding = needs_transform
+            || codex_responses_to_chat
+            || is_streaming_request(&upstream_endpoint, &filtered_body, headers);
         let client = self.client_for_provider(provider);
 
         build_request(
@@ -103,6 +107,7 @@ impl RequestForwarder {
             is_claude_request,
             self.session_client_provided
                 .then_some(self.session_id.as_str()),
+            force_identity_encoding,
         )
         .await
     }
@@ -132,6 +137,7 @@ async fn build_request(
     _options: ForwardOptions,
     is_claude_request: bool,
     client_session_id: Option<&str>,
+    force_identity_encoding: bool,
 ) -> Result<reqwest::RequestBuilder, ProxyError> {
     let (endpoint_path, endpoint_query) = split_endpoint_and_query(endpoint);
     let url = if base_url
@@ -147,6 +153,13 @@ async fn build_request(
     let mut request = client.post(url);
 
     for (key, value) in headers {
+        if key.as_str().eq_ignore_ascii_case("accept-encoding") {
+            if !force_identity_encoding {
+                request = request.header(key, value);
+            }
+            continue;
+        }
+
         if HEADER_BLACKLIST
             .iter()
             .any(|blocked| key.as_str().eq_ignore_ascii_case(blocked))
@@ -182,7 +195,9 @@ async fn build_request(
         request = request.header("x-real-ip", real_ip);
     }
 
-    request = request.header("accept-encoding", "identity");
+    if force_identity_encoding {
+        request = request.header("accept-encoding", "identity");
+    }
 
     if let Some(auth) = adapter.extract_auth(provider) {
         let mut effective_auth = auth.clone();
@@ -259,6 +274,26 @@ fn append_query_to_url(url: &str, query: Option<&str>) -> String {
     } else {
         format!("{url}?{query}")
     }
+}
+
+fn is_streaming_request(endpoint: &str, body: &Value, headers: &HeaderMap) -> bool {
+    if body
+        .get("stream")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    if endpoint.contains("streamGenerateContent") || endpoint.contains("alt=sse") {
+        return true;
+    }
+
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|accept| accept.contains("text/event-stream"))
+        .unwrap_or(false)
 }
 
 fn is_bedrock_provider(provider: &Provider) -> bool {

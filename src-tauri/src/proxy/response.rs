@@ -3,6 +3,7 @@ use bytes::Bytes;
 use futures::stream::StreamExt;
 use serde_json::Value;
 use std::{
+    io::Read,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -109,17 +110,79 @@ pub fn is_sse_headers(headers: &reqwest::header::HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+fn decompress_body(content_encoding: &str, body: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    match content_encoding {
+        "gzip" | "x-gzip" => {
+            let mut decoder = flate2::read::GzDecoder::new(body);
+            let mut decompressed = Vec::new();
+            decoder.read_to_end(&mut decompressed)?;
+            Ok(decompressed)
+        }
+        "deflate" => {
+            let mut decoder = flate2::read::DeflateDecoder::new(body);
+            let mut decompressed = Vec::new();
+            decoder.read_to_end(&mut decompressed)?;
+            Ok(decompressed)
+        }
+        "br" => {
+            let mut decompressed = Vec::new();
+            brotli::BrotliDecompress(&mut std::io::Cursor::new(body), &mut decompressed)?;
+            Ok(decompressed)
+        }
+        _ => {
+            log::warn!("unknown content-encoding: {content_encoding}, skipping decompression");
+            Ok(body.to_vec())
+        }
+    }
+}
+
+fn content_encoding(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
+        .get(reqwest::header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty() && value != "identity")
+}
+
+pub(crate) fn decode_buffered_response_body(
+    headers: &mut reqwest::header::HeaderMap,
+    raw_body: Bytes,
+) -> Bytes {
+    let mut body = raw_body.clone();
+    let mut decoded = false;
+
+    if let Some(encoding) = content_encoding(headers) {
+        match decompress_body(&encoding, &raw_body) {
+            Ok(decompressed) => {
+                body = Bytes::from(decompressed);
+                decoded = true;
+            }
+            Err(error) => {
+                log::warn!("failed to decompress upstream response ({encoding}): {error}");
+            }
+        }
+    }
+
+    if decoded {
+        headers.remove(reqwest::header::CONTENT_ENCODING);
+        headers.remove(reqwest::header::CONTENT_LENGTH);
+        headers.remove(reqwest::header::TRANSFER_ENCODING);
+    }
+
+    body
+}
+
 pub async fn build_passthrough_response(
     response: reqwest::Response,
     first_byte_timeout: Option<Duration>,
     idle_timeout: Option<Duration>,
 ) -> Result<PreparedResponse, ProxyError> {
     let status = response.status();
-    let headers = response.headers().clone();
-    let mut builder = Response::builder().status(status);
-    copy_headers(&mut builder, &headers, false, false);
 
     if is_sse_response(&response) {
+        let headers = response.headers().clone();
+        let mut builder = Response::builder().status(status);
+        copy_headers(&mut builder, &headers, false, false);
         let stream_completion = StreamCompletion::default();
         let stream = with_stream_timeouts(
             response.bytes_stream(),
@@ -135,13 +198,15 @@ pub async fn build_passthrough_response(
             });
     }
 
-    let body = read_buffered_body(response, first_byte_timeout).await?;
+    let (headers, body) = read_decoded_buffered_response(response, first_byte_timeout).await?;
     let upstream_error_summary = if !status.is_success() {
         summarize_upstream_body_bytes(&body)
     } else {
         None
     };
     let estimated_output_tokens = estimate_tokens_from_bytes(&body);
+    let mut builder = Response::builder().status(status);
+    copy_headers(&mut builder, &headers, false, false);
     let response_bytes = body.clone();
     builder
         .body(Body::from(body))
@@ -167,8 +232,7 @@ where
     F: FnOnce(Value) -> Result<Value, ProxyError>,
 {
     let status = response.status();
-    let headers = response.headers().clone();
-    let body = read_buffered_body(response, first_byte_timeout).await?;
+    let (headers, body) = read_decoded_buffered_response(response, first_byte_timeout).await?;
     build_buffered_json_response_inner(status, &headers, body, transform)
 }
 
@@ -178,8 +242,7 @@ pub async fn build_codex_chat_error_response(
     history: Arc<CodexChatHistoryStore>,
 ) -> Result<PreparedResponse, ProxyError> {
     let status = response.status();
-    let headers = response.headers().clone();
-    let body = read_buffered_body(response, first_byte_timeout).await?;
+    let (headers, body) = read_decoded_buffered_response(response, first_byte_timeout).await?;
     build_buffered_codex_chat_response(status, &headers, body, history).await
 }
 
@@ -189,8 +252,7 @@ pub async fn build_codex_chat_response(
     history: Arc<CodexChatHistoryStore>,
 ) -> Result<PreparedResponse, ProxyError> {
     let status = response.status();
-    let headers = response.headers().clone();
-    let body = read_buffered_body(response, timeout).await?;
+    let (headers, body) = read_decoded_buffered_response(response, timeout).await?;
     build_buffered_codex_chat_response(status, &headers, body, history).await
 }
 
@@ -436,6 +498,16 @@ async fn read_buffered_body(
             ProxyError::RequestFailed(format!("read response body failed: {error}"))
         }),
     }
+}
+
+async fn read_decoded_buffered_response(
+    response: reqwest::Response,
+    timeout_duration: Option<Duration>,
+) -> Result<(reqwest::header::HeaderMap, Bytes), ProxyError> {
+    let mut headers = response.headers().clone();
+    let body = read_buffered_body(response, timeout_duration).await?;
+    let body = decode_buffered_response_body(&mut headers, body);
+    Ok((headers, body))
 }
 
 async fn next_chunk_with_timeout<S>(

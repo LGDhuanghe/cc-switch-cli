@@ -211,7 +211,7 @@ async fn claude_prepare_request_sets_defaults_and_filters_blocked_caller_headers
         header_value(&request, "anthropic-version"),
         Some("2023-06-01")
     );
-    assert_eq!(header_value(&request, "accept-encoding"), Some("identity"));
+    assert_eq!(header_value(&request, "accept-encoding"), Some("gzip"));
     assert_eq!(
         header_value(&request, "authorization"),
         Some("Bearer key-p1")
@@ -240,6 +240,40 @@ async fn non_claude_prepare_request_skips_claude_specific_headers() {
         header_value(&request, "authorization"),
         Some("Bearer codex-key")
     );
+    assert_eq!(header_value(&request, "accept-encoding"), None);
+}
+
+#[tokio::test]
+async fn streaming_passthrough_prepare_request_forces_identity_accept_encoding() {
+    let mut headers = HeaderMap::new();
+    headers.insert("accept-encoding", HeaderValue::from_static("gzip"));
+    let (_db, router) = test_router().await;
+    let forwarder = RequestForwarder::new(router).expect("create forwarder");
+    let request_body = json!({
+        "model": "gpt-5.4",
+        "input": "hello",
+        "stream": true
+    });
+
+    let request = forwarder
+        .prepare_request(
+            &AppType::Codex,
+            &codex_provider("https://example.com"),
+            "/v1/responses",
+            &request_body,
+            &headers,
+            ForwardOptions {
+                max_retries: 0,
+                request_timeout: Some(Duration::from_secs(2)),
+                bypass_circuit_breaker: true,
+            },
+        )
+        .await
+        .expect("prepare streaming passthrough request")
+        .build()
+        .expect("build streaming passthrough request");
+
+    assert_eq!(header_value(&request, "accept-encoding"), Some("identity"));
 }
 
 #[tokio::test]
@@ -444,6 +478,8 @@ async fn codex_chat_prepare_request_rewrites_responses_to_chat_completions() {
     let provider = codex_chat_provider("https://example.com/v1", "deepseek-chat");
     let (_db, router) = test_router().await;
     let forwarder = RequestForwarder::new(router).expect("create forwarder");
+    let mut headers = HeaderMap::new();
+    headers.insert("accept-encoding", HeaderValue::from_static("gzip"));
     let request_body = json!({
         "model": "gpt-5.4",
         "input": "hello",
@@ -456,7 +492,7 @@ async fn codex_chat_prepare_request_rewrites_responses_to_chat_completions() {
             &provider,
             "/v1/responses",
             &request_body,
-            &HeaderMap::new(),
+            &headers,
             ForwardOptions {
                 max_retries: 0,
                 request_timeout: Some(Duration::from_secs(2)),
@@ -476,6 +512,7 @@ async fn codex_chat_prepare_request_rewrites_responses_to_chat_completions() {
         header_value(&request, "authorization"),
         Some("Bearer codex-key")
     );
+    assert_eq!(header_value(&request, "accept-encoding"), Some("identity"));
 
     let body = request_body_json(&request);
     assert_eq!(body["model"], "deepseek-chat");

@@ -2,7 +2,7 @@ use axum::{body::to_bytes, http::StatusCode};
 use bytes::Bytes;
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde_json::json;
-use std::sync::Arc;
+use std::{io::Write, sync::Arc};
 
 use super::*;
 
@@ -10,6 +10,41 @@ async fn buffered_body(response: Response) -> Bytes {
     to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read buffered response body")
+}
+
+#[test]
+fn decode_buffered_response_body_decompresses_gzip_and_strips_entity_headers() {
+    let payload = br#"{"ok":true}"#;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(payload).expect("write gzip payload");
+    let compressed = encoder.finish().expect("finish gzip payload");
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        reqwest::header::CONTENT_ENCODING,
+        HeaderValue::from_static("gzip"),
+    );
+    headers.insert(
+        reqwest::header::CONTENT_LENGTH,
+        HeaderValue::from_static("999"),
+    );
+    headers.insert(
+        reqwest::header::TRANSFER_ENCODING,
+        HeaderValue::from_static("chunked"),
+    );
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+    let body = decode_buffered_response_body(&mut headers, Bytes::from(compressed));
+
+    assert_eq!(body, Bytes::from_static(payload));
+    assert!(!headers.contains_key(reqwest::header::CONTENT_ENCODING));
+    assert!(!headers.contains_key(reqwest::header::CONTENT_LENGTH));
+    assert!(!headers.contains_key(reqwest::header::TRANSFER_ENCODING));
+    assert_eq!(
+        headers
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("application/json")
+    );
 }
 
 #[tokio::test]

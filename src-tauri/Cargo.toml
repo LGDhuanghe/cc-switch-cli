@@ -79,6 +79,7 @@ sha2 = "0.10"
 minisign-verify = "0.2.4"
 semver = "1.0"
 flate2 = "1.0"
+brotli = "7"
 tar = "0.4"
 rquickjs = { version = "0.8", features = ["array-buffer", "classes"] }
 zip = "2.2"
