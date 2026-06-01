@@ -10,6 +10,7 @@ pub(crate) mod failover_policy;
 pub mod i18n;
 pub mod interactive;
 pub(crate) mod openclaw_form_normalization;
+pub(crate) mod proxy_settings;
 pub mod terminal;
 pub mod tui;
 pub mod ui;
@@ -65,6 +66,10 @@ pub enum Commands {
     /// Manage local multi-app proxy
     #[command(subcommand)]
     Proxy(commands::proxy::ProxyCommand),
+
+    /// Manage persisted UI and integration settings
+    #[command(subcommand)]
+    Settings(commands::settings::SettingsCommand),
 
     /// Manage automatic failover and provider queue
     #[command(subcommand)]
@@ -224,10 +229,60 @@ mod tests {
 
         assert_eq!(cli.app, Some(super::AppType::Codex));
         match cli.command {
-            Some(Commands::Proxy(super::commands::proxy::ProxyCommand::Config { listen_port })) => {
+            Some(Commands::Proxy(super::commands::proxy::ProxyCommand::Config {
+                listen_port,
+                ..
+            })) => {
                 assert_eq!(listen_port, Some(15722));
             }
             _ => panic!("expected proxy config command"),
+        }
+    }
+
+    #[test]
+    fn parses_proxy_config_listen_address_subcommand() {
+        let cli = Cli::parse_from([
+            "cc-switch",
+            "proxy",
+            "config",
+            "--listen-address",
+            "localhost",
+        ]);
+
+        match cli.command {
+            Some(Commands::Proxy(super::commands::proxy::ProxyCommand::Config {
+                listen_address,
+                ..
+            })) => {
+                assert_eq!(listen_address.as_deref(), Some("localhost"));
+            }
+            _ => panic!("expected proxy config command"),
+        }
+    }
+
+    #[test]
+    fn parses_settings_visible_apps_enable_subcommand() {
+        let cli = Cli::parse_from(["cc-switch", "settings", "visible-apps", "enable", "gemini"]);
+
+        match cli.command {
+            Some(Commands::Settings(super::commands::settings::SettingsCommand::VisibleApps(
+                super::commands::settings::VisibleAppsCommand::Enable { app },
+            ))) => {
+                assert_eq!(app, super::AppType::Gemini);
+            }
+            _ => panic!("expected settings visible-apps enable command"),
+        }
+    }
+
+    #[test]
+    fn parses_settings_language_subcommand() {
+        let cli = Cli::parse_from(["cc-switch", "settings", "language", "zh"]);
+
+        match cli.command {
+            Some(Commands::Settings(super::commands::settings::SettingsCommand::Language {
+                language: Some(super::commands::settings::LanguageArg::Zh),
+            })) => {}
+            _ => panic!("expected settings language command"),
         }
     }
 
