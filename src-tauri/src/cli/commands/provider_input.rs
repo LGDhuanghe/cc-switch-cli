@@ -973,6 +973,61 @@ mod tests {
     }
 
     #[test]
+    fn cli_claude_model_prompt_fields_cover_tui_model_config_keys() {
+        let keys = claude_model_prompt_fields()
+            .into_iter()
+            .map(|field| field.env_key)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            keys,
+            vec![
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_REASONING_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            ],
+            "CLI model prompts should cover the same Claude model env keys as the TUI model config"
+        );
+    }
+
+    #[test]
+    fn cli_claude_prompt_writes_reasoning_model_when_model_config_is_supplied() {
+        let cfg = build_claude_settings_config_from_prompt(
+            None,
+            "sk-test",
+            "https://api.anthropic.com",
+            [
+                ("ANTHROPIC_MODEL", Some("model-main".to_string())),
+                (
+                    "ANTHROPIC_REASONING_MODEL",
+                    Some("model-reasoning".to_string()),
+                ),
+                (
+                    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                    Some("model-haiku".to_string()),
+                ),
+                (
+                    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                    Some("model-sonnet".to_string()),
+                ),
+                (
+                    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                    Some("model-opus".to_string()),
+                ),
+            ],
+            false,
+        );
+
+        assert_eq!(cfg["env"]["ANTHROPIC_MODEL"], "model-main");
+        assert_eq!(cfg["env"]["ANTHROPIC_REASONING_MODEL"], "model-reasoning");
+        assert_eq!(cfg["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"], "model-haiku");
+        assert_eq!(cfg["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"], "model-sonnet");
+        assert_eq!(cfg["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"], "model-opus");
+    }
+
+    #[test]
     fn cli_claude_prompt_preserves_custom_attribution_when_hide_is_disabled() {
         let current = json!({
             "env": {
@@ -2968,41 +3023,10 @@ fn prompt_claude_config(current: Option<&Value>) -> Result<Value, AppError> {
 
     let mut model_fields = Vec::new();
     if config_models {
-        // 使用新的辅助函数处理四个模型字段
-        let model = prompt_model_field(
-            texts::model_default_label(),
-            "ANTHROPIC_MODEL",
-            texts::model_sonnet_placeholder(),
-            current,
-        )?;
-
-        let haiku = prompt_model_field(
-            texts::model_haiku_label(),
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            texts::model_haiku_placeholder(),
-            current,
-        )?;
-
-        let sonnet = prompt_model_field(
-            texts::model_sonnet_label(),
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            texts::model_sonnet_placeholder(),
-            current,
-        )?;
-
-        let opus = prompt_model_field(
-            texts::model_opus_label(),
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            texts::model_opus_placeholder(),
-            current,
-        )?;
-
-        model_fields.extend([
-            ("ANTHROPIC_MODEL", model),
-            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", haiku),
-            ("ANTHROPIC_DEFAULT_SONNET_MODEL", sonnet),
-            ("ANTHROPIC_DEFAULT_OPUS_MODEL", opus),
-        ]);
+        for field in claude_model_prompt_fields() {
+            let value = prompt_model_field(field.label, field.env_key, field.placeholder, current)?;
+            model_fields.push((field.env_key, value));
+        }
     }
 
     let hide_attribution = Confirm::new(texts::tui_label_claude_hide_attribution())
@@ -3017,6 +3041,43 @@ fn prompt_claude_config(current: Option<&Value>) -> Result<Value, AppError> {
         model_fields,
         hide_attribution,
     ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClaudeModelPromptField {
+    label: &'static str,
+    env_key: &'static str,
+    placeholder: &'static str,
+}
+
+fn claude_model_prompt_fields() -> [ClaudeModelPromptField; 5] {
+    [
+        ClaudeModelPromptField {
+            label: texts::model_default_label(),
+            env_key: "ANTHROPIC_MODEL",
+            placeholder: texts::model_sonnet_placeholder(),
+        },
+        ClaudeModelPromptField {
+            label: texts::tui_claude_reasoning_model_label(),
+            env_key: "ANTHROPIC_REASONING_MODEL",
+            placeholder: texts::model_sonnet_placeholder(),
+        },
+        ClaudeModelPromptField {
+            label: texts::model_haiku_label(),
+            env_key: "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            placeholder: texts::model_haiku_placeholder(),
+        },
+        ClaudeModelPromptField {
+            label: texts::model_sonnet_label(),
+            env_key: "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            placeholder: texts::model_sonnet_placeholder(),
+        },
+        ClaudeModelPromptField {
+            label: texts::model_opus_label(),
+            env_key: "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            placeholder: texts::model_opus_placeholder(),
+        },
+    ]
 }
 
 fn claude_hide_attribution_enabled(settings_config: Option<&Value>) -> bool {
