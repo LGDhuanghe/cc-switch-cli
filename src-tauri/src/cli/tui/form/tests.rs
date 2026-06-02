@@ -3409,9 +3409,9 @@ fn provider_edit_form_roundtrip_preserves_upstream_meta_auth_and_type_fields() {
             .and_then(|value| value.as_str()),
         Some("acc-1")
     );
-    assert_eq!(
-        meta.get("apiKeyField").and_then(|value| value.as_str()),
-        Some("ANTHROPIC_AUTH_TOKEN")
+    assert!(
+        meta.get("apiKeyField").is_none(),
+        "upstream omits apiKeyField when the default ANTHROPIC_AUTH_TOKEN field is selected"
     );
     assert_eq!(
         meta.get("providerType").and_then(|value| value.as_str()),
@@ -3420,6 +3420,74 @@ fn provider_edit_form_roundtrip_preserves_upstream_meta_auth_and_type_fields() {
     assert_eq!(
         meta.get("githubAccountId").and_then(|value| value.as_str()),
         Some("gh-123")
+    );
+}
+
+#[test]
+fn provider_edit_form_roundtrip_preserves_claude_api_key_field_shape() {
+    let provider_value = json!({
+        "id": "provider-1",
+        "name": "Provider One",
+        "settingsConfig": {
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.example.com",
+                "ANTHROPIC_API_KEY": "sk-api-key",
+                "ANTHROPIC_AUTH_TOKEN": "stale-token",
+                "EXTRA_ENV": "keep"
+            }
+        },
+        "meta": {
+            "apiKeyField": "ANTHROPIC_API_KEY",
+            "endpointAutoSelect": true
+        }
+    });
+    let provider: Provider = serde_json::from_value(provider_value).expect("provider json valid");
+
+    let mut form = ProviderAddFormState::from_provider(AppType::Claude, &provider);
+    assert_eq!(form.claude_api_key.value, "sk-api-key");
+    form.claude_api_key.set("sk-updated");
+    let roundtrip = form.to_provider_json_value();
+
+    assert_eq!(
+        roundtrip["settingsConfig"]["env"]["ANTHROPIC_API_KEY"],
+        "sk-updated"
+    );
+    assert!(
+        roundtrip["settingsConfig"]["env"]
+            .get("ANTHROPIC_AUTH_TOKEN")
+            .is_none(),
+        "saving an API_KEY provider should not recreate the default auth-token field"
+    );
+    assert_eq!(roundtrip["settingsConfig"]["env"]["EXTRA_ENV"], "keep");
+    assert_eq!(roundtrip["meta"]["apiKeyField"], "ANTHROPIC_API_KEY");
+    assert_eq!(roundtrip["meta"]["endpointAutoSelect"], true);
+}
+
+#[test]
+fn provider_edit_form_infers_claude_api_key_field_from_env_when_meta_missing() {
+    let provider_value = json!({
+        "id": "provider-1",
+        "name": "Provider One",
+        "settingsConfig": {
+            "env": {
+                "ANTHROPIC_BASE_URL": "https://api.example.com",
+                "ANTHROPIC_API_KEY": "sk-api-key"
+            }
+        }
+    });
+    let provider: Provider = serde_json::from_value(provider_value).expect("provider json valid");
+
+    let form = ProviderAddFormState::from_provider(AppType::Claude, &provider);
+    let roundtrip = form.to_provider_json_value();
+
+    assert_eq!(form.claude_api_key.value, "sk-api-key");
+    assert_eq!(
+        roundtrip["settingsConfig"]["env"]["ANTHROPIC_API_KEY"],
+        "sk-api-key"
+    );
+    assert_eq!(
+        roundtrip["meta"]["apiKeyField"], "ANTHROPIC_API_KEY",
+        "upstream saves non-default Claude auth field in provider meta"
     );
 }
 

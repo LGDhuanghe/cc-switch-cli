@@ -5,7 +5,7 @@ use crate::app_config::AppType;
 use crate::cli::i18n::texts;
 use crate::cli::ui::info;
 use crate::error::AppError;
-use crate::provider::{AuthBinding, AuthBindingSource, Provider, ProviderMeta};
+use crate::provider::{AuthBinding, AuthBindingSource, ClaudeApiKeyField, Provider, ProviderMeta};
 use crate::services::ProviderService;
 use clap::ValueEnum;
 use colored::Colorize;
@@ -58,6 +58,28 @@ impl ProviderAddTemplate {
 pub struct ProviderAddTemplateChoice {
     pub template: ProviderAddTemplate,
     pub label: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub struct SettingsConfigPromptResult {
+    pub settings_config: Value,
+    pub claude_api_key_field: Option<ClaudeApiKeyField>,
+}
+
+impl SettingsConfigPromptResult {
+    fn new(settings_config: Value) -> Self {
+        Self {
+            settings_config,
+            claude_api_key_field: None,
+        }
+    }
+
+    fn claude(settings_config: Value, api_key_field: ClaudeApiKeyField) -> Self {
+        Self {
+            settings_config,
+            claude_api_key_field: Some(api_key_field),
+        }
+    }
 }
 
 pub fn supports_common_config(app_type: &AppType) -> bool {
@@ -1069,6 +1091,7 @@ requires_openai_auth = true
 
         let cfg = build_claude_settings_config_from_prompt(
             None,
+            ClaudeApiKeyField::AuthToken,
             "",
             base_url,
             Vec::<(&str, Option<String>)>::new(),
@@ -1083,9 +1106,61 @@ requires_openai_auth = true
     }
 
     #[test]
+    fn cli_claude_prompt_api_key_field_writes_api_key_env() {
+        let current = json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "stale-token",
+                "ANTHROPIC_API_KEY": "old-api-key",
+                "EXTRA_ENV": "keep"
+            }
+        });
+
+        let cfg = build_claude_settings_config_from_prompt(
+            Some(&current),
+            ClaudeApiKeyField::ApiKey,
+            "sk-updated",
+            "https://api.example.com",
+            Vec::<(&str, Option<String>)>::new(),
+            false,
+        );
+
+        assert_eq!(cfg["env"]["ANTHROPIC_API_KEY"], "sk-updated");
+        assert!(
+            cfg["env"].get("ANTHROPIC_AUTH_TOKEN").is_none(),
+            "switching to ANTHROPIC_API_KEY should migrate away from the default auth field"
+        );
+        assert_eq!(cfg["env"]["EXTRA_ENV"], "keep");
+    }
+
+    #[test]
+    fn cli_claude_api_key_field_infers_meta_then_env() {
+        let settings_with_api_key = json!({
+            "env": {
+                "ANTHROPIC_API_KEY": "sk-api-key"
+            }
+        });
+        let meta = ProviderMeta {
+            api_key_field: Some("ANTHROPIC_AUTH_TOKEN".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ClaudeApiKeyField::from_meta_and_settings(Some(&meta), &settings_with_api_key),
+            ClaudeApiKeyField::AuthToken,
+            "upstream gives meta.apiKeyField precedence over env inference"
+        );
+        assert_eq!(
+            ClaudeApiKeyField::from_meta_and_settings(None, &settings_with_api_key),
+            ClaudeApiKeyField::ApiKey,
+            "without meta, existing ANTHROPIC_API_KEY should select the API_KEY field"
+        );
+    }
+
+    #[test]
     fn cli_claude_prompt_writes_hide_attribution_upstream_shape() {
         let cfg = build_claude_settings_config_from_prompt(
             None,
+            ClaudeApiKeyField::AuthToken,
             "sk-test",
             "https://api.anthropic.com",
             Vec::<(&str, Option<String>)>::new(),
@@ -1125,6 +1200,7 @@ requires_openai_auth = true
     fn cli_claude_prompt_writes_reasoning_model_when_model_config_is_supplied() {
         let cfg = build_claude_settings_config_from_prompt(
             None,
+            ClaudeApiKeyField::AuthToken,
             "sk-test",
             "https://api.anthropic.com",
             [
@@ -1171,6 +1247,7 @@ requires_openai_auth = true
 
         let cfg = build_claude_settings_config_from_prompt(
             Some(&current),
+            ClaudeApiKeyField::AuthToken,
             "sk-updated",
             "https://api.example.com",
             Vec::<(&str, Option<String>)>::new(),
@@ -1199,6 +1276,7 @@ requires_openai_auth = true
 
         let cfg = build_claude_settings_config_from_prompt(
             Some(&current),
+            ClaudeApiKeyField::AuthToken,
             "sk-test",
             "https://api.example.com",
             Vec::<(&str, Option<String>)>::new(),
@@ -1228,6 +1306,7 @@ requires_openai_auth = true
 
         let cfg = build_claude_settings_config_from_prompt(
             Some(&current),
+            ClaudeApiKeyField::AuthToken,
             "sk-test",
             "https://api.example.com",
             Vec::<(&str, Option<String>)>::new(),
@@ -1763,14 +1842,16 @@ requires_openai_auth = true
     }
 }
 
-pub fn prompt_settings_config_for_add(app_type: &AppType) -> Result<Value, AppError> {
+pub fn prompt_settings_config_for_add(
+    app_type: &AppType,
+) -> Result<SettingsConfigPromptResult, AppError> {
     match app_type {
-        AppType::Claude => prompt_claude_config(None),
-        AppType::Codex => prompt_codex_config(None),
-        AppType::Gemini => prompt_gemini_config(None),
-        AppType::OpenCode => prompt_opencode_config(None),
-        AppType::Hermes => prompt_hermes_config(None),
-        AppType::OpenClaw => prompt_openclaw_config(None),
+        AppType::Claude => prompt_claude_config(None, None),
+        AppType::Codex => prompt_codex_config(None).map(SettingsConfigPromptResult::new),
+        AppType::Gemini => prompt_gemini_config(None).map(SettingsConfigPromptResult::new),
+        AppType::OpenCode => prompt_opencode_config(None).map(SettingsConfigPromptResult::new),
+        AppType::Hermes => prompt_hermes_config(None).map(SettingsConfigPromptResult::new),
+        AppType::OpenClaw => prompt_openclaw_config(None).map(SettingsConfigPromptResult::new),
     }
 }
 
@@ -3031,13 +3112,14 @@ pub fn prompt_basic_fields(
 pub fn prompt_settings_config(
     app_type: &AppType,
     current: Option<&Value>,
+    current_meta: Option<&ProviderMeta>,
     codex_official: bool,
-) -> Result<Value, AppError> {
+) -> Result<SettingsConfigPromptResult, AppError> {
     match app_type {
-        AppType::Claude => prompt_claude_config(current),
+        AppType::Claude => prompt_claude_config(current, current_meta),
         AppType::Codex => {
             if codex_official {
-                return prompt_codex_official_config(current);
+                return prompt_codex_official_config(current).map(SettingsConfigPromptResult::new);
             }
 
             let has_auth = current
@@ -3077,15 +3159,15 @@ pub fn prompt_settings_config(
                 .unwrap_or(false);
 
             if !has_auth && is_openai_official_endpoint {
-                prompt_codex_official_config(current)
+                prompt_codex_official_config(current).map(SettingsConfigPromptResult::new)
             } else {
-                prompt_codex_config(current)
+                prompt_codex_config(current).map(SettingsConfigPromptResult::new)
             }
         }
-        AppType::Gemini => prompt_gemini_config(current),
-        AppType::OpenCode => prompt_opencode_config(current),
-        AppType::Hermes => prompt_hermes_config(current),
-        AppType::OpenClaw => prompt_openclaw_config(current),
+        AppType::Gemini => prompt_gemini_config(current).map(SettingsConfigPromptResult::new),
+        AppType::OpenCode => prompt_opencode_config(current).map(SettingsConfigPromptResult::new),
+        AppType::Hermes => prompt_hermes_config(current).map(SettingsConfigPromptResult::new),
+        AppType::OpenClaw => prompt_openclaw_config(current).map(SettingsConfigPromptResult::new),
     }
 }
 
@@ -3144,16 +3226,70 @@ fn prompt_model_field(
     }
 }
 
+fn claude_api_key_field_label(field: ClaudeApiKeyField) -> &'static str {
+    match field {
+        ClaudeApiKeyField::AuthToken => texts::claude_auth_field_auth_token(),
+        ClaudeApiKeyField::ApiKey => texts::claude_auth_field_api_key(),
+    }
+}
+
+fn prompt_claude_api_key_field(
+    current: Option<&Value>,
+    current_meta: Option<&ProviderMeta>,
+) -> Result<ClaudeApiKeyField, AppError> {
+    let current = current.unwrap_or(&Value::Null);
+    let effective = ClaudeApiKeyField::from_meta_and_settings(current_meta, current);
+    let fields = [ClaudeApiKeyField::AuthToken, ClaudeApiKeyField::ApiKey];
+    let choices = fields
+        .iter()
+        .map(|field| claude_api_key_field_label(*field).to_string())
+        .collect::<Vec<_>>();
+    let default_index = fields
+        .iter()
+        .position(|field| *field == effective)
+        .unwrap_or(0);
+
+    let selected = Select::new(texts::claude_auth_field_label(), choices.clone())
+        .with_starting_cursor(default_index)
+        .prompt()
+        .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
+    let selected_index = choices
+        .iter()
+        .position(|choice| choice == &selected)
+        .unwrap_or(default_index);
+    Ok(fields
+        .get(selected_index)
+        .copied()
+        .unwrap_or(ClaudeApiKeyField::AuthToken))
+}
+
+fn claude_api_key_from_settings(
+    current: Option<&Value>,
+    api_key_field: ClaudeApiKeyField,
+) -> Option<&str> {
+    let env = current
+        .and_then(|v| v.get("env"))
+        .and_then(|env| env.as_object())?;
+
+    env.get(api_key_field.as_env_key())
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            env.get(api_key_field.alternate_env_key())
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+        })
+}
+
 /// Claude 配置输入
-fn prompt_claude_config(current: Option<&Value>) -> Result<Value, AppError> {
+fn prompt_claude_config(
+    current: Option<&Value>,
+    current_meta: Option<&ProviderMeta>,
+) -> Result<SettingsConfigPromptResult, AppError> {
     println!("\n{}", texts::config_claude_header().bright_cyan().bold());
 
-    let api_key = if let Some(current_key) = current
-        .and_then(|v| v.get("env"))
-        .and_then(|e| e.get("ANTHROPIC_AUTH_TOKEN"))
-        .and_then(|k| k.as_str())
-        .filter(|s| !s.is_empty())
-    {
+    let api_key_field = prompt_claude_api_key_field(current, current_meta)?;
+    let api_key = if let Some(current_key) = claude_api_key_from_settings(current, api_key_field) {
         // 编辑模式：显示完整 API Key 供编辑
         Text::new(texts::api_key_label())
             .with_initial_value(current_key)
@@ -3208,12 +3344,16 @@ fn prompt_claude_config(current: Option<&Value>) -> Result<Value, AppError> {
         .prompt()
         .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
 
-    Ok(build_claude_settings_config_from_prompt(
-        current,
-        &api_key,
-        &base_url,
-        model_fields,
-        hide_attribution,
+    Ok(SettingsConfigPromptResult::claude(
+        build_claude_settings_config_from_prompt(
+            current,
+            api_key_field,
+            &api_key,
+            &base_url,
+            model_fields,
+            hide_attribution,
+        ),
+        api_key_field,
     ))
 }
 
@@ -3268,6 +3408,7 @@ fn claude_hide_attribution_enabled(settings_config: Option<&Value>) -> bool {
 
 fn build_claude_settings_config_from_prompt<'a>(
     current: Option<&Value>,
+    api_key_field: ClaudeApiKeyField,
     api_key: &str,
     base_url: &str,
     model_fields: impl IntoIterator<Item = (&'a str, Option<String>)>,
@@ -3287,7 +3428,8 @@ fn build_claude_settings_config_from_prompt<'a>(
         .as_object_mut()
         .expect("Claude env settings must be an object");
 
-    set_or_remove_trimmed(env, "ANTHROPIC_AUTH_TOKEN", api_key);
+    set_or_remove_trimmed(env, api_key_field.as_env_key(), api_key);
+    env.remove(api_key_field.alternate_env_key());
     set_or_remove_trimmed(env, "ANTHROPIC_BASE_URL", base_url);
 
     for (key, value) in model_fields {
@@ -3644,7 +3786,17 @@ pub fn display_provider_summary(provider: &Provider, app_type: &AppType) {
             }
             if let Some(env) = provider.settings_config.get("env") {
                 if !is_codex_oauth {
-                    if let Some(api_key) = env.get("ANTHROPIC_AUTH_TOKEN").and_then(|v| v.as_str())
+                    let api_key_field = ClaudeApiKeyField::from_meta_and_settings(
+                        provider.meta.as_ref(),
+                        &provider.settings_config,
+                    );
+                    if let Some(api_key) = env
+                        .get(api_key_field.as_env_key())
+                        .and_then(|v| v.as_str())
+                        .or_else(|| {
+                            env.get(api_key_field.alternate_env_key())
+                                .and_then(|v| v.as_str())
+                        })
                     {
                         println!(
                             "  {}: {}",

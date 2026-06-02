@@ -9,11 +9,12 @@ use crate::cli::commands::provider_input::{
     prompt_provider_id_for_add, prompt_settings_config, prompt_settings_config_for_add,
     provider_add_template_choices, provider_uses_common_config, set_provider_common_config_meta,
     supports_common_config, validate_provider_add_template, OptionalFields, ProviderAddTemplate,
+    SettingsConfigPromptResult,
 };
 use crate::cli::i18n::texts;
 use crate::cli::ui::{highlight, info, success, warning};
 use crate::error::AppError;
-use crate::provider::{AuthBinding, AuthBindingSource, Provider, ProviderMeta};
+use crate::provider::{AuthBinding, AuthBindingSource, ClaudeApiKeyField, Provider, ProviderMeta};
 use crate::services::{AuthService, ManagedAuthAccount, ProviderService};
 use crate::store::AppState;
 use inquire::{Confirm, Select};
@@ -115,6 +116,43 @@ fn provider_meta_is_empty(meta: &ProviderMeta) -> bool {
 fn prune_empty_provider_meta(provider: &mut Provider) {
     if provider.meta.as_ref().is_some_and(provider_meta_is_empty) {
         provider.meta = None;
+    }
+}
+
+fn apply_settings_prompt_result_metadata(
+    app_type: &AppType,
+    provider: &mut Provider,
+    prompt_result: Option<&SettingsConfigPromptResult>,
+) {
+    if !matches!(app_type, AppType::Claude) {
+        return;
+    }
+
+    let Some(api_key_field) = prompt_result.and_then(|result| result.claude_api_key_field) else {
+        return;
+    };
+
+    if is_claude_official_provider(provider) || is_claude_codex_oauth_provider(provider) {
+        if let Some(meta) = provider.meta.as_mut() {
+            meta.api_key_field = None;
+        }
+        prune_empty_provider_meta(provider);
+        return;
+    }
+
+    match api_key_field {
+        ClaudeApiKeyField::AuthToken => {
+            if let Some(meta) = provider.meta.as_mut() {
+                meta.api_key_field = None;
+            }
+            prune_empty_provider_meta(provider);
+        }
+        ClaudeApiKeyField::ApiKey => {
+            provider
+                .meta
+                .get_or_insert_with(ProviderMeta::default)
+                .api_key_field = Some(api_key_field.as_env_key().to_string());
+        }
     }
 }
 
@@ -606,12 +644,15 @@ fn add_provider(app_type: AppType, template: Option<ProviderAddTemplate>) -> Res
     };
 
     // 2. 收集基本字段
+    let mut settings_prompt_result = None;
     let mut provider = if template.is_custom() {
         let (name, website_url) = prompt_basic_fields(None)?;
         let id = prompt_provider_id_for_add(&app_type, &name, &existing_ids)?;
         println!("{}", info(&texts::generated_id_message(&id)));
 
-        let settings_config = prompt_settings_config_for_add(&app_type)?;
+        let prompt_result = prompt_settings_config_for_add(&app_type)?;
+        let settings_config = prompt_result.settings_config.clone();
+        settings_prompt_result = Some(prompt_result);
         Provider {
             id,
             name,
@@ -632,11 +673,14 @@ fn add_provider(app_type: AppType, template: Option<ProviderAddTemplate>) -> Res
             provider.id = prompt_provider_id_for_add(&app_type, &provider.name, &existing_ids)?;
         }
         if template.requires_settings_prompt() {
-            provider.settings_config = prompt_settings_config(
+            let prompt_result = prompt_settings_config(
                 &app_type,
                 Some(&provider.settings_config),
+                provider.meta.as_ref(),
                 is_codex_official_provider(&provider),
             )?;
+            provider.settings_config = prompt_result.settings_config.clone();
+            settings_prompt_result = Some(prompt_result);
         }
         println!("{}", info(&texts::generated_id_message(&provider.id)));
         provider
@@ -656,6 +700,11 @@ fn add_provider(app_type: AppType, template: Option<ProviderAddTemplate>) -> Res
     // 5. 应用可选字段与共享元数据
     provider.sort_index = optional.sort_index;
     provider.notes = optional.notes;
+    apply_settings_prompt_result_metadata(
+        &app_type,
+        &mut provider,
+        settings_prompt_result.as_ref(),
+    );
     prompt_and_apply_claude_api_format(&app_type, &mut provider)?;
     prompt_and_apply_codex_oauth_provider_options(&app_type, &mut provider)?;
     if let Some(enabled) = prompt_common_config_enabled(&app_type, common_snippet.as_deref(), None)?
@@ -727,19 +776,24 @@ fn edit_provider(app_type: AppType, id: &str) -> Result<(), AppError> {
     let (name, website_url) = prompt_basic_fields(Some(&original))?;
 
     // 4. 询问是否修改配置
-    let settings_config = if Confirm::new(texts::modify_provider_config_prompt())
+    let settings_prompt_result = if Confirm::new(texts::modify_provider_config_prompt())
         .with_default(false)
         .prompt()
         .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
     {
-        prompt_settings_config(
+        Some(prompt_settings_config(
             &app_type,
             Some(&original.settings_config),
+            original.meta.as_ref(),
             matches!(app_type, AppType::Codex) && is_codex_official_provider(&original),
-        )?
+        )?)
     } else {
-        original.settings_config.clone()
+        None
     };
+    let settings_config = settings_prompt_result
+        .as_ref()
+        .map(|result| result.settings_config.clone())
+        .unwrap_or_else(|| original.settings_config.clone());
 
     // 5. 询问是否修改可选字段
     let optional = if Confirm::new(texts::modify_optional_fields_prompt())
@@ -767,6 +821,7 @@ fn edit_provider(app_type: AppType, id: &str) -> Result<(), AppError> {
         meta: original.meta,                           // 保留元数据
         in_failover_queue: original.in_failover_queue, // 保留故障转移状态
     };
+    apply_settings_prompt_result_metadata(&app_type, &mut updated, settings_prompt_result.as_ref());
     prompt_and_apply_claude_api_format(&app_type, &mut updated)?;
     prompt_and_apply_codex_oauth_provider_options(&app_type, &mut updated)?;
     if let Some(enabled) =
@@ -890,6 +945,61 @@ mod tests {
         assert_eq!(
             provider.settings_config["env"]["ANTHROPIC_BASE_URL"],
             "https://example.com"
+        );
+    }
+
+    #[test]
+    fn claude_api_key_field_prompt_metadata_writes_non_default_only() {
+        let mut provider = claude_provider(json!({
+            "env": {
+                "ANTHROPIC_API_KEY": "sk-api-key"
+            }
+        }));
+        provider.meta = Some(ProviderMeta {
+            apply_common_config: Some(false),
+            ..Default::default()
+        });
+        let prompt_result = SettingsConfigPromptResult {
+            settings_config: provider.settings_config.clone(),
+            claude_api_key_field: Some(ClaudeApiKeyField::ApiKey),
+        };
+
+        apply_settings_prompt_result_metadata(
+            &AppType::Claude,
+            &mut provider,
+            Some(&prompt_result),
+        );
+
+        let meta = provider.meta.expect("metadata should be preserved");
+        assert_eq!(meta.apply_common_config, Some(false));
+        assert_eq!(meta.api_key_field.as_deref(), Some("ANTHROPIC_API_KEY"));
+
+        let mut provider = claude_provider(json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "sk-auth-token"
+            }
+        }));
+        provider.meta = Some(ProviderMeta {
+            apply_common_config: Some(true),
+            api_key_field: Some("ANTHROPIC_API_KEY".to_string()),
+            ..Default::default()
+        });
+        let prompt_result = SettingsConfigPromptResult {
+            settings_config: provider.settings_config.clone(),
+            claude_api_key_field: Some(ClaudeApiKeyField::AuthToken),
+        };
+
+        apply_settings_prompt_result_metadata(
+            &AppType::Claude,
+            &mut provider,
+            Some(&prompt_result),
+        );
+
+        let meta = provider.meta.expect("non-auth metadata should remain");
+        assert_eq!(meta.apply_common_config, Some(true));
+        assert_eq!(
+            meta.api_key_field, None,
+            "upstream omits meta.apiKeyField for the default auth-token field"
         );
     }
 
@@ -1201,19 +1311,24 @@ fn duplicate_provider_interactive(app_type: AppType, id: &str) -> Result<(), App
     println!("{}", info(texts::edit_fields_instruction()));
 
     let (name, website_url) = prompt_basic_fields(Some(&draft))?;
-    let settings_config = if Confirm::new(texts::modify_provider_config_prompt())
+    let settings_prompt_result = if Confirm::new(texts::modify_provider_config_prompt())
         .with_default(false)
         .prompt()
         .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?
     {
-        prompt_settings_config(
+        Some(prompt_settings_config(
             &app_type,
             Some(&draft.settings_config),
+            draft.meta.as_ref(),
             matches!(app_type, AppType::Codex) && is_codex_official_provider(&source),
-        )?
+        )?)
     } else {
-        draft.settings_config.clone()
+        None
     };
+    let settings_config = settings_prompt_result
+        .as_ref()
+        .map(|result| result.settings_config.clone())
+        .unwrap_or_else(|| draft.settings_config.clone());
 
     let optional = if Confirm::new(texts::modify_optional_fields_prompt())
         .with_default(false)
@@ -1239,6 +1354,7 @@ fn duplicate_provider_interactive(app_type: AppType, id: &str) -> Result<(), App
         meta: source.meta.clone(),
         in_failover_queue: false,
     };
+    apply_settings_prompt_result_metadata(&app_type, &mut copied, settings_prompt_result.as_ref());
     prompt_and_apply_claude_api_format(&app_type, &mut copied)?;
     prompt_and_apply_codex_oauth_provider_options(&app_type, &mut copied)?;
     if let Some(enabled) =

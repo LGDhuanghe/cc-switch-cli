@@ -1,6 +1,6 @@
 use crate::app_config::AppType;
 use crate::cli::i18n::texts;
-use crate::provider::Provider;
+use crate::provider::{ClaudeApiKeyField, Provider};
 use crate::services::ProviderService;
 use serde_json::{json, Value};
 
@@ -135,6 +135,7 @@ impl ProviderAddFormState {
             codex_config_scroll: 0,
             claude_model_config_touched: false,
             claude_api_key: TextInput::new(""),
+            claude_api_key_field: ClaudeApiKeyField::AuthToken,
             claude_base_url: TextInput::new(""),
             claude_api_format: ClaudeApiFormat::Anthropic,
             claude_model: TextInput::new(""),

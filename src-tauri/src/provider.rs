@@ -3,6 +3,58 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+pub const CLAUDE_AUTH_TOKEN_ENV_KEY: &str = "ANTHROPIC_AUTH_TOKEN";
+pub const CLAUDE_API_KEY_ENV_KEY: &str = "ANTHROPIC_API_KEY";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeApiKeyField {
+    AuthToken,
+    ApiKey,
+}
+
+impl ClaudeApiKeyField {
+    pub fn as_env_key(self) -> &'static str {
+        match self {
+            Self::AuthToken => CLAUDE_AUTH_TOKEN_ENV_KEY,
+            Self::ApiKey => CLAUDE_API_KEY_ENV_KEY,
+        }
+    }
+
+    pub fn alternate_env_key(self) -> &'static str {
+        match self {
+            Self::AuthToken => CLAUDE_API_KEY_ENV_KEY,
+            Self::ApiKey => CLAUDE_AUTH_TOKEN_ENV_KEY,
+        }
+    }
+
+    pub fn from_raw(value: &str) -> Option<Self> {
+        match value {
+            CLAUDE_AUTH_TOKEN_ENV_KEY => Some(Self::AuthToken),
+            CLAUDE_API_KEY_ENV_KEY => Some(Self::ApiKey),
+            _ => None,
+        }
+    }
+
+    pub fn from_meta_and_settings(meta: Option<&ProviderMeta>, settings_config: &Value) -> Self {
+        if let Some(field) = meta
+            .and_then(|meta| meta.api_key_field.as_deref())
+            .and_then(Self::from_raw)
+        {
+            return field;
+        }
+
+        if settings_config
+            .get("env")
+            .and_then(Value::as_object)
+            .is_some_and(|env| env.contains_key(CLAUDE_API_KEY_ENV_KEY))
+        {
+            return Self::ApiKey;
+        }
+
+        Self::AuthToken
+    }
+}
+
 // SSOT 模式：不再写供应商副本文件
 
 /// 供应商结构体
