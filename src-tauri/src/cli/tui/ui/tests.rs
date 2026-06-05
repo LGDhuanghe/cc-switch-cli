@@ -1248,6 +1248,7 @@ pub(super) fn minimal_data(_app_type: &AppType) -> UiData {
         usage: UsageSnapshot::default(),
         pricing: Default::default(),
         quota: Default::default(),
+        reload_token: Default::default(),
     }
 }
 
@@ -6128,13 +6129,13 @@ fn workspace_openclaw_nav_uses_app_specific_labels_and_hides_generic_entries() {
     let expected = [
         NavItem::Main,
         NavItem::Providers,
-        NavItem::Usage,
-        NavItem::Pricing,
         NavItem::Sessions,
         NavItem::OpenClawWorkspace,
         NavItem::OpenClawEnv,
         NavItem::OpenClawTools,
         NavItem::OpenClawAgents,
+        NavItem::Usage,
+        NavItem::Pricing,
         NavItem::Config,
         NavItem::Settings,
         NavItem::Exit,
@@ -6164,12 +6165,12 @@ fn workspace_non_openclaw_nav_keeps_generic_labels() {
     let expected = [
         NavItem::Main,
         NavItem::Providers,
-        NavItem::Usage,
-        NavItem::Pricing,
         NavItem::Mcp,
         NavItem::Skills,
         NavItem::Sessions,
         NavItem::Prompts,
+        NavItem::Usage,
+        NavItem::Pricing,
         NavItem::Config,
     ]
     .map(nav_label_text);

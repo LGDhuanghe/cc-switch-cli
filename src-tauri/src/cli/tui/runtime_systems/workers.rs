@@ -1,19 +1,21 @@
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc;
 
+use crate::app_config::AppType;
 use crate::cli::i18n::texts;
 use crate::error::AppError;
 use crate::services::{SkillService, StreamCheckService, WebDavSyncService};
 use crate::settings::{set_webdav_sync_settings, webdav_jianguoyun_preset};
 
-use super::super::data::{load_state, load_usage_pricing_data};
+use super::super::data::{load_state, load_usage_pricing_data_from_state, UiData};
 use super::types::{
-    fetch_provider_models_for_tui, model_fetch_strategy_for_field, LocalEnvMsg, LocalEnvReq,
-    LocalEnvSystem, ManagedAuthMsg, ManagedAuthReq, ManagedAuthSystem, ModelFetchMsg,
-    ModelFetchReq, ModelFetchSystem, ProxyMsg, ProxyReq, ProxySystem, QuotaMsg, QuotaReq,
-    QuotaSystem, SessionMsg, SessionReq, SessionSystem, SkillsMsg, SkillsReq, SkillsSystem,
-    SpeedtestMsg, SpeedtestSystem, StreamCheckMsg, StreamCheckReq, StreamCheckSystem, UpdateMsg,
-    UpdateReq, UpdateSystem, UsagePricingMsg, UsagePricingReq, UsagePricingSystem, WebDavDone,
-    WebDavErr, WebDavMsg, WebDavReq, WebDavReqKind, WebDavSystem,
+    fetch_provider_models_for_tui, model_fetch_strategy_for_field, AppDataMsg, AppDataReq,
+    AppDataSystem, LocalEnvMsg, LocalEnvReq, LocalEnvSystem, ManagedAuthMsg, ManagedAuthReq,
+    ManagedAuthSystem, ModelFetchMsg, ModelFetchReq, ModelFetchSystem, ProxyMsg, ProxyReq,
+    ProxySystem, QuotaMsg, QuotaReq, QuotaSystem, SessionMsg, SessionReq, SessionSystem, SkillsMsg,
+    SkillsReq, SkillsSystem, SpeedtestMsg, SpeedtestSystem, StreamCheckMsg, StreamCheckReq,
+    StreamCheckSystem, UpdateMsg, UpdateReq, UpdateSystem, UsagePricingMsg, UsagePricingReq,
+    UsagePricingSystem, WebDavDone, WebDavErr, WebDavMsg, WebDavReq, WebDavReqKind, WebDavSystem,
 };
 
 pub(crate) fn start_proxy_system() -> Result<ProxySystem, AppError> {
@@ -800,27 +802,190 @@ pub(crate) fn start_usage_pricing_system() -> Result<UsagePricingSystem, AppErro
     })
 }
 
+pub(crate) fn start_app_data_system() -> Result<AppDataSystem, AppError> {
+    let (result_tx, result_rx) = mpsc::channel::<AppDataMsg>();
+    let (req_tx, req_rx) = mpsc::channel::<AppDataReq>();
+
+    let handle = std::thread::Builder::new()
+        .name("cc-switch-app-data".to_string())
+        .spawn(move || app_data_worker_loop(req_rx, result_tx))
+        .map_err(|e| AppError::IoContext {
+            context: "failed to spawn app data worker thread".to_string(),
+            source: e,
+        })?;
+
+    Ok(AppDataSystem {
+        req_tx,
+        result_rx,
+        _handle: handle,
+    })
+}
+
+fn app_data_worker_loop(rx: mpsc::Receiver<AppDataReq>, tx: mpsc::Sender<AppDataMsg>) {
+    let mut state_cache: Option<(u64, crate::store::AppState)> = None;
+    let mut deferred = VecDeque::new();
+
+    while let Some(req) = deferred.pop_front().or_else(|| rx.recv().ok()) {
+        match req {
+            AppDataReq::DropState { ack } => {
+                state_cache = None;
+                let _ = ack.send(());
+            }
+            req @ AppDataReq::Load { .. } => {
+                let mut backlog = VecDeque::from([req]);
+                drain_latest_by_app(&mut backlog, &mut deferred, &rx, app_data_req_app_type);
+
+                while let Some(req) = backlog.pop_front() {
+                    handle_app_data_req(&mut state_cache, req, &tx);
+                    drain_latest_by_app(&mut backlog, &mut deferred, &rx, app_data_req_app_type);
+                }
+            }
+        }
+    }
+}
+
+fn drain_latest_by_app<T, F>(
+    backlog: &mut VecDeque<T>,
+    deferred: &mut VecDeque<T>,
+    rx: &mpsc::Receiver<T>,
+    app_type: F,
+) where
+    F: Fn(&T) -> Option<AppType>,
+{
+    let mut latest_by_app = HashMap::<AppType, T>::new();
+    while let Some(req) = backlog.pop_front() {
+        if let Some(app_type) = app_type(&req) {
+            latest_by_app.insert(app_type, req);
+        } else {
+            deferred.push_back(req);
+        }
+    }
+    for req in rx.try_iter() {
+        if deferred.is_empty() {
+            if let Some(app_type) = app_type(&req) {
+                latest_by_app.insert(app_type, req);
+                continue;
+            }
+        }
+        deferred.push_back(req);
+    }
+    backlog.extend(latest_by_app.into_values());
+}
+
+fn app_data_req_app_type(req: &AppDataReq) -> Option<AppType> {
+    match req {
+        AppDataReq::Load { app_type, .. } => Some(app_type.clone()),
+        AppDataReq::DropState { .. } => None,
+    }
+}
+
+fn usage_pricing_req_app_type(req: &UsagePricingReq) -> Option<AppType> {
+    match req {
+        UsagePricingReq::Load { app_type, .. } => Some(app_type.clone()),
+        UsagePricingReq::DropState { .. } => None,
+    }
+}
+
+fn state_for_epoch(
+    state_cache: &mut Option<(u64, crate::store::AppState)>,
+    epoch: u64,
+) -> Result<&crate::store::AppState, AppError> {
+    let needs_reload = state_cache
+        .as_ref()
+        .is_none_or(|(cached_epoch, _)| *cached_epoch != epoch);
+    if needs_reload {
+        *state_cache = Some((epoch, load_state()?));
+    }
+    Ok(&state_cache.as_ref().expect("state cache initialized").1)
+}
+
+fn handle_app_data_req(
+    state_cache: &mut Option<(u64, crate::store::AppState)>,
+    req: AppDataReq,
+    tx: &mpsc::Sender<AppDataMsg>,
+) {
+    let AppDataReq::Load {
+        request_id,
+        generation,
+        app_state_epoch,
+        app_type,
+    } = req
+    else {
+        return;
+    };
+    let result = state_for_epoch(state_cache, app_state_epoch)
+        .and_then(|state| {
+            state
+                .refresh_config_from_db()
+                .and_then(|()| UiData::load_fast_from_state(state, &app_type))
+        })
+        .map_err(|err| err.to_string());
+
+    let _ = tx.send(AppDataMsg::Loaded {
+        request_id,
+        generation,
+        app_state_epoch,
+        app_type,
+        result,
+    });
+}
+
 fn usage_pricing_worker_loop(
     rx: mpsc::Receiver<UsagePricingReq>,
     tx: mpsc::Sender<UsagePricingMsg>,
 ) {
-    while let Ok(mut req) = rx.recv() {
-        for next in rx.try_iter() {
-            req = next;
+    let mut state_cache: Option<(u64, crate::store::AppState)> = None;
+    let mut deferred = VecDeque::new();
+
+    while let Some(req) = deferred.pop_front().or_else(|| rx.recv().ok()) {
+        match req {
+            UsagePricingReq::DropState { ack } => {
+                state_cache = None;
+                let _ = ack.send(());
+            }
+            req @ UsagePricingReq::Load { .. } => {
+                let mut backlog = VecDeque::from([req]);
+                drain_latest_by_app(&mut backlog, &mut deferred, &rx, usage_pricing_req_app_type);
+
+                while let Some(req) = backlog.pop_front() {
+                    handle_usage_pricing_req(&mut state_cache, req, &tx);
+                    drain_latest_by_app(
+                        &mut backlog,
+                        &mut deferred,
+                        &rx,
+                        usage_pricing_req_app_type,
+                    );
+                }
+            }
         }
-
-        let UsagePricingReq::Load {
-            request_id,
-            app_type,
-        } = req;
-        let result = load_usage_pricing_data(&app_type).map_err(|err| err.to_string());
-
-        let _ = tx.send(UsagePricingMsg::Loaded {
-            request_id,
-            app_type,
-            result,
-        });
     }
+}
+
+fn handle_usage_pricing_req(
+    state_cache: &mut Option<(u64, crate::store::AppState)>,
+    req: UsagePricingReq,
+    tx: &mpsc::Sender<UsagePricingMsg>,
+) {
+    let UsagePricingReq::Load {
+        request_id,
+        generation,
+        app_state_epoch,
+        app_type,
+    } = req
+    else {
+        return;
+    };
+    let result = state_for_epoch(state_cache, app_state_epoch)
+        .and_then(|state| load_usage_pricing_data_from_state(state, &app_type))
+        .map_err(|err| err.to_string());
+
+    let _ = tx.send(UsagePricingMsg::Loaded {
+        request_id,
+        generation,
+        app_state_epoch,
+        app_type,
+        result,
+    });
 }
 
 pub(crate) fn start_skills_system() -> Result<SkillsSystem, AppError> {
@@ -983,5 +1148,109 @@ mod tests {
             drained[0],
             SessionReq::Refresh { request_id: 2, .. }
         ));
+    }
+
+    #[test]
+    fn usage_pricing_drain_keeps_latest_request_per_app() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(UsagePricingReq::Load {
+            request_id: 2,
+            generation: 0,
+            app_state_epoch: 0,
+            app_type: AppType::Claude,
+        })
+        .expect("queue newer claude request");
+        tx.send(UsagePricingReq::Load {
+            request_id: 3,
+            generation: 0,
+            app_state_epoch: 0,
+            app_type: AppType::Codex,
+        })
+        .expect("queue codex request");
+        drop(tx);
+
+        let mut backlog = std::collections::VecDeque::from([UsagePricingReq::Load {
+            request_id: 1,
+            generation: 0,
+            app_state_epoch: 0,
+            app_type: AppType::Claude,
+        }]);
+
+        let mut deferred = std::collections::VecDeque::new();
+        drain_latest_by_app(&mut backlog, &mut deferred, &rx, usage_pricing_req_app_type);
+
+        let mut drained = backlog
+            .into_iter()
+            .map(|req| match req {
+                UsagePricingReq::Load {
+                    request_id,
+                    app_type,
+                    ..
+                } => (app_type, request_id),
+                UsagePricingReq::DropState { .. } => panic!("unexpected DropState in backlog"),
+            })
+            .collect::<Vec<_>>();
+        drained.sort_by_key(|(_, request_id)| *request_id);
+
+        assert_eq!(drained, vec![(AppType::Claude, 2), (AppType::Codex, 3)]);
+        assert!(deferred.is_empty());
+    }
+
+    #[test]
+    fn drain_latest_by_app_preserves_drop_state_as_barrier() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(UsagePricingReq::Load {
+            request_id: 2,
+            generation: 0,
+            app_state_epoch: 0,
+            app_type: AppType::Claude,
+        })
+        .expect("queue newer claude request before barrier");
+        let (ack_tx, _ack_rx) = mpsc::channel();
+        tx.send(UsagePricingReq::DropState { ack: ack_tx })
+            .expect("queue drop-state barrier");
+        tx.send(UsagePricingReq::Load {
+            request_id: 3,
+            generation: 0,
+            app_state_epoch: 0,
+            app_type: AppType::Claude,
+        })
+        .expect("queue claude request after barrier");
+        drop(tx);
+
+        let mut backlog = std::collections::VecDeque::from([UsagePricingReq::Load {
+            request_id: 1,
+            generation: 0,
+            app_state_epoch: 0,
+            app_type: AppType::Claude,
+        }]);
+        let mut deferred = std::collections::VecDeque::new();
+
+        drain_latest_by_app(&mut backlog, &mut deferred, &rx, usage_pricing_req_app_type);
+
+        let next = backlog.pop_front().expect("latest request before barrier");
+        assert!(matches!(
+            next,
+            UsagePricingReq::Load {
+                request_id: 2,
+                app_type: AppType::Claude,
+                ..
+            }
+        ));
+        assert!(backlog.is_empty());
+
+        assert!(matches!(
+            deferred.pop_front(),
+            Some(UsagePricingReq::DropState { .. })
+        ));
+        assert!(matches!(
+            deferred.pop_front(),
+            Some(UsagePricingReq::Load {
+                request_id: 3,
+                app_type: AppType::Claude,
+                ..
+            })
+        ));
+        assert!(deferred.is_empty());
     }
 }

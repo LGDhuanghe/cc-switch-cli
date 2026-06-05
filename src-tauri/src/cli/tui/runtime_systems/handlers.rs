@@ -9,6 +9,7 @@ use crate::settings::{
 use super::super::app::{App, ConfirmAction, ConfirmOverlay, LoadingKind, Overlay, ToastKind};
 use super::super::data::{load_state, UiData};
 use super::super::runtime_actions::app_display_name;
+use super::super::CacheInvalidation;
 use super::types::{
     build_stream_check_result_lines, LocalEnvMsg, ManagedAuthMsg, ModelFetchMsg, ProxyMsg,
     QuotaMsg, RequestTracker, SessionMsg, SkillsMsg, SpeedtestMsg, StreamCheckMsg, UpdateMsg,
@@ -433,7 +434,8 @@ pub(crate) fn handle_skills_msg(
     app: &mut App,
     data: &mut UiData,
     msg: SkillsMsg,
-) -> Result<(), AppError> {
+) -> Result<CacheInvalidation, AppError> {
+    let mut invalidation = CacheInvalidation::None;
     match msg {
         SkillsMsg::DiscoverFinished { query, result } => match result {
             Ok(skills) => {
@@ -458,6 +460,7 @@ pub(crate) fn handle_skills_msg(
             Ok(installed) => {
                 app.overlay = Overlay::None;
                 *data = UiData::load(&app.app_type)?;
+                invalidation = CacheInvalidation::DataReloaded;
 
                 for row in app.skills_discover_results.iter_mut() {
                     if row.directory.eq_ignore_ascii_case(&installed.directory) {
@@ -480,7 +483,7 @@ pub(crate) fn handle_skills_msg(
         },
     }
 
-    Ok(())
+    Ok(invalidation)
 }
 
 fn is_webdav_loading_overlay(app: &App) -> bool {
@@ -498,7 +501,7 @@ pub(crate) fn handle_webdav_msg(
     data: &mut UiData,
     webdav_loading: &mut RequestTracker,
     msg: WebDavMsg,
-) -> Result<(), AppError> {
+) -> Result<CacheInvalidation, AppError> {
     match msg {
         WebDavMsg::Finished {
             request_id,
@@ -507,12 +510,22 @@ pub(crate) fn handle_webdav_msg(
         } => match result {
             Ok(done) => {
                 if webdav_loading.is_stale(request_id) {
-                    return Ok(());
+                    return Ok(CacheInvalidation::None);
                 }
 
                 if webdav_loading.finish_if_active(request_id) && is_webdav_loading_overlay(app) {
                     app.overlay = Overlay::None;
                 }
+
+                let done_invalidation = match &done {
+                    WebDavDone::Downloaded { decision, .. }
+                        if !matches!(decision, SyncDecision::V1MigrationNeeded) =>
+                    {
+                        CacheInvalidation::AppStateRecreated
+                    }
+                    WebDavDone::V1Migrated { .. } => CacheInvalidation::AppStateRecreated,
+                    _ => CacheInvalidation::DataReloaded,
+                };
 
                 match done {
                     WebDavDone::ConnectionChecked => {
@@ -576,10 +589,11 @@ pub(crate) fn handle_webdav_msg(
                     }
                 }
                 *data = UiData::load(&app.app_type)?;
+                Ok(done_invalidation)
             }
             Err(err) => {
                 if webdav_loading.is_stale(request_id) {
-                    return Ok(());
+                    return Ok(CacheInvalidation::None);
                 }
 
                 if webdav_loading.finish_if_active(request_id) && is_webdav_loading_overlay(app) {
@@ -650,10 +664,10 @@ pub(crate) fn handle_webdav_msg(
                 };
                 *data = UiData::load(&app.app_type)?;
                 app.push_toast(msg, ToastKind::Error);
+                Ok(CacheInvalidation::DataReloaded)
             }
         },
     }
-    Ok(())
 }
 
 pub(crate) fn handle_proxy_msg(
@@ -661,7 +675,8 @@ pub(crate) fn handle_proxy_msg(
     data: &mut UiData,
     proxy_loading: &mut RequestTracker,
     msg: ProxyMsg,
-) -> Result<(), AppError> {
+) -> Result<CacheInvalidation, AppError> {
+    let mut invalidation = CacheInvalidation::None;
     match msg {
         ProxyMsg::ManagedSessionFinished {
             request_id,
@@ -670,7 +685,7 @@ pub(crate) fn handle_proxy_msg(
             result,
         } => {
             if !proxy_loading.finish_if_active(request_id) {
-                return Ok(());
+                return Ok(CacheInvalidation::None);
             }
 
             if matches!(
@@ -686,6 +701,7 @@ pub(crate) fn handle_proxy_msg(
             match result {
                 Ok(()) => {
                     *data = UiData::load(&app.app_type)?;
+                    invalidation = CacheInvalidation::DataReloaded;
                     app.reset_proxy_activity(
                         data.proxy.estimated_input_tokens_total,
                         data.proxy.estimated_output_tokens_total,
@@ -705,7 +721,7 @@ pub(crate) fn handle_proxy_msg(
         }
     }
 
-    Ok(())
+    Ok(invalidation)
 }
 
 #[allow(dead_code)]

@@ -112,13 +112,46 @@ pub(crate) enum QuotaMsg {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) enum AppDataReq {
+    Load {
+        request_id: u64,
+        generation: u64,
+        app_state_epoch: u64,
+        app_type: AppType,
+    },
+    DropState {
+        ack: mpsc::Sender<()>,
+    },
+}
+
+pub(crate) enum AppDataMsg {
+    Loaded {
+        request_id: u64,
+        generation: u64,
+        app_state_epoch: u64,
+        app_type: AppType,
+        result: Result<crate::cli::tui::data::UiData, String>,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum UsagePricingReq {
-    Load { request_id: u64, app_type: AppType },
+    Load {
+        request_id: u64,
+        generation: u64,
+        app_state_epoch: u64,
+        app_type: AppType,
+    },
+    DropState {
+        ack: mpsc::Sender<()>,
+    },
 }
 
 pub(crate) enum UsagePricingMsg {
     Loaded {
         request_id: u64,
+        generation: u64,
+        app_state_epoch: u64,
         app_type: AppType,
         result: Result<crate::cli::tui::data::UsagePricingData, String>,
     },
@@ -265,6 +298,12 @@ pub(crate) struct SessionSystem {
 pub(crate) struct QuotaSystem {
     pub(crate) req_tx: mpsc::Sender<QuotaReq>,
     pub(crate) result_rx: mpsc::Receiver<QuotaMsg>,
+    pub(crate) _handle: std::thread::JoinHandle<()>,
+}
+
+pub(crate) struct AppDataSystem {
+    pub(crate) req_tx: mpsc::Sender<AppDataReq>,
+    pub(crate) result_rx: mpsc::Receiver<AppDataMsg>,
     pub(crate) _handle: std::thread::JoinHandle<()>,
 }
 

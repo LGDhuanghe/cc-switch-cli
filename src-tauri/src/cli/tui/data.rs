@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{Days, Local, NaiveDate, TimeZone};
 use indexmap::IndexMap;
@@ -24,6 +25,14 @@ use crate::provider::Provider;
 use crate::services::config::BackupInfo;
 use crate::services::{ConfigService, McpService, PromptService, ProviderService, SkillService};
 use crate::store::AppState;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct UiDataReloadToken(u64);
+
+fn next_reload_token() -> UiDataReloadToken {
+    static NEXT_RELOAD_TOKEN: AtomicU64 = AtomicU64::new(1);
+    UiDataReloadToken(NEXT_RELOAD_TOKEN.fetch_add(1, Ordering::Relaxed))
+}
 
 #[derive(Debug, Clone)]
 pub struct ProviderRow {
@@ -510,6 +519,31 @@ impl ModelPricingSnapshot {
     }
 }
 
+impl ConfigSnapshot {
+    fn loading_projection(&self, app_type: &AppType) -> Self {
+        Self {
+            config_path: self.config_path.clone(),
+            config_dir: self.config_dir.clone(),
+            backups: self.backups.clone(),
+            common_snippet: self
+                .common_snippets
+                .get(app_type)
+                .cloned()
+                .unwrap_or_default(),
+            common_snippets: self.common_snippets.clone(),
+            webdav_sync: self.webdav_sync.clone(),
+            openclaw_config_path: None,
+            openclaw_config_dir: None,
+            openclaw_env: None,
+            openclaw_tools: None,
+            openclaw_agents_defaults: None,
+            openclaw_warnings: None,
+            openclaw_workspace: OpenClawWorkspaceSnapshot::default(),
+            hermes_memory: HermesMemorySnapshot::default(),
+        }
+    }
+}
+
 impl UsageSnapshot {
     pub fn summary_for(&self, range: UsageRangePreset) -> &UsageSummarySnapshot {
         match range {
@@ -555,6 +589,7 @@ pub struct UiData {
     pub usage: UsageSnapshot,
     pub pricing: ModelPricingSnapshot,
     pub(crate) quota: QuotaSnapshot,
+    pub(crate) reload_token: UiDataReloadToken,
 }
 
 impl Default for UiData {
@@ -569,6 +604,7 @@ impl Default for UiData {
             usage: UsageSnapshot::default(),
             pricing: ModelPricingSnapshot::default(),
             quota: QuotaSnapshot::default(),
+            reload_token: UiDataReloadToken::default(),
         }
     }
 }
@@ -589,9 +625,11 @@ impl UiData {
         Ok(data)
     }
 
-    pub(crate) fn load_fast(app_type: &AppType) -> Result<Self, AppError> {
-        let state = load_state()?;
-        Self::load_base_from_state(&state, app_type)
+    pub(crate) fn load_fast_from_state(
+        state: &AppState,
+        app_type: &AppType,
+    ) -> Result<Self, AppError> {
+        Self::load_base_from_state(state, app_type)
     }
 
     fn load_base_from_state(state: &AppState, app_type: &AppType) -> Result<Self, AppError> {
@@ -600,7 +638,7 @@ impl UiData {
         let prompts = load_prompts(state, app_type)?;
         let config = load_config_snapshot(state, app_type)?;
         let skills = load_skills_snapshot()?;
-        let proxy = load_proxy_snapshot(app_type)?;
+        let proxy = load_proxy_snapshot_from_state(state, app_type)?;
 
         Ok(Self {
             providers,
@@ -612,12 +650,33 @@ impl UiData {
             usage: UsageSnapshot::default(),
             pricing: ModelPricingSnapshot::default(),
             quota: QuotaSnapshot::default(),
+            reload_token: next_reload_token(),
         })
     }
 
     pub(crate) fn refresh_proxy_snapshot(&mut self, app_type: &AppType) -> Result<(), AppError> {
         self.proxy = load_proxy_snapshot(app_type)?;
         Ok(())
+    }
+
+    pub(crate) fn app_switch_loading_projection(&self, app_type: &AppType) -> Self {
+        let mut proxy = self.proxy.clone();
+        proxy.auto_failover_enabled = false;
+        proxy.default_cost_multiplier = None;
+        proxy.current_app_target = None;
+
+        Self {
+            providers: ProvidersSnapshot::default(),
+            mcp: self.mcp.clone(),
+            prompts: PromptsSnapshot::default(),
+            config: self.config.loading_projection(app_type),
+            skills: self.skills.clone(),
+            proxy,
+            usage: UsageSnapshot::default(),
+            pricing: ModelPricingSnapshot::default(),
+            quota: QuotaSnapshot::default(),
+            reload_token: next_reload_token(),
+        }
     }
 
     // This method is called repeatedly during editing.
@@ -637,12 +696,7 @@ impl UiData {
     }
 }
 
-pub(crate) fn load_usage_pricing_data(app_type: &AppType) -> Result<UsagePricingData, AppError> {
-    let state = load_state()?;
-    load_usage_pricing_data_from_state(&state, app_type)
-}
-
-fn load_usage_pricing_data_from_state(
+pub(crate) fn load_usage_pricing_data_from_state(
     state: &AppState,
     app_type: &AppType,
 ) -> Result<UsagePricingData, AppError> {
@@ -1895,6 +1949,13 @@ pub(crate) fn load_proxy_config() -> Result<Option<crate::proxy::ProxyConfig>, A
 
 fn load_proxy_snapshot(app_type: &AppType) -> Result<ProxySnapshot, AppError> {
     let state = load_state()?;
+    load_proxy_snapshot_from_state(&state, app_type)
+}
+
+fn load_proxy_snapshot_from_state(
+    state: &AppState,
+    app_type: &AppType,
+) -> Result<ProxySnapshot, AppError> {
     let current_app = app_type.as_str().to_string();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
