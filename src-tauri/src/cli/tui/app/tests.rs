@@ -14043,6 +14043,32 @@ mod tests {
     }
 
     #[test]
+    fn usage_pricing_shortcut_opens_pricing_as_child_route() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Usage;
+        app.focus = Focus::Content;
+        let mut data = UiData::default();
+        data.pricing.rows = vec![data::ModelPricingRow {
+            model_id: "claude-sonnet-4-5".to_string(),
+            display_name: "Claude Sonnet 4.5".to_string(),
+            ..data::ModelPricingRow::default()
+        }];
+
+        let action = app.on_key(key(KeyCode::Char('P')), &data);
+
+        assert!(matches!(action, Action::SwitchRoute(Route::Pricing)));
+        assert!(matches!(app.route, Route::Pricing));
+        assert_eq!(app.route_stack, vec![Route::Usage]);
+        assert!(matches!(app.nav_item(), NavItem::Usage));
+
+        let action = app.on_key(key(KeyCode::Esc), &data);
+
+        assert!(matches!(action, Action::SwitchRoute(Route::Usage)));
+        assert!(matches!(app.route, Route::Usage));
+        assert!(app.route_stack.is_empty());
+    }
+
+    #[test]
     fn pricing_shortcuts_select_and_open_detail_route() {
         let mut app = App::new(Some(AppType::Claude));
         app.route = Route::Pricing;

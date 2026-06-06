@@ -123,8 +123,11 @@ impl App {
         match route {
             Route::Main => NavItem::Main,
             Route::Providers | Route::ProviderDetail { .. } => NavItem::Providers,
-            Route::Usage | Route::UsageLogs | Route::UsageLogDetail { .. } => NavItem::Usage,
-            Route::Pricing | Route::PricingDetail { .. } => NavItem::Pricing,
+            Route::Usage
+            | Route::UsageLogs
+            | Route::UsageLogDetail { .. }
+            | Route::Pricing
+            | Route::PricingDetail { .. } => NavItem::Usage,
             Route::Sessions => NavItem::Sessions,
             Route::Mcp => NavItem::Mcp,
             Route::Prompts => NavItem::Prompts,

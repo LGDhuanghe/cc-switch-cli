@@ -93,6 +93,15 @@ impl App {
                 );
                 self.push_route_and_switch(Route::UsageLogs)
             }
+            KeyCode::Char('P') | KeyCode::Char('p') => {
+                let pricing_len = visible_pricing_rows(&self.filter, data).len();
+                self.pricing.selected_idx = if pricing_len == 0 {
+                    0
+                } else {
+                    self.pricing.selected_idx.min(pricing_len - 1)
+                };
+                self.push_route_and_switch(Route::Pricing)
+            }
             KeyCode::Char('r') => Action::ReloadData,
             _ => Action::None,
         }

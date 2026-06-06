@@ -106,6 +106,7 @@ fn tui_usage_empty_state_renders_dashboard_shell() {
     assert!(all.contains("custom range"), "{all}");
     assert!(all.contains("switch panel"), "{all}");
     assert!(all.contains("details"), "{all}");
+    assert!(all.contains("pricing"), "{all}");
     assert!(!all.contains("metric"), "{all}");
     assert!(!all.contains("Provider Stats"), "{all}");
 }
@@ -569,6 +570,7 @@ fn tui_pricing_renders_catalog_and_recent_usage_context() {
     assert!(all.contains("$2.00"), "{all}");
     assert!(all.contains("$8.00"), "{all}");
     assert!(all.contains("$0.420"), "{all}");
+    assert!(all.contains("Esc=close"), "{all}");
 }
 
 #[test]
@@ -6467,7 +6469,6 @@ fn workspace_openclaw_nav_uses_app_specific_labels_and_hides_generic_entries() {
         NavItem::OpenClawTools,
         NavItem::OpenClawAgents,
         NavItem::Usage,
-        NavItem::Pricing,
         NavItem::Config,
         NavItem::Settings,
         NavItem::Exit,
@@ -6482,6 +6483,10 @@ fn workspace_openclaw_nav_uses_app_specific_labels_and_hides_generic_entries() {
     assert!(!all.contains(&nav_label_text(NavItem::Mcp)), "{all}");
     assert!(!all.contains(&nav_label_text(NavItem::Skills)), "{all}");
     assert!(!all.contains(&nav_label_text(NavItem::Prompts)), "{all}");
+    assert!(
+        !all.contains(&buffer_cell_text(texts::menu_pricing())),
+        "{all}"
+    );
     assert!(all.contains(&nav_label_text(NavItem::Config)), "{all}");
 }
 
@@ -6502,7 +6507,6 @@ fn workspace_non_openclaw_nav_keeps_generic_labels() {
         NavItem::Sessions,
         NavItem::Prompts,
         NavItem::Usage,
-        NavItem::Pricing,
         NavItem::Config,
     ]
     .map(nav_label_text);
@@ -6512,6 +6516,10 @@ fn workspace_non_openclaw_nav_keeps_generic_labels() {
         .collect::<Vec<_>>();
 
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{all}");
+    assert!(
+        !all.contains(&buffer_cell_text(texts::menu_pricing())),
+        "{all}"
+    );
     for item in [
         NavItem::OpenClawWorkspace,
         NavItem::OpenClawEnv,

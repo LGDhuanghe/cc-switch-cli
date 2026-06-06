@@ -35,6 +35,7 @@ pub(super) fn render_pricing(
                 ("Enter/d", texts::tui_key_details()),
                 ("/", texts::tui_filter_title()),
                 ("r", texts::tui_key_refresh()),
+                ("Esc", texts::tui_key_close()),
             ],
         );
     }

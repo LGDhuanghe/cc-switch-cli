@@ -42,6 +42,7 @@ pub(super) fn render_usage(
                 ("C", usage_text("custom range", "自定义区间")),
                 ("Tab", texts::tui_key_pane()),
                 ("L", usage_text("details", "详情")),
+                ("P", usage_text("pricing", "模型定价")),
                 ("r", texts::tui_key_refresh()),
             ],
         );
