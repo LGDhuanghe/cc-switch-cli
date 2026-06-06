@@ -37,7 +37,6 @@ const EMPTY_USAGE_SUMMARY: UsageSummarySnapshot = UsageSummarySnapshot {
     cache_read_tokens: 0,
     cache_creation_tokens: 0,
     avg_latency_ms: None,
-    avg_first_token_ms: None,
 };
 const EMPTY_USAGE_TREND: [UsageTrendBucket; 0] = [];
 const EMPTY_USAGE_PROVIDER_ROWS: [UsageProviderStatsRow; 0] = [];
@@ -460,7 +459,6 @@ pub struct UsageSummarySnapshot {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub avg_latency_ms: Option<u64>,
-    pub avg_first_token_ms: Option<u64>,
 }
 
 impl UsageSummarySnapshot {
@@ -1890,8 +1888,7 @@ fn load_usage_summary(
             COALESCE(SUM(l.cache_read_tokens), 0),
             COALESCE(SUM(l.cache_creation_tokens), 0),
             COALESCE(SUM(CAST(l.total_cost_usd AS REAL)), 0.0),
-            AVG(CASE WHEN l.latency_ms > 0 THEN l.latency_ms END),
-            AVG(l.first_token_ms)
+            AVG(CASE WHEN l.latency_ms > 0 THEN l.latency_ms END)
          FROM proxy_request_logs l
          WHERE l.app_type = ?1 AND l.created_at >= ?2 AND l.created_at <= ?3
            AND {effective_filter}"
@@ -1907,7 +1904,6 @@ fn load_usage_summary(
             cache_creation_tokens: non_negative_u64(row.get::<_, i64>(6)?),
             total_cost_usd: row.get::<_, f64>(7)?,
             avg_latency_ms: optional_average_u64(row.get::<_, Option<f64>>(8)?),
-            avg_first_token_ms: optional_average_u64(row.get::<_, Option<f64>>(9)?),
         })
     })
     .map_err(AppError::from)

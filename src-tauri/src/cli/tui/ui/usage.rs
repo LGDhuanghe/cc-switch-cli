@@ -20,13 +20,12 @@ pub(super) fn render_usage(
     frame.render_widget(outer.clone(), area);
     let inner = outer.inner(area);
 
-    let metrics_height = if inner.height >= 32 { 11 } else { 9 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Length(3),
-            Constraint::Length(metrics_height),
+            Constraint::Length(6),
             Constraint::Min(0),
         ])
         .split(inner);
@@ -179,49 +178,17 @@ fn render_usage_metrics(
         return;
     }
 
-    if inner.height >= 9 && inner.width >= 76 {
+    if inner.height >= 4 {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Length(3),
+                Constraint::Length(1),
                 Constraint::Length(3),
                 Constraint::Min(0),
             ])
             .split(inner);
 
-        render_usage_metric_row(
-            frame,
-            rows[0],
-            &usage_primary_metrics(summary, theme),
-            theme,
-        );
-        render_usage_metric_row(
-            frame,
-            rows[1],
-            &usage_secondary_metrics(summary, theme),
-            theme,
-        );
-        render_usage_cache_hit_line(frame, summary, rows[2], theme);
-        return;
-    }
-
-    if inner.height >= 6 {
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Length(3),
-                Constraint::Min(0),
-            ])
-            .split(inner);
-
-        render_usage_metric_row(
-            frame,
-            rows[0],
-            &usage_primary_metrics(summary, theme),
-            theme,
-        );
+        render_usage_metric_row(frame, rows[0], &usage_primary_metrics(summary), theme);
         render_usage_cache_hit_line(frame, summary, rows[1], theme);
         return;
     }
@@ -232,82 +199,25 @@ fn render_usage_metrics(
 struct UsageMetricCard {
     label: &'static str,
     value: String,
-    meta: String,
-    value_style: Style,
 }
 
-fn usage_primary_metrics(
-    summary: &UsageSummarySnapshot,
-    theme: &super::theme::Theme,
-) -> [UsageMetricCard; 4] {
+fn usage_primary_metrics(summary: &UsageSummarySnapshot) -> [UsageMetricCard; 4] {
     [
         UsageMetricCard {
             label: usage_text("Real Tokens", "真实 Token"),
             value: format_token_compact(summary.total_tokens()),
-            meta: usage_text("input + output + cache", "输入 + 输出 + 缓存").to_string(),
-            value_style: usage_metric_value_style(theme),
         },
         UsageMetricCard {
             label: usage_text("Requests", "请求"),
             value: summary.total_requests.to_string(),
-            meta: format!(
-                "{} {}",
-                summary.success_count,
-                usage_text("success", "成功")
-            ),
-            value_style: usage_metric_value_style(theme),
         },
         UsageMetricCard {
             label: usage_text("Cost", "费用"),
             value: format_money(summary.total_cost_usd),
-            meta: usage_text("selected range", "当前范围").to_string(),
-            value_style: usage_metric_value_style(theme),
         },
         UsageMetricCard {
             label: usage_text("Success", "成功率"),
             value: format_percent(summary.success_rate()),
-            meta: usage_text("healthy responses", "健康响应").to_string(),
-            value_style: usage_metric_value_style(theme),
-        },
-    ]
-}
-
-fn usage_secondary_metrics(
-    summary: &UsageSummarySnapshot,
-    theme: &super::theme::Theme,
-) -> [UsageMetricCard; 4] {
-    [
-        UsageMetricCard {
-            label: usage_text("Input / Output", "输入 / 输出"),
-            value: format!(
-                "{} / {}",
-                format_token_compact(summary.input_tokens),
-                format_token_compact(summary.output_tokens)
-            ),
-            meta: usage_text("prompt vs completion", "提示词 / 输出").to_string(),
-            value_style: usage_metric_value_style(theme),
-        },
-        UsageMetricCard {
-            label: usage_text("Cache Read", "缓存读取"),
-            value: format_token_compact(summary.cache_read_tokens),
-            meta: usage_text("reused tokens", "复用 Token").to_string(),
-            value_style: usage_metric_value_style(theme),
-        },
-        UsageMetricCard {
-            label: usage_text("Cache Write", "缓存写入"),
-            value: format_token_compact(summary.cache_creation_tokens),
-            meta: usage_text("created tokens", "写入 Token").to_string(),
-            value_style: usage_metric_value_style(theme),
-        },
-        UsageMetricCard {
-            label: usage_text("Latency", "延迟"),
-            value: format_ms(summary.avg_latency_ms),
-            meta: format!(
-                "{} {}",
-                usage_text("TTFT", "首字"),
-                format_ms(summary.avg_first_token_ms)
-            ),
-            value_style: usage_metric_value_style(theme),
         },
     ]
 }
@@ -322,7 +232,7 @@ fn render_usage_metric_row(
     cards: &[UsageMetricCard; 4],
     theme: &super::theme::Theme,
 ) {
-    if area.width < 20 || area.height < 2 {
+    if area.width < 20 || area.height == 0 {
         return;
     }
 
@@ -347,30 +257,39 @@ fn render_usage_metric_card(
     card: &UsageMetricCard,
     theme: &super::theme::Theme,
 ) {
-    if area.width < 8 || area.height < 2 {
+    if area.width < 8 || area.height == 0 {
         return;
     }
 
-    let text_width = area.width.saturating_sub(1);
-    let mut lines = vec![
-        Line::styled(
-            truncate_to_display_width(card.label, text_width),
-            Style::default().fg(theme.dim),
-        ),
-        Line::styled(
-            truncate_to_display_width(&card.value, text_width),
-            card.value_style.add_modifier(Modifier::BOLD),
-        ),
-    ];
-
-    if area.height >= 3 {
-        lines.push(Line::styled(
-            truncate_to_display_width(&card.meta, text_width),
-            Style::default().fg(theme.comment),
-        ));
+    let max_value_width = area.width.saturating_sub(4);
+    if max_value_width == 0 {
+        return;
+    }
+    let value_width = (UnicodeWidthStr::width(card.value.as_str()) as u16)
+        .min(max_value_width)
+        .max(1);
+    let label_width = area.width.saturating_sub(value_width).saturating_sub(1);
+    if label_width < 2 {
+        return;
     }
 
-    frame.render_widget(Paragraph::new(lines), area);
+    let label = truncate_to_display_width(card.label, label_width);
+    let value = truncate_to_display_width(&card.value, value_width);
+    if label.is_empty() || value.is_empty() {
+        return;
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(label, Style::default().fg(theme.dim)),
+            Span::raw(" "),
+            Span::styled(
+                value,
+                usage_metric_value_style(theme).add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        area,
+    );
 }
 
 fn render_usage_metrics_compact(
@@ -393,7 +312,7 @@ fn render_usage_metrics_compact(
     }
 
     if area.height < 4 {
-        render_usage_metric_row(frame, area, &usage_primary_metrics(summary, theme), theme);
+        render_usage_metric_row(frame, area, &usage_primary_metrics(summary), theme);
         return;
     }
 
@@ -508,47 +427,17 @@ fn render_usage_cache_hit_line(
 
     frame.render_widget(block, area);
 
-    let label = if inner.width >= 64 {
-        Line::from(vec![
-            Span::styled(
-                usage_text("Cache Hit ", "缓存命中率 "),
-                Style::default().fg(theme.dim),
-            ),
-            Span::styled(
-                format_percent(rate),
-                usage_metric_value_style(theme).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" · ", Style::default().fg(theme.dim)),
-            Span::styled(
-                usage_text("Cache Read ", "缓存读取 "),
-                Style::default().fg(theme.dim),
-            ),
-            Span::styled(
-                format_token_compact(summary.cache_read_tokens),
-                usage_metric_value_style(theme),
-            ),
-            Span::styled(" / ", Style::default().fg(theme.dim)),
-            Span::styled(
-                usage_text("Cache Write ", "缓存写入 "),
-                Style::default().fg(theme.dim),
-            ),
-            Span::styled(
-                format_token_compact(summary.cache_creation_tokens),
-                usage_metric_value_style(theme),
-            ),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled(
-                usage_text("Cache Hit ", "缓存命中率 "),
-                Style::default().fg(theme.dim),
-            ),
-            Span::styled(
-                format_percent(rate),
-                usage_metric_value_style(theme).add_modifier(Modifier::BOLD),
-            ),
-        ])
-    };
+    let label = Line::from(vec![
+        Span::styled(
+            usage_text("Cache Hit ", "缓存命中率 "),
+            Style::default().fg(theme.dim),
+        ),
+        Span::styled(
+            format_percent(rate),
+            usage_metric_value_style(theme).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ·", Style::default().fg(theme.dim)),
+    ]);
 
     let gauge = LineGauge::default()
         .label(label)

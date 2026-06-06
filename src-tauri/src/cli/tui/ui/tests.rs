@@ -129,7 +129,6 @@ fn tui_usage_renders_summary_and_trend() {
             cache_read_tokens: 250,
             cache_creation_tokens: 50,
             avg_latency_ms: Some(420),
-            avg_first_token_ms: Some(180),
         },
         trends_7d: vec![UsageTrendBucket {
             key: "2026-06-05".to_string(),
@@ -171,8 +170,8 @@ fn tui_usage_renders_summary_and_trend() {
     assert!(all.contains("$1.250"), "{all}");
     assert!(all.contains("1.8k"), "{all}");
     assert!(all.contains("Real Tokens"), "{all}");
-    assert!(all.contains("Cache Read"), "{all}");
-    assert!(all.contains("Cache Write"), "{all}");
+    assert!(!all.contains("Cache Read"), "{all}");
+    assert!(!all.contains("Cache Write"), "{all}");
     assert!(all.contains("Cache Hit"), "{all}");
     assert!(all.contains("19%"), "{all}");
     assert!(all.contains("06/05"), "{all}");
@@ -238,7 +237,6 @@ fn tui_usage_tiny_height_omits_overview_title_without_content() {
         cache_read_tokens: 250,
         cache_creation_tokens: 50,
         avg_latency_ms: Some(420),
-        avg_first_token_ms: Some(180),
     };
 
     let all = all_text(&render_with_size(&app, &data, 120, 10));
