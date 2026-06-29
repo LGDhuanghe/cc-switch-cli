@@ -7,6 +7,7 @@ use serde_json::Value;
 
 use crate::app_config::AppType;
 use crate::cli::i18n::texts;
+use crate::cli::tui::data::ProxySnapshot;
 use crate::cli::tui::data::QuotaTarget;
 use crate::provider::Provider;
 use crate::services::{EndpointLatency, HealthStatus, StreamCheckResult, SyncDecision};
@@ -374,6 +375,10 @@ pub(crate) enum ProxyReq {
         app_type: AppType,
         enabled: bool,
     },
+    RefreshSnapshot {
+        request_id: u64,
+        app_type: AppType,
+    },
 }
 
 pub(crate) enum ProxyMsg {
@@ -382,6 +387,11 @@ pub(crate) enum ProxyMsg {
         app_type: AppType,
         enabled: bool,
         result: Result<(), String>,
+    },
+    SnapshotRefreshed {
+        request_id: u64,
+        app_type: AppType,
+        result: Result<ProxySnapshot, String>,
     },
 }
 

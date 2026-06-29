@@ -717,6 +717,7 @@ pub(crate) fn handle_proxy_msg(
     app: &mut App,
     data: &mut UiData,
     proxy_loading: &mut RequestTracker,
+    proxy_snapshot_refresh: &mut RequestTracker,
     msg: ProxyMsg,
 ) -> Result<CacheInvalidation, AppError> {
     let mut invalidation = CacheInvalidation::None;
@@ -744,6 +745,7 @@ pub(crate) fn handle_proxy_msg(
             match result {
                 Ok(()) => {
                     *data = UiData::load(&app.app_type)?;
+                    proxy_snapshot_refresh.cancel();
                     invalidation = CacheInvalidation::DataReloaded;
                     app.reset_proxy_activity(
                         data.proxy.estimated_input_tokens_total,
@@ -759,6 +761,31 @@ pub(crate) fn handle_proxy_msg(
                 }
                 Err(err) => {
                     app.push_toast(err, ToastKind::Error);
+                }
+            }
+        }
+        ProxyMsg::SnapshotRefreshed {
+            request_id,
+            app_type,
+            result,
+        } => {
+            if !proxy_snapshot_refresh.finish_if_active(request_id) {
+                return Ok(CacheInvalidation::None);
+            }
+            if app.app_type != app_type {
+                return Ok(CacheInvalidation::None);
+            }
+
+            match result {
+                Ok(proxy) => {
+                    data.proxy = proxy;
+                    app.observe_proxy_token_activity(
+                        data.proxy.estimated_input_tokens_total,
+                        data.proxy.estimated_output_tokens_total,
+                    );
+                }
+                Err(err) => {
+                    log::debug!("refresh proxy snapshot failed: {err}");
                 }
             }
         }

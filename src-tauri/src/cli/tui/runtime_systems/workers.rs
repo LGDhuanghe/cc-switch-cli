@@ -12,8 +12,8 @@ use crate::services::{SkillService, StreamCheckService, WebDavSyncService};
 use crate::settings::{set_webdav_sync_settings, webdav_jianguoyun_preset};
 
 use super::super::data::{
-    load_snapshot_state, load_state, load_usage_pricing_data_from_state_for_range, UiData,
-    UsageRangePreset,
+    load_proxy_snapshot_from_state_async, load_snapshot_state, load_state,
+    load_usage_pricing_data_from_state_for_range, UiData, UsageRangePreset,
 };
 use super::types::{
     fetch_provider_models_for_tui, model_fetch_strategy_for_field, AppDataLoadKind, AppDataMsg,
@@ -67,6 +67,16 @@ fn proxy_worker_loop(rx: mpsc::Receiver<ProxyReq>, tx: mpsc::Sender<ProxyMsg>) {
                             result: Err(err.clone()),
                         });
                     }
+                    ProxyReq::RefreshSnapshot {
+                        request_id,
+                        app_type,
+                    } => {
+                        let _ = tx.send(ProxyMsg::SnapshotRefreshed {
+                            request_id,
+                            app_type,
+                            result: Err(err.clone()),
+                        });
+                    }
                 }
             }
             return;
@@ -92,6 +102,21 @@ fn proxy_worker_loop(rx: mpsc::Receiver<ProxyReq>, tx: mpsc::Sender<ProxyMsg>) {
                     request_id,
                     app_type,
                     enabled,
+                    result,
+                });
+            }
+            ProxyReq::RefreshSnapshot {
+                request_id,
+                app_type,
+            } => {
+                let result = load_state().map_err(|e| e.to_string()).and_then(|state| {
+                    rt.block_on(load_proxy_snapshot_from_state_async(&state, &app_type))
+                        .map_err(|e| e.to_string())
+                });
+
+                let _ = tx.send(ProxyMsg::SnapshotRefreshed {
+                    request_id,
+                    app_type,
                     result,
                 });
             }
