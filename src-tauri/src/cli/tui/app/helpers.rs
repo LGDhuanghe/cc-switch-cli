@@ -1011,7 +1011,7 @@ pub(crate) fn failover_queue_position(data: &UiData, provider_id: &str) -> Optio
 }
 
 pub(crate) fn supports_provider_stream_check(app_type: &AppType) -> bool {
-    !matches!(app_type, AppType::OpenClaw)
+    !matches!(app_type, AppType::Hermes | AppType::OpenClaw)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
