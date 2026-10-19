@@ -2058,6 +2058,171 @@ mod tests {
     }
 
     #[test]
+    fn claude_fallback_model_picker_lists_filled_role_models() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        form.focus = FormFocus::Fields;
+        form.claude_haiku_model.set("claude-haiku-4-5");
+        form.claude_sonnet_model.set("claude-sonnet-4-5[1M]");
+        form.claude_opus_model.set("claude-sonnet-4-5");
+        form.claude_model.set("claude-sonnet-4-5");
+        app.form = Some(FormState::ProviderAdd(form));
+        select_provider_field(&mut app, ProviderAddField::ClaudeFallbackModel);
+
+        app.on_key(key(KeyCode::Char('f')), &data());
+
+        let Some(Overlay::ClaudeFallbackModelPicker { selected, options }) = app.overlay else {
+            panic!("fallback model picker should open");
+        };
+        let models = options
+            .iter()
+            .map(|(_label, model)| model.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(models, ["claude-haiku-4-5", "claude-sonnet-4-5"]);
+        assert_eq!(
+            options
+                .iter()
+                .map(|(label, _model)| label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                texts::tui_claude_model_label_for_index(0),
+                texts::tui_claude_model_label_for_index(1),
+            ]
+        );
+        assert_eq!(selected, 1);
+    }
+
+    #[test]
+    fn claude_fallback_model_picker_applies_navigated_selection() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        form.focus = FormFocus::Fields;
+        form.claude_haiku_model.set("claude-haiku-4-5");
+        form.claude_sonnet_model.set("claude-sonnet-4-5");
+        app.form = Some(FormState::ProviderAdd(form));
+        select_provider_field(&mut app, ProviderAddField::ClaudeFallbackModel);
+
+        app.on_key(key(KeyCode::Char('f')), &data());
+        app.on_key(key(KeyCode::Down), &data());
+        app.on_key(key(KeyCode::Enter), &data());
+
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("form missing");
+        };
+        assert_eq!(form.claude_model.value, "claude-sonnet-4-5");
+    }
+
+    #[test]
+    fn claude_fallback_model_picker_applies_selection_and_preserves_one_m() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        form.focus = FormFocus::Fields;
+        form.claude_sonnet_model.set("claude-sonnet-4-5");
+        form.claude_fallback_one_m = true;
+        app.form = Some(FormState::ProviderAdd(form));
+        select_provider_field(&mut app, ProviderAddField::ClaudeFallbackModel);
+
+        app.on_key(key(KeyCode::Char('f')), &data());
+        app.on_key(key(KeyCode::Enter), &data());
+
+        assert!(matches!(app.overlay, Overlay::None));
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("form missing");
+        };
+        assert_eq!(form.claude_model.value, "claude-sonnet-4-5");
+        assert!(form.claude_fallback_one_m);
+        assert_eq!(
+            form.to_provider_json_value()["settingsConfig"]["env"]["ANTHROPIC_MODEL"],
+            "claude-sonnet-4-5[1M]"
+        );
+    }
+
+    #[test]
+    fn claude_fallback_model_picker_empty_prompts_to_fill_role_models() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        form.focus = FormFocus::Fields;
+        app.form = Some(FormState::ProviderAdd(form));
+        select_provider_field(&mut app, ProviderAddField::ClaudeFallbackModel);
+
+        app.on_key(key(KeyCode::Char('f')), &data());
+
+        assert!(matches!(app.overlay, Overlay::None));
+        let Some(toast) = app.toast.as_ref() else {
+            panic!("toast missing");
+        };
+        assert_eq!(toast.message, texts::tui_claude_fallback_picker_empty());
+    }
+
+    #[test]
+    fn claude_fallback_model_picker_esc_cancels_without_changing_model() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        form.focus = FormFocus::Fields;
+        form.claude_sonnet_model.set("claude-sonnet-4-5");
+        form.claude_model.set("keep-me");
+        app.form = Some(FormState::ProviderAdd(form));
+        select_provider_field(&mut app, ProviderAddField::ClaudeFallbackModel);
+
+        app.on_key(key(KeyCode::Char('f')), &data());
+        // A single option keeps the selection at the lower boundary.
+        app.on_key(key(KeyCode::Down), &data());
+        app.on_key(key(KeyCode::Esc), &data());
+
+        assert!(matches!(app.overlay, Overlay::None));
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("form missing");
+        };
+        assert_eq!(form.claude_model.value, "keep-me");
+        assert!(
+            form.to_provider_json_value()["settingsConfig"]["env"]
+                .get("ANTHROPIC_MODEL")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn claude_fallback_model_picker_keeps_one_m_off_when_disabled() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        form.focus = FormFocus::Fields;
+        form.claude_sonnet_model.set("claude-sonnet-4-5");
+        app.form = Some(FormState::ProviderAdd(form));
+        select_provider_field(&mut app, ProviderAddField::ClaudeFallbackModel);
+
+        app.on_key(key(KeyCode::Char('f')), &data());
+        app.on_key(key(KeyCode::Enter), &data());
+
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("form missing");
+        };
+        assert!(!form.claude_fallback_one_m);
+        assert_eq!(
+            form.to_provider_json_value()["settingsConfig"]["env"]["ANTHROPIC_MODEL"],
+            "claude-sonnet-4-5"
+        );
+    }
+
+    #[test]
+    fn claude_fallback_model_edit_still_accepts_f_as_text() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        form.focus = FormFocus::Fields;
+        form.claude_sonnet_model.set("claude-sonnet-4-5");
+        app.form = Some(FormState::ProviderAdd(form));
+        select_provider_field(&mut app, ProviderAddField::ClaudeFallbackModel);
+
+        app.on_key(key(KeyCode::Enter), &data());
+        app.on_key(key(KeyCode::Char('f')), &data());
+
+        assert!(matches!(app.overlay, Overlay::None));
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("form missing");
+        };
+        assert_eq!(form.claude_model.value, "f");
+    }
+
+    #[test]
     fn mcp_field_editor_supports_readline_shortcuts() {
         let mut app = App::new(Some(AppType::Claude));
         let mut form = McpAddFormState::new();

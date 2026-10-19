@@ -88,6 +88,10 @@ pub(crate) fn add_form_key_items(
                 ) {
                     keys.push(("f", texts::tui_key_fetch_model()));
                 }
+                if selected_field == Some(ProviderAddField::ClaudeFallbackModel) {
+                    // Keep the field-specific action visible on narrow key bars.
+                    keys.insert(0, ("f", texts::tui_key_choose_model()));
+                }
             }
         }
         FormFocus::JsonPreview => {

@@ -190,6 +190,9 @@ impl App {
         if let Some(action) = self.handle_claude_model_picker_key(key) {
             return Some(action);
         }
+        if let Some(action) = self.handle_claude_fallback_model_picker_key(key) {
+            return Some(action);
+        }
         if let Some(action) = self.handle_model_fetch_picker_key(key) {
             return Some(action);
         }
@@ -908,6 +911,44 @@ impl App {
             }
             _ => Action::None,
         })
+    }
+
+    fn handle_claude_fallback_model_picker_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let Overlay::ClaudeFallbackModelPicker { selected, options } = &self.overlay else {
+            return None;
+        };
+        let selected = *selected;
+        let option_count = options.len();
+
+        match key.code {
+            KeyCode::Up => {
+                if let Overlay::ClaudeFallbackModelPicker { selected, .. } = &mut self.overlay {
+                    *selected = selected.saturating_sub(1);
+                }
+                Some(Action::None)
+            }
+            KeyCode::Down => {
+                if let Overlay::ClaudeFallbackModelPicker { selected, .. } = &mut self.overlay {
+                    *selected = (*selected + 1).min(option_count.saturating_sub(1));
+                }
+                Some(Action::None)
+            }
+            KeyCode::Esc => {
+                self.overlay = Overlay::None;
+                Some(Action::None)
+            }
+            KeyCode::Enter => {
+                let model = options.get(selected).map(|(_label, model)| model.clone());
+                if let (Some(model), Some(FormState::ProviderAdd(provider))) =
+                    (model, self.form.as_mut())
+                {
+                    provider.set_claude_fallback_model_from_picker(&model);
+                }
+                self.overlay = Overlay::None;
+                Some(Action::None)
+            }
+            _ => Some(Action::None),
+        }
     }
 
     fn handle_claude_model_picker_key(&mut self, key: KeyEvent) -> Option<Action> {

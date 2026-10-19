@@ -2901,6 +2901,46 @@ fn codex_model_catalog_reasoning_fields_and_pickers_render_in_both_languages() {
 }
 
 #[test]
+fn claude_fallback_model_picker_renders_role_labels_and_models() {
+    let _lock = lock_env();
+    let _lang = use_test_language(Language::English);
+    let _no_color = EnvGuard::remove("NO_COLOR");
+
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::Providers;
+    app.focus = Focus::Content;
+    let mut form = crate::cli::tui::form::ProviderAddFormState::new(AppType::Claude);
+    form.focus = FormFocus::Fields;
+    app.form = Some(FormState::ProviderAdd(form));
+    app.overlay = Overlay::ClaudeFallbackModelPicker {
+        selected: 0,
+        options: vec![
+            ("Haiku".to_string(), "claude-haiku-4-5".to_string()),
+            ("Sonnet".to_string(), "claude-sonnet-4-5".to_string()),
+        ],
+    };
+
+    let all = all_text(&render_with_size(
+        &app,
+        &minimal_data(&app.app_type),
+        80,
+        30,
+    ));
+    for label in [
+        texts::tui_label_claude_fallback_model(),
+        "Haiku",
+        "claude-haiku-4-5",
+        "Sonnet",
+        "claude-sonnet-4-5",
+    ] {
+        assert!(
+            all.replace(' ', "").contains(&label.replace(' ', "")),
+            "missing {label}: {all}"
+        );
+    }
+}
+
+#[test]
 fn codex_model_catalog_renders_only_the_selected_large_collection_window() {
     let _lock = lock_env();
     let _lang = use_test_language(Language::English);

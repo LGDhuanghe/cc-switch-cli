@@ -75,6 +75,15 @@ pub(crate) fn render_overlay(
             *column,
             *editing,
         ),
+        Overlay::ClaudeFallbackModelPicker { selected, options } => {
+            super::pickers::render_claude_fallback_model_picker_overlay(
+                frame,
+                content_area,
+                theme,
+                *selected,
+                options,
+            )
+        }
         Overlay::ClaudeApiFormatPicker { selected } => {
             super::pickers::render_claude_api_format_picker_overlay(
                 frame,

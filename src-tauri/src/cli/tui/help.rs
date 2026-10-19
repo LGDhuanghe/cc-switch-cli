@@ -127,6 +127,9 @@ fn current_help_target(app: &App) -> HelpTarget {
             Overlay::ClaudeModelPicker { .. } => {
                 provider_field_overlay_target(app, ProviderAddField::ClaudeModelConfig)
             }
+            Overlay::ClaudeFallbackModelPicker { .. } => {
+                provider_field_overlay_target(app, ProviderAddField::ClaudeFallbackModel)
+            }
             Overlay::HermesModelsPicker { .. } => {
                 provider_field_overlay_target(app, ProviderAddField::HermesModels)
             }
@@ -754,8 +757,8 @@ fn provider_field_help(app_type: AppType, field: ProviderAddField) -> HelpConten
         ProviderAddField::ClaudeFallbackModel => HelpContent::new(
             texts::tui_label_claude_fallback_model(),
             help_lines(
-                "直连时写入 ANTHROPIC_MODEL，是 Claude Code 启动时使用的主模型，会优先于角色模型。角色的 1M 开关不会自动作用于它；请使用下方的默认模型 1M 开关。后台任务另用 Haiku 档。经过本地路由时，它还用于未匹配到具体角色的请求。",
-                "Writes ANTHROPIC_MODEL: in direct mode this is Claude Code's startup model and takes precedence over role models. Role 1M toggles do not enable 1M for it; use Default model 1M below. Background tasks use Haiku separately. With local routing, it also handles requests that don't clearly map to a specific role model.",
+                "直连时写入 ANTHROPIC_MODEL，是 Claude Code 启动时使用的主模型，会优先于角色模型。角色的 1M 开关不会自动作用于它；请使用下方的默认模型 1M 开关。后台任务另用 Haiku 档。经过本地路由时，它还用于未匹配到具体角色的请求。按 f 可从已填写的角色模型中选择；按 Enter 仍可手动输入。",
+                "Writes ANTHROPIC_MODEL: in direct mode this is Claude Code's startup model and takes precedence over role models. Role 1M toggles do not enable 1M for it; use Default model 1M below. Background tasks use Haiku separately. With local routing, it also handles requests that don't clearly map to a specific role model. Press f to pick from the role models already filled in; Enter still allows manual input.",
             ),
         ),
         ProviderAddField::ClaudeFallbackOneM => HelpContent::new(

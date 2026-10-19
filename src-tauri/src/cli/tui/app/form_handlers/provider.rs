@@ -1,5 +1,6 @@
 use super::*;
 use crate::ProviderService;
+use crate::claude_model_config::split_claude_one_m_marker;
 use serde_json::Value;
 use url::Url;
 
@@ -311,6 +312,26 @@ impl App {
                 {
                     provider.field_idx = (provider.field_idx + 1).min(fields.len() - 1);
                 }
+                Some(Action::None)
+            }
+            KeyCode::Char('f') if selected == ProviderAddField::ClaudeFallbackModel => {
+                let Some(FormState::ProviderAdd(provider)) = self.form.as_ref() else {
+                    return Some(Action::None);
+                };
+                let options = provider.claude_fallback_model_picker_options();
+                if options.is_empty() {
+                    self.push_toast(
+                        texts::tui_claude_fallback_picker_empty(),
+                        ToastKind::Warning,
+                    );
+                    return Some(Action::None);
+                }
+                let current = split_claude_one_m_marker(&provider.claude_model.value).0;
+                let selected = options
+                    .iter()
+                    .position(|(_label, model)| model == current.trim())
+                    .unwrap_or(0);
+                self.overlay = Overlay::ClaudeFallbackModelPicker { selected, options };
                 Some(Action::None)
             }
             KeyCode::Char('f')

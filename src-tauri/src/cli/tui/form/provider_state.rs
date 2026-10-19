@@ -2467,6 +2467,43 @@ impl ProviderAddFormState {
         self.claude_fallback_one_m = one_m && !model.trim().is_empty();
     }
 
+    /// Role models already filled in this form, deduplicated and without the
+    /// `[1M]` marker, for the default-model picker.
+    pub fn claude_fallback_model_picker_options(&self) -> Vec<(String, String)> {
+        let mut options: Vec<(String, String)> = Vec::new();
+        for role in ClaudeModelRole::ALL {
+            let Some(input) = self.claude_model_input(role.index()) else {
+                continue;
+            };
+            let (model, _) = split_claude_one_m_marker(&input.value);
+            let model = model.trim();
+            if model.is_empty()
+                || options
+                    .iter()
+                    .any(|(_label, existing)| existing.as_str() == model)
+            {
+                continue;
+            }
+            options.push((
+                texts::tui_claude_model_label_for_index(role.index()).to_string(),
+                model.to_string(),
+            ));
+        }
+        options
+    }
+
+    pub fn set_claude_fallback_model_from_picker(&mut self, value: &str) {
+        let (model, _) = split_claude_one_m_marker(value);
+        let model = model.trim();
+        if model.is_empty() {
+            return;
+        }
+        // Role-level 1M toggles stay independent; selecting a model leaves the
+        // default-model 1M switch as it is.
+        self.claude_model.set(model);
+        self.claude_fallback_model_touched = true;
+    }
+
     pub fn claude_fallback_model_value_for_config(&self) -> String {
         let (model, explicit_one_m) = split_claude_one_m_marker(&self.claude_model.value);
         let model = model.trim();

@@ -80,6 +80,42 @@ pub(super) fn render_codex_reasoning_picker_overlay(
     frame.render_stateful_widget(list, body_area, &mut state);
 }
 
+pub(super) fn render_claude_fallback_model_picker_overlay(
+    frame: &mut Frame<'_>,
+    content_area: Rect,
+    theme: &theme::Theme,
+    selected: usize,
+    options: &[(String, String)],
+) {
+    let keys = [
+        ("↑↓", texts::tui_key_select()),
+        ("Enter", texts::tui_key_apply()),
+        ("Esc", texts::tui_key_cancel()),
+    ];
+    let items = options
+        .iter()
+        .map(|(label, model)| ListItem::new(format!("{label}: {model}")))
+        .collect::<Vec<_>>();
+    let body_area = overlay_frame(
+        frame,
+        content_area,
+        theme,
+        texts::tui_label_claude_fallback_model(),
+        &keys,
+        OverlaySize::FitRows {
+            width: 58,
+            body_rows: items.len() as u16,
+        },
+        overlay_border_style(theme, false),
+    );
+    let mut state = ListState::default();
+    state.select(Some(selected.min(items.len().saturating_sub(1))));
+    let list = List::new(items)
+        .highlight_style(selection_style(theme))
+        .highlight_symbol(highlight_symbol(theme));
+    frame.render_stateful_widget(list, body_area, &mut state);
+}
+
 pub(super) fn render_claude_model_picker_overlay(
     frame: &mut Frame<'_>,
     app: &App,

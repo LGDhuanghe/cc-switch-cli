@@ -3824,6 +3824,14 @@ pub mod texts {
         }
     }
 
+    pub fn tui_claude_fallback_picker_empty() -> &'static str {
+        if is_chinese() {
+            "尚未填写角色模型，没有可选的模型"
+        } else {
+            "No role models have been filled in"
+        }
+    }
+
     pub fn tui_hint_press() -> &'static str {
         if is_chinese() {
             "按 "
@@ -4739,6 +4747,14 @@ pub mod texts {
             "获取模型"
         } else {
             "fetch model"
+        }
+    }
+
+    pub fn tui_key_choose_model() -> &'static str {
+        if is_chinese() {
+            "选择模型"
+        } else {
+            "choose model"
         }
     }
 

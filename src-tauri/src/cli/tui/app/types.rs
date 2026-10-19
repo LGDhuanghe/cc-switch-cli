@@ -4684,6 +4684,11 @@ pub enum Overlay {
         column: ClaudeModelPickerColumn,
         editing: bool,
     },
+    ClaudeFallbackModelPicker {
+        selected: usize,
+        /// (role label, model id) pairs built from the filled role-model fields.
+        options: Vec<(String, String)>,
+    },
     ClaudeApiFormatPicker {
         selected: usize,
     },
@@ -4952,6 +4957,7 @@ impl Overlay {
                 | Overlay::ManagedAccountPicker { .. }
                 | Overlay::ManagedAccountActionPicker { .. }
                 | Overlay::ClaudeModelPicker { editing: false, .. }
+                | Overlay::ClaudeFallbackModelPicker { .. }
                 | Overlay::HermesModelsPicker { editing: false }
                 | Overlay::SessionProjectPicker(_)
                 | Overlay::OpenClawToolsProfilePicker { .. }
@@ -4993,6 +4999,7 @@ impl Overlay {
             | Overlay::ClaudeApiFormatPicker { .. }
             | Overlay::CodexReasoningLevelsPicker { .. }
             | Overlay::CodexDefaultReasoningPicker { .. }
+            | Overlay::ClaudeFallbackModelPicker { .. }
             | Overlay::UserAgentPicker { .. }
             | Overlay::ExternalEditorPicker { .. }
             | Overlay::UsageQueryTemplatePicker { .. }
