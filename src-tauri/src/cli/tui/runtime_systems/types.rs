@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -177,9 +177,8 @@ pub(crate) enum SessionMsg {
         request_id: u64,
         scope_epoch: u64,
         scope: String,
-        /// True when a valid persisted manifest satisfied this request and no
-        /// source revalidation follows. A cache miss keeps the scan active
-        /// while the same worker performs the one-time bootstrap build.
+        /// True when this cached open completes the request. False keeps the
+        /// scan active while the same worker revalidates provider sources.
         complete: bool,
         result: Result<
             Option<(
@@ -482,6 +481,9 @@ pub(crate) enum SkillsReq {
     Update {
         ids: Vec<String>,
     },
+    MigrateStorage {
+        target: crate::services::skill::SkillStorageLocation,
+    },
 }
 
 pub(crate) enum SkillsMsg {
@@ -500,6 +502,10 @@ pub(crate) enum SkillsMsg {
     },
     SkillsUpdated {
         result: Result<crate::services::skill::SkillUpdateBatchResult, String>,
+    },
+    StorageMigrated {
+        target: crate::services::skill::SkillStorageLocation,
+        result: Result<crate::services::skill::MigrationResult, String>,
     },
 }
 
@@ -579,6 +585,7 @@ pub(crate) enum ManagedAuthReq {
     },
     StartLogin {
         auth_provider: String,
+        account_id: Option<String>,
     },
     PollLogin {
         auth_provider: String,
@@ -804,6 +811,8 @@ pub(crate) enum ModelFetchReq {
         is_full_url: bool,
         api_key: Option<String>,
         custom_user_agent: Option<String>,
+        api_protocol: Option<String>,
+        request_headers: Option<BTreeMap<String, String>>,
         codex_oauth: bool,
         codex_oauth_account_id: Option<String>,
         field: ProviderAddField,
@@ -961,6 +970,7 @@ pub(crate) async fn fetch_provider_models_for_tui(
     api_key: Option<&str>,
     custom_user_agent: Option<&str>,
     strategy: ModelFetchStrategy,
+    request_headers: Option<&BTreeMap<String, String>>,
 ) -> Result<Vec<String>, String> {
     let candidate_urls = build_model_fetch_candidate_urls(base_url, strategy, is_full_url);
     if candidate_urls.is_empty() {
@@ -971,19 +981,22 @@ pub(crate) async fn fetch_provider_models_for_tui(
         });
     }
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| format!("build http client failed: {e}"))?;
+    let client = crate::proxy::http_client::get();
 
     let key = api_key.map(str::trim).filter(|k| !k.is_empty());
     let custom_user_agent = crate::provider::parse_custom_user_agent(custom_user_agent)
         .ok()
         .flatten();
+    if key.is_none() && request_headers.is_none_or(BTreeMap::is_empty) {
+        return Err("API Key or request headers are required to fetch models".to_string());
+    }
+    if request_headers.is_some_and(|headers| headers.len() > 64) {
+        return Err("Too many model-fetch request headers (maximum 64)".to_string());
+    }
     let mut last_err = String::from("unknown error");
 
     for url in candidate_urls {
-        let mut req = client.get(&url);
+        let mut req = client.get(&url).timeout(Duration::from_secs(5));
         if let Some(key) = key {
             req = match strategy {
                 ModelFetchStrategy::Bearer => req.header("Authorization", format!("Bearer {key}")),
@@ -996,6 +1009,18 @@ pub(crate) async fn fetch_provider_models_for_tui(
         }
         if let Some(user_agent) = &custom_user_agent {
             req = req.header(reqwest::header::USER_AGENT, user_agent.clone());
+        }
+        if let Some(request_headers) = request_headers {
+            for (raw_name, raw_value) in request_headers {
+                let name = reqwest::header::HeaderName::from_bytes(raw_name.trim().as_bytes())
+                    .map_err(|error| {
+                        format!("Invalid model-fetch header name {raw_name}: {error}")
+                    })?;
+                let value = reqwest::header::HeaderValue::from_str(raw_value).map_err(|error| {
+                    format!("Invalid model-fetch header value for {name}: {error}")
+                })?;
+                req = req.header(name, value);
+            }
         }
 
         match req.send().await {

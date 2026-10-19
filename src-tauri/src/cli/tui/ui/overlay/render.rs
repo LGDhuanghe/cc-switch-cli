@@ -84,6 +84,15 @@ pub(crate) fn render_overlay(
                 *selected,
             )
         }
+        Overlay::CodexReasoningLevelsPicker { .. }
+        | Overlay::CodexDefaultReasoningPicker { .. } => {
+            super::pickers::render_codex_reasoning_picker_overlay(
+                frame,
+                content_area,
+                theme,
+                &app.overlay,
+            )
+        }
         Overlay::UserAgentPicker { selected } => super::pickers::render_user_agent_picker_overlay(
             frame,
             app,
@@ -102,6 +111,15 @@ pub(crate) fn render_overlay(
         }
         Overlay::UsageQueryTemplatePicker { selected } => {
             super::pickers::render_usage_query_template_picker_overlay(
+                frame,
+                app,
+                content_area,
+                theme,
+                *selected,
+            )
+        }
+        Overlay::ProviderTemplatePicker { selected } => {
+            super::pickers::render_provider_template_picker_overlay(
                 frame,
                 app,
                 content_area,
@@ -258,6 +276,14 @@ pub(crate) fn render_overlay(
             super::pickers::render_skills_sync_method_picker_overlay(
                 frame,
                 data,
+                content_area,
+                theme,
+                *selected,
+            )
+        }
+        Overlay::SkillsStorageLocationPicker { selected } => {
+            super::pickers::render_skills_storage_location_picker_overlay(
+                frame,
                 content_area,
                 theme,
                 *selected,

@@ -98,6 +98,17 @@ pub struct Provider {
 }
 
 impl Provider {
+    /// Whether the provider form's "auth field" was explicitly set to
+    /// ANTHROPIC_API_KEY. The form only persists `meta.apiKeyField` for the
+    /// non-default choice, so `None` means the default ANTHROPIC_AUTH_TOKEN.
+    pub fn claude_uses_api_key_field(&self) -> bool {
+        self.meta
+            .as_ref()
+            .and_then(|m| m.api_key_field.as_deref())
+            .map(|field| field.eq_ignore_ascii_case("ANTHROPIC_API_KEY"))
+            .unwrap_or(false)
+    }
+
     /// 从现有ID创建供应商
     pub fn with_id(
         id: String,
@@ -146,6 +157,7 @@ impl Provider {
                 .get("apiKey")
                 .or_else(|| self.settings_config.get("api_key")),
             AppType::OpenClaw => self.settings_config.get("apiKey"),
+            AppType::Pi => self.settings_config.get("apiKey"),
         };
 
         value
@@ -252,7 +264,7 @@ impl Provider {
             AppType::Claude => "claude",
             AppType::Codex => "codex",
             AppType::Gemini => "gemini",
-            AppType::OpenCode | AppType::Hermes | AppType::OpenClaw => return None,
+            AppType::OpenCode | AppType::Hermes | AppType::OpenClaw | AppType::Pi => return None,
         };
 
         if self.category.as_deref() == Some("official") {
@@ -266,6 +278,12 @@ impl Provider {
                 .and_then(Value::as_str)
                 .is_none_or(|value| value.trim().is_empty()),
             AppType::Codex => {
+                let is_opencode_go = self
+                    .settings_config
+                    .get("config")
+                    .and_then(Value::as_str)
+                    .and_then(crate::codex_config::extract_codex_base_url)
+                    .is_some_and(|url| url.to_lowercase().contains("opencode.ai/zen/go"));
                 let api_key_missing = self
                     .settings_config
                     .pointer("/auth/OPENAI_API_KEY")
@@ -277,7 +295,7 @@ impl Provider {
                     .and_then(Value::as_str)
                     .and_then(crate::codex_config::extract_codex_experimental_bearer_token)
                     .is_none_or(|value| value.trim().is_empty());
-                api_key_missing && bearer_token_missing
+                !is_opencode_go && api_key_missing && bearer_token_missing
             }
             AppType::Gemini => {
                 let api_key_missing = self
@@ -292,7 +310,7 @@ impl Provider {
                     .is_none_or(|value| value.trim().is_empty());
                 api_key_missing && base_url_missing
             }
-            AppType::OpenCode | AppType::Hermes | AppType::OpenClaw => false,
+            AppType::OpenCode | AppType::Hermes | AppType::OpenClaw | AppType::Pi => false,
         };
 
         is_official.then_some(tool)
@@ -338,7 +356,7 @@ pub struct UsageScript {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "autoQueryInterval")]
     pub auto_query_interval: Option<u64>,
-    /// Coding Plan 供应商标识（如 "kimi", "zhipu", "minimax"）
+    /// Coding Plan 供应商标识（如 "kimi", "zhipu", "minimax", "opencode_go"）
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "codingPlanProvider")]
     pub coding_plan_provider: Option<String>,
@@ -469,6 +487,10 @@ pub struct CodexChatReasoningConfig {
     /// 保留该字段用于与上游持久化 shape 对齐。
     #[serde(rename = "outputFormat", skip_serializing_if = "Option::is_none")]
     pub output_format: Option<String>,
+    /// 运行时字段（不持久化）：当前请求模型声明的合法 effort 档位。
+    /// Zen 模式用它钳制或省略 `reasoning_effort`。
+    #[serde(skip)]
+    pub effort_levels: Option<Vec<String>>,
 }
 
 /// Local proxy request overrides applied after route/protocol transforms.

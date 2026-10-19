@@ -10,7 +10,7 @@ use super::super::app::{
     model_fetch_filter, App, CloudSyncBackend, CloudSyncTransferIntent, ConfirmAction,
     ConfirmOverlay, LoadingKind, Overlay, SessionsPane, ToastKind,
 };
-use super::super::data::{load_state, ProviderRuntimeSnapshot, UiData};
+use super::super::data::{ProviderRuntimeSnapshot, UiData};
 use super::super::runtime_actions::app_display_name;
 use super::super::CacheInvalidation;
 use super::types::{
@@ -491,7 +491,7 @@ pub(crate) fn handle_session_msg(app: &mut App, msg: SessionMsg) {
             if complete && opened {
                 app.sessions.finish_cached_open(request_id);
             }
-            if complete && cost_page_ready {
+            if cost_page_ready {
                 request_session_cost_if_visible(app);
             }
             if complete
@@ -1426,6 +1426,39 @@ pub(crate) fn handle_skills_msg(
                 );
             }
         },
+        SkillsMsg::StorageMigrated { target, result } => match result {
+            Ok(result) => {
+                app.overlay = Overlay::None;
+                *data = UiData::load(&app.app_type)?;
+                invalidation = CacheInvalidation::DataReloaded;
+                let location = texts::tui_skills_storage_location_name(target);
+                if result.errors.is_empty() {
+                    app.push_toast(
+                        texts::tui_toast_skills_storage_location_set(
+                            location,
+                            result.migrated_count,
+                            result.skipped_count,
+                        ),
+                        ToastKind::Success,
+                    );
+                } else {
+                    app.push_copyable_toast(
+                        texts::tui_toast_skills_storage_location_partial(
+                            location,
+                            result.migrated_count,
+                            result.skipped_count,
+                            result.errors.len(),
+                        ),
+                        ToastKind::Warning,
+                        result.errors.join("\n"),
+                    );
+                }
+            }
+            Err(err) => {
+                app.overlay = Overlay::None;
+                app.push_toast(err, ToastKind::Error);
+            }
+        },
     }
 
     Ok(invalidation)
@@ -1522,43 +1555,25 @@ pub(crate) fn handle_webdav_msg(
                         };
                         app.push_toast(msg, ToastKind::Success);
                     }
-                    WebDavDone::Downloaded { decision, message } => {
-                        match decision {
-                            SyncDecision::V1MigrationNeeded => {
-                                app.overlay = Overlay::Confirm(ConfirmOverlay {
-                                    title: texts::tui_webdav_v1_migration_title().to_string(),
-                                    message: texts::tui_webdav_v1_migration_message().to_string(),
-                                    action: ConfirmAction::WebDavMigrateV1ToV2,
-                                });
-                            }
-                            _ => {
-                                let msg = match decision {
-                                    SyncDecision::Download => {
-                                        texts::tui_toast_webdav_download_ok().to_string()
-                                    }
-                                    _ => message,
-                                };
-                                if let Ok(state) = load_state() {
-                                    if let Err(e) = crate::services::provider::ProviderService::sync_current_to_live(
-                                    &state,
-                                ) {
-                                    log::warn!("WebDAV 下载后同步 live 配置失败: {e}");
-                                }
-                                }
-                                app.push_toast(msg, ToastKind::Success);
-                            }
+                    WebDavDone::Downloaded { decision, message } => match decision {
+                        SyncDecision::V1MigrationNeeded => {
+                            app.overlay = Overlay::Confirm(ConfirmOverlay {
+                                title: texts::tui_webdav_v1_migration_title().to_string(),
+                                message: texts::tui_webdav_v1_migration_message().to_string(),
+                                action: ConfirmAction::WebDavMigrateV1ToV2,
+                            });
                         }
-                    }
+                        _ => {
+                            let msg = match decision {
+                                SyncDecision::Download => {
+                                    texts::tui_toast_webdav_download_ok().to_string()
+                                }
+                                _ => message,
+                            };
+                            app.push_toast(msg, ToastKind::Success);
+                        }
+                    },
                     WebDavDone::V1Migrated { message: _ } => {
-                        if let Ok(state) = load_state() {
-                            if let Err(e) =
-                                crate::services::provider::ProviderService::sync_current_to_live(
-                                    &state,
-                                )
-                            {
-                                log::warn!("WebDAV V1 迁移后同步 live 配置失败: {e}");
-                            }
-                        }
                         app.push_toast(
                             texts::tui_toast_webdav_v1_migration_ok(),
                             ToastKind::Success,
@@ -1630,17 +1645,6 @@ pub(crate) fn handle_webdav_msg(
                         app.push_toast(message, ToastKind::Success);
                     }
                     WebDavDone::S3Downloaded { decision, message } => {
-                        if let Ok(state) = load_state() {
-                            if let Err(error) =
-                                crate::services::provider::ProviderService::sync_current_to_live(
-                                    &state,
-                                )
-                            {
-                                log::warn!(
-                                    "S3 restore completed but live config sync failed: {error}"
-                                );
-                            }
-                        }
                         let message = if matches!(decision, SyncDecision::Download) {
                             texts::tui_toast_s3_restore_ok().to_string()
                         } else {
@@ -2056,6 +2060,43 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(home_settings)]
+    fn skill_storage_migration_feedback_preserves_partial_error_details() {
+        let temp = tempfile::tempdir().expect("create isolated home");
+        let _env = crate::test_support::TestEnvGuard::isolated(temp.path());
+        let mut settings = crate::settings::AppSettings::default();
+        settings.skill_storage_location = crate::services::skill::SkillStorageLocation::Unified;
+        crate::settings::update_settings(settings).expect("set unified storage");
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.overlay = Overlay::Loading {
+            kind: LoadingKind::SkillOperation,
+            title: "Migrating".to_string(),
+            message: "Working".to_string(),
+        };
+        let mut data = UiData::default();
+        handle_skills_msg(
+            &mut app,
+            &mut data,
+            SkillsMsg::StorageMigrated {
+                target: crate::services::skill::SkillStorageLocation::Unified,
+                result: Ok(crate::services::skill::MigrationResult {
+                    migrated_count: 1,
+                    skipped_count: 0,
+                    errors: vec!["claude/managed: deployment preserved".to_string()],
+                }),
+            },
+        )
+        .expect("handle partial migration");
+
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(
+            app.toast.as_ref().and_then(|toast| toast.copy_text()),
+            Some("claude/managed: deployment preserved")
+        );
+    }
+
+    #[test]
     fn partial_skill_deployment_keeps_the_tui_retry_marker() {
         let mut app = App::new(Some(AppType::Claude));
         let id = "owner/repo:demo";
@@ -2453,6 +2494,7 @@ mod tests {
             extra_usage: None,
             error: None,
             queried_at: Some(chrono::Utc::now().timestamp_millis()),
+            reset_credits: None,
         }
     }
 
@@ -2567,6 +2609,39 @@ mod tests {
     }
 
     #[test]
+    fn cached_session_manifest_open_requests_cost_even_if_revalidation_fails() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Sessions;
+        let request_id = app.sessions.start_scan("claude".to_string());
+        let scope_epoch = app.sessions.scope_epoch;
+        let (published, reader) =
+            published("cached", 1, vec![session("claude", "cached-session", 2)]);
+
+        handle_session_msg(
+            &mut app,
+            SessionMsg::ScopeOpened {
+                request_id,
+                scope_epoch,
+                scope: "claude".to_string(),
+                complete: false,
+                result: Ok(Some((reader, published.first_page))),
+            },
+        );
+
+        assert_eq!(app.sessions.scan_active, Some(request_id));
+        assert!(app.sessions.loading);
+        assert_eq!(app.sessions.rows[0].session_id, "cached-session");
+        app.sessions
+            .fail_scan(request_id, "injected revalidation failure".to_string());
+        assert!(app.sessions.scan_active.is_none());
+        assert_eq!(app.sessions.rows[0].session_id, "cached-session");
+        assert!(
+            app.sessions.take_cost_overlay_request(),
+            "a cached page must request its overlay before revalidation settles"
+        );
+    }
+
+    #[test]
     fn speculative_session_page_load_does_not_requery_the_visible_page() {
         let mut app = App::new(Some(AppType::Claude));
         let _request_id = app.sessions.start_scan("claude".to_string());
@@ -2676,6 +2751,15 @@ mod tests {
         assert!(
             app.sessions.pending_manifest.is_some(),
             "the replacement still reconciles selection off the UI thread"
+        );
+        assert!(
+            app.sessions.manual_refresh_is_active(),
+            "manual origin remains active until manifest reconciliation settles"
+        );
+        assert!(
+            !app.sessions
+                .take_manual_refresh_publication(refresh_request),
+            "manual publication side effects are consumed only once"
         );
         assert!(
             app.sessions.take_cost_overlay_request(),

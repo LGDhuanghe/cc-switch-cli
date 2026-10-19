@@ -97,6 +97,20 @@ impl App {
                     }
                     ConfirmAction::McpDelete { id } => Action::McpDelete { id: id.clone() },
                     ConfirmAction::PromptDelete { id } => Action::PromptDelete { id: id.clone() },
+                    ConfirmAction::PiSystemPromptDelete {
+                        kind,
+                        expected_revision,
+                    } => Action::PiSystemPromptDelete {
+                        kind: *kind,
+                        expected_revision: expected_revision.clone(),
+                    },
+                    ConfirmAction::PiPromptTemplateDelete {
+                        slug,
+                        expected_revision,
+                    } => Action::PiPromptTemplateDelete {
+                        slug: slug.clone(),
+                        expected_revision: expected_revision.clone(),
+                    },
                     ConfirmAction::PricingDelete { model_id } => Action::PricingDelete {
                         model_id: model_id.clone(),
                     },
@@ -114,6 +128,11 @@ impl App {
                     ConfirmAction::SkillsUninstall { directory } => Action::SkillsUninstall {
                         directory: directory.clone(),
                     },
+                    ConfirmAction::SkillsMigrateStorage { location } => {
+                        Action::SkillsSetStorageLocation {
+                            location: *location,
+                        }
+                    }
                     ConfirmAction::SkillsRepoRemove { owner, name } => Action::SkillsRepoRemove {
                         owner: owner.clone(),
                         name: name.clone(),
@@ -131,6 +150,11 @@ impl App {
                     ConfirmAction::SettingsSetClaudePluginIntegration { enabled } => {
                         Action::SetClaudePluginIntegration { enabled: *enabled }
                     }
+                    ConfirmAction::SettingsSetGlobalOutboundProxy { config } => {
+                        Action::SetGlobalOutboundProxy {
+                            config: config.clone(),
+                        }
+                    }
                     ConfirmAction::VisibleAppsAutoDetection => {
                         Action::ConfirmVisibleAppsAutoDetection { use_auto: true }
                     }
@@ -145,8 +169,14 @@ impl App {
                     ConfirmAction::UsageQueryNotice => Action::ConfirmUsageQueryNotice,
                     ConfirmAction::RebuildCodexUsage => Action::UsageRebuildCodex,
                     ConfirmAction::ManagedAuthCancelLogin => {
+                        let device_code = self
+                            .managed_auth_login
+                            .as_ref()
+                            .map(|login| login.device_code.clone());
                         self.cancel_managed_auth_login();
-                        Action::None
+                        device_code
+                            .map(|device_code| Action::ManagedAuthCancelLogin { device_code })
+                            .unwrap_or(Action::None)
                     }
                     ConfirmAction::ProxyEnableAndAutoFailover { app_type } => {
                         Action::EnableProxyAndAutoFailover {
@@ -357,6 +387,60 @@ impl App {
             TextSubmit::SettingsProxyListenPort => {
                 self.handle_settings_proxy_listen_port_submit(data, raw)
             }
+            TextSubmit::SettingsOutboundProxyUrl => {
+                let trimmed = raw.trim().to_string();
+                let mut config = self
+                    .global_outbound_proxy_draft
+                    .clone()
+                    .or_else(|| data.config.global_outbound_proxy.clone())
+                    .unwrap_or_default();
+                if trimmed.is_empty() {
+                    config = crate::services::GlobalOutboundProxyConfig::default();
+                } else {
+                    let submitted_auth = url::Url::parse(&trimmed)
+                        .ok()
+                        .filter(|url| !url.username().is_empty() || url.password().is_some())
+                        .and_then(|_| {
+                            crate::services::GlobalOutboundProxyConfig::from_full_url(&trimmed).ok()
+                        });
+                    if let Some(submitted) = submitted_auth {
+                        config = submitted;
+                    } else {
+                        config.url = trimmed;
+                    }
+                }
+                self.validate_and_save_global_outbound_proxy(
+                    TextSubmit::SettingsOutboundProxyUrl,
+                    raw,
+                    config,
+                )
+            }
+            TextSubmit::SettingsOutboundProxyUsername => {
+                let mut config = self
+                    .global_outbound_proxy_draft
+                    .clone()
+                    .or_else(|| data.config.global_outbound_proxy.clone())
+                    .unwrap_or_default();
+                config.username = raw.clone();
+                self.validate_and_save_global_outbound_proxy(
+                    TextSubmit::SettingsOutboundProxyUsername,
+                    raw,
+                    config,
+                )
+            }
+            TextSubmit::SettingsOutboundProxyPassword => {
+                let mut config = self
+                    .global_outbound_proxy_draft
+                    .clone()
+                    .or_else(|| data.config.global_outbound_proxy.clone())
+                    .unwrap_or_default();
+                config.password = raw.clone();
+                self.validate_and_save_global_outbound_proxy(
+                    TextSubmit::SettingsOutboundProxyPassword,
+                    raw,
+                    config,
+                )
+            }
             TextSubmit::SettingsOpenClawConfigDir => {
                 let trimmed = raw.trim().to_string();
                 let path = if trimmed.is_empty() {
@@ -365,6 +449,15 @@ impl App {
                     Some(trimmed)
                 };
                 Action::SetOpenClawConfigDir { path }
+            }
+            TextSubmit::SettingsPiConfigDir => {
+                let trimmed = raw.trim().to_string();
+                let path = if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                };
+                Action::SetPiConfigDir { path }
             }
             TextSubmit::SettingsPreferredEditor => {
                 let trimmed = raw.trim().to_string();
@@ -386,6 +479,39 @@ impl App {
                     Some(trimmed)
                 };
                 Action::SetPreferredEditor { command }
+            }
+            TextSubmit::PiPromptTemplateCreate => {
+                if let Err(error) = crate::services::pi_prompt_files::validate_template_slug(&raw) {
+                    self.push_toast(error.to_string(), ToastKind::Warning);
+                    return Action::None;
+                }
+                self.open_editor(
+                    format!("/{raw}"),
+                    EditorKind::Plain,
+                    "# Prompt template\n",
+                    EditorSubmit::PiPromptTemplate {
+                        slug: raw,
+                        original_slug: None,
+                        expected_revision: "missing".to_string(),
+                    },
+                );
+                Action::None
+            }
+            TextSubmit::PiPromptTemplateRename {
+                original_slug,
+                expected_revision,
+                content,
+            } => {
+                if let Err(error) = crate::services::pi_prompt_files::validate_template_slug(&raw) {
+                    self.push_toast(error.to_string(), ToastKind::Warning);
+                    return Action::None;
+                }
+                Action::PiPromptTemplateRename {
+                    original_slug,
+                    new_slug: raw,
+                    expected_revision,
+                    content,
+                }
             }
             TextSubmit::SkillsInstallSpec => {
                 if raw.is_empty() {
@@ -462,6 +588,44 @@ impl App {
             TextSubmit::WebDavJianguoyunUsername => self.handle_webdav_username_submit(raw),
             TextSubmit::WebDavJianguoyunPassword => self.handle_webdav_password_submit(raw),
         }
+    }
+
+    fn validate_and_save_global_outbound_proxy(
+        &mut self,
+        submit: TextSubmit,
+        raw: String,
+        config: crate::services::GlobalOutboundProxyConfig,
+    ) -> Action {
+        let credential_without_url = config.url.trim().is_empty()
+            && matches!(
+                submit,
+                TextSubmit::SettingsOutboundProxyUsername
+                    | TextSubmit::SettingsOutboundProxyPassword
+            );
+        if credential_without_url {
+            if !config.url.trim().is_empty() {
+                let url_only = crate::services::GlobalOutboundProxyConfig {
+                    url: config.url.clone(),
+                    ..Default::default()
+                };
+                if let Err(error) = url_only.to_full_url() {
+                    self.overlay =
+                        Overlay::TextInput(global_outbound_proxy_text_input(submit, raw));
+                    self.push_toast(global_outbound_proxy_error_message(error), ToastKind::Error);
+                    return Action::None;
+                }
+            }
+            self.global_outbound_proxy_draft = Some(config);
+            return Action::None;
+        }
+
+        if let Err(error) = config.to_full_url() {
+            self.overlay = Overlay::TextInput(global_outbound_proxy_text_input(submit, raw));
+            self.push_toast(global_outbound_proxy_error_message(error), ToastKind::Error);
+            return Action::None;
+        }
+
+        self.save_global_outbound_proxy(config)
     }
 
     fn handle_codex_model_catalog_field_submit(
@@ -651,6 +815,10 @@ fn codex_model_catalog_field_prompt(field: form::CodexModelCatalogField) -> &'st
         }
         form::CodexModelCatalogField::ContextWindow => {
             texts::tui_codex_model_catalog_context_prompt()
+        }
+        form::CodexModelCatalogField::ReasoningLevels => texts::tui_codex_reasoning_levels(),
+        form::CodexModelCatalogField::DefaultReasoningLevel => {
+            texts::tui_codex_default_reasoning_level()
         }
     }
 }

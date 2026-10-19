@@ -21,13 +21,13 @@ use super::types::{
     fetch_provider_models_for_tui, model_fetch_strategy_for_field, AppDataLoadKind, AppDataMsg,
     AppDataReq, AppDataSystem, CodexHistoryMsg, CodexHistoryReq, CodexHistorySystem,
     LoadedMessagePage, LocalEnvMsg, LocalEnvReq, LocalEnvSystem, ManagedAuthMsg, ManagedAuthReq,
-    ManagedAuthSystem, ManagedSessionOutcome, ModelFetchMsg, ModelFetchReq, ModelFetchSystem,
-    ProxyMsg, ProxyReq, ProxySystem, QuotaMsg, QuotaReq, QuotaSystem, RefreshedMessagePages,
-    SessionMsg, SessionReq, SessionSystem, SessionUsageSyncMsg, SessionUsageSyncReq,
-    SessionUsageSyncSystem, SkillsMsg, SkillsReq, SkillsSystem, SpeedtestMsg, SpeedtestSystem,
-    StreamCheckMsg, StreamCheckReq, StreamCheckSystem, UpdateMsg, UpdateReq, UpdateSystem,
-    UsageLogLoadError, UsagePricingLoadError, UsagePricingMsg, UsagePricingReq, UsagePricingSystem,
-    WebDavDone, WebDavErr, WebDavMsg, WebDavReq, WebDavReqKind, WebDavSystem,
+    ManagedAuthSystem, ManagedSessionOutcome, ModelFetchMsg, ModelFetchReq, ModelFetchStrategy,
+    ModelFetchSystem, ProxyMsg, ProxyReq, ProxySystem, QuotaMsg, QuotaReq, QuotaSystem,
+    RefreshedMessagePages, SessionMsg, SessionReq, SessionSystem, SessionUsageSyncMsg,
+    SessionUsageSyncReq, SessionUsageSyncSystem, SkillsMsg, SkillsReq, SkillsSystem, SpeedtestMsg,
+    SpeedtestSystem, StreamCheckMsg, StreamCheckReq, StreamCheckSystem, UpdateMsg, UpdateReq,
+    UpdateSystem, UsageLogLoadError, UsagePricingLoadError, UsagePricingMsg, UsagePricingReq,
+    UsagePricingSystem, WebDavDone, WebDavErr, WebDavMsg, WebDavReq, WebDavReqKind, WebDavSystem,
 };
 
 static SESSION_SCAN_GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -632,6 +632,8 @@ fn model_fetch_worker_loop(rx: mpsc::Receiver<ModelFetchReq>, tx: mpsc::Sender<M
             is_full_url,
             api_key,
             custom_user_agent,
+            api_protocol,
+            request_headers,
             codex_oauth,
             codex_oauth_account_id,
             field,
@@ -644,7 +646,11 @@ fn model_fetch_worker_loop(rx: mpsc::Receiver<ModelFetchReq>, tx: mpsc::Sender<M
                     .map(|models| models.into_iter().map(|model| model.id).collect())
             })
         } else {
-            let strategy = model_fetch_strategy_for_field(field);
+            let strategy = match api_protocol.as_deref() {
+                Some("anthropic-messages") => ModelFetchStrategy::Anthropic,
+                Some("google-generative-ai") => ModelFetchStrategy::GoogleApiKey,
+                _ => model_fetch_strategy_for_field(field),
+            };
             rt.block_on(async {
                 fetch_provider_models_for_tui(
                     &base_url,
@@ -652,6 +658,7 @@ fn model_fetch_worker_loop(rx: mpsc::Receiver<ModelFetchReq>, tx: mpsc::Sender<M
                     api_key.as_deref(),
                     custom_user_agent.as_deref(),
                     strategy,
+                    request_headers.as_ref(),
                 )
                 .await
             })
@@ -700,10 +707,12 @@ fn managed_auth_worker_loop(rx: mpsc::Receiver<ManagedAuthReq>, tx: mpsc::Sender
                         auth_provider,
                         result: Err(err.clone()),
                     },
-                    ManagedAuthReq::StartLogin { auth_provider } => ManagedAuthMsg::LoginStarted {
-                        auth_provider,
-                        result: Err(err.clone()),
-                    },
+                    ManagedAuthReq::StartLogin { auth_provider, .. } => {
+                        ManagedAuthMsg::LoginStarted {
+                            auth_provider,
+                            result: Err(err.clone()),
+                        }
+                    }
                     ManagedAuthReq::PollLogin {
                         auth_provider,
                         device_code,
@@ -744,8 +753,14 @@ fn managed_auth_worker_loop(rx: mpsc::Receiver<ManagedAuthReq>, tx: mpsc::Sender
                     result,
                 });
             }
-            ManagedAuthReq::StartLogin { auth_provider } => {
-                let result = rt.block_on(crate::services::AuthService::start_login(&auth_provider));
+            ManagedAuthReq::StartLogin {
+                auth_provider,
+                account_id,
+            } => {
+                let result = rt.block_on(crate::services::AuthService::start_login_for_account(
+                    &auth_provider,
+                    account_id.as_deref(),
+                ));
                 let _ = tx.send(ManagedAuthMsg::LoginStarted {
                     auth_provider,
                     result,
@@ -1946,6 +1961,17 @@ fn run_session_scan(
     scan_generation: u64,
     tx: &mpsc::Sender<SessionMsg>,
 ) {
+    if provider_id == "pi" {
+        if let Some(error) = crate::session_manager::providers::pi::session_discovery_error() {
+            let _ = tx.send(SessionMsg::ManifestPublished {
+                request_id,
+                scope_epoch,
+                scope: provider_id,
+                result: Err(error),
+            });
+            return;
+        }
+    }
     let manifest_store = match crate::session_manager::paged_manifest::PagedManifestStore::open() {
         Ok(store) => store,
         Err(error) => {
@@ -1959,27 +1985,23 @@ fn run_session_scan(
         }
     };
 
-    // Opening a scope reads one immutable page only. Sessions is intentionally
-    // manual-refresh-only: a valid persisted generation completes an ordinary
-    // entry request here, without walking or statting provider sources. A
-    // missing manifest falls through to the unavoidable one-time bootstrap.
+    // Opening a scope reads one immutable page only, so a persisted generation
+    // can paint immediately. Keep the request active afterward and revalidate
+    // provider sources through the sidecar cache; manual refresh alone forces
+    // unchanged files to be reparsed.
     let mut needs_provisional = false;
     if !force {
         let opened = manifest_store
             .open_reader(&provider_id)
             .and_then(|reader| reader.load_page(0).map(|page| (reader, page)));
         needs_provisional = opened.is_none();
-        let complete = opened.is_some();
         let _ = tx.send(SessionMsg::ScopeOpened {
             request_id,
             scope_epoch,
             scope: provider_id.clone(),
-            complete,
+            complete: false,
             result: Ok(opened),
         });
-        if complete {
-            return;
-        }
     }
 
     let store = match crate::session_manager::scan_cache_store::ScanCacheStore::open() {
@@ -3782,6 +3804,12 @@ fn skills_worker_loop(rx: mpsc::Receiver<SkillsReq>, tx: mpsc::Sender<SkillsMsg>
                             result: Err(err.clone()),
                         });
                     }
+                    SkillsReq::MigrateStorage { target } => {
+                        let _ = tx.send(SkillsMsg::StorageMigrated {
+                            target,
+                            result: Err(err.clone()),
+                        });
+                    }
                 }
             }
             return;
@@ -3820,6 +3848,12 @@ fn skills_worker_loop(rx: mpsc::Receiver<SkillsReq>, tx: mpsc::Sender<SkillsMsg>
                     }
                     SkillsReq::Update { .. } => {
                         let _ = tx.send(SkillsMsg::SkillsUpdated {
+                            result: Err(err.clone()),
+                        });
+                    }
+                    SkillsReq::MigrateStorage { target } => {
+                        let _ = tx.send(SkillsMsg::StorageMigrated {
+                            target,
                             result: Err(err.clone()),
                         });
                     }
@@ -3926,6 +3960,10 @@ fn skills_worker_loop(rx: mpsc::Receiver<SkillsReq>, tx: mpsc::Sender<SkillsMsg>
             SkillsReq::Update { ids } => {
                 let result = Ok(rt.block_on(service.update_skills(&ids)));
                 let _ = tx.send(SkillsMsg::SkillsUpdated { result });
+            }
+            SkillsReq::MigrateStorage { target } => {
+                let result = SkillService::migrate_storage(target).map_err(|e| e.to_string());
+                let _ = tx.send(SkillsMsg::StorageMigrated { target, result });
             }
         }
     }
@@ -4141,7 +4179,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(home_settings)]
-    fn session_entry_uses_valid_manifest_without_source_revalidation() {
+    fn session_entry_shows_cached_manifest_then_revalidates_sources() {
         let home = tempfile::tempdir().expect("isolated test home");
         let _env = crate::test_support::TestEnvGuard::isolated(home.path());
         let config_dir = home.path().join(".cc-switch");
@@ -4169,24 +4207,45 @@ mod tests {
             .expect("stage cached session");
         builder.publish().expect("publish cached manifest");
 
+        let project_dir = home.path().join(".claude").join("projects").join("project");
+        std::fs::create_dir_all(&project_dir).expect("create Claude project directory");
+        std::fs::write(
+            project_dir.join("fresh-session.jsonl"),
+            concat!(
+                "{\"sessionId\":\"fresh-session\",\"cwd\":\"/tmp/project\",\"timestamp\":\"2026-08-26T10:00:00Z\"}\n",
+                "{\"message\":{\"role\":\"user\",\"content\":\"hello\"},\"timestamp\":\"2026-08-26T10:01:00Z\"}\n"
+            ),
+        )
+        .expect("write fresh Claude session");
+
         let (tx, rx) = mpsc::channel();
-        run_session_scan(17, 3, "claude".to_string(), false, 0, &tx);
+        let generation = SESSION_SCAN_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+        run_session_scan(17, 3, "claude".to_string(), false, generation, &tx);
 
         assert!(matches!(
             rx.recv().expect("cached-open result"),
             SessionMsg::ScopeOpened {
                 request_id: 17,
                 scope_epoch: 3,
-                complete: true,
+                complete: false,
                 result: Ok(Some((_, page))),
                 ..
             } if page.rows.first().is_some_and(|row| row.session_id == "cached-session")
                 && page.rows.first().and_then(|row| row.usage).is_none()
         ));
-        assert!(
-            rx.try_recv().is_err(),
-            "a valid cached open must not publish a rebuilt manifest"
-        );
+        assert!(matches!(
+            rx.recv().expect("revalidated manifest"),
+            SessionMsg::ManifestPublished {
+                request_id: 17,
+                scope_epoch: 3,
+                result: Ok((published, _)),
+                ..
+            } if published.total_rows == 1
+                && published.first_page.rows.first().is_some_and(|row| {
+                    row.session_id == "fresh-session"
+                })
+        ));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

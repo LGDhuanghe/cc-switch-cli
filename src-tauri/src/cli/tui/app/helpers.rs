@@ -693,6 +693,8 @@ pub(crate) fn route_has_content_list(route: &Route) -> bool {
             | Route::Sessions
             | Route::Mcp
             | Route::Prompts
+            | Route::PiSystemPrompts
+            | Route::PiPromptTemplates
             | Route::HermesMemory
             | Route::Config
             | Route::ConfigOpenClawWorkspace
@@ -709,6 +711,7 @@ pub(crate) fn route_has_content_list(route: &Route) -> bool {
             | Route::SkillDetail { .. }
             | Route::Settings
             | Route::SettingsProxy
+            | Route::SettingsOutboundProxy
             | Route::SettingsManagedAccounts
     )
 }
@@ -1515,7 +1518,10 @@ pub(crate) fn failover_queue_position(data: &UiData, provider_id: &str) -> Optio
 }
 
 pub(crate) fn supports_provider_stream_check(app_type: &AppType) -> bool {
-    !matches!(app_type, AppType::Hermes | AppType::OpenClaw)
+    !matches!(
+        app_type,
+        AppType::Hermes | AppType::OpenClaw | AppType::Pi
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1757,11 +1763,27 @@ pub(crate) fn app_type_picker_index(app_type: &AppType) -> usize {
         AppType::OpenCode => 3,
         AppType::Hermes => 4,
         AppType::OpenClaw => 5,
+        AppType::Pi => 6,
     }
 }
 
 pub(crate) fn four_app_picker_index(app_type: &AppType) -> usize {
     app_type_picker_index(app_type).min(4)
+}
+
+pub(crate) fn skills_app_picker_index(app_type: &AppType) -> usize {
+    match app_type {
+        AppType::Pi | AppType::OpenClaw => 5,
+        _ => app_type_picker_index(app_type),
+    }
+}
+
+pub(crate) fn skill_app_type_for_picker_index(index: usize) -> AppType {
+    if index == 5 {
+        AppType::Pi
+    } else {
+        app_type_for_picker_index(index)
+    }
 }
 
 pub(crate) fn app_type_for_picker_index(index: usize) -> AppType {
@@ -1771,6 +1793,7 @@ pub(crate) fn app_type_for_picker_index(index: usize) -> AppType {
         3 => AppType::OpenCode,
         4 => AppType::Hermes,
         5 => AppType::OpenClaw,
+        6 => AppType::Pi,
         _ => AppType::Claude,
     }
 }
@@ -1784,21 +1807,31 @@ pub(crate) fn snippet_picker_app_type(index: usize) -> AppType {
     app_type_for_picker_index(index)
 }
 
-#[cfg(test)]
-#[allow(dead_code)]
 pub(crate) fn sync_method_picker_index(method: SyncMethod) -> usize {
     match method {
-        SyncMethod::Auto => 0,
-        SyncMethod::Symlink => 1,
-        SyncMethod::Copy => 2,
+        SyncMethod::Auto | SyncMethod::Symlink => 0,
+        SyncMethod::Copy => 1,
     }
 }
 
 pub(crate) fn sync_method_for_picker_index(index: usize) -> SyncMethod {
     match index {
-        1 => SyncMethod::Symlink,
-        2 => SyncMethod::Copy,
-        _ => SyncMethod::Auto,
+        1 => SyncMethod::Copy,
+        _ => SyncMethod::Symlink,
+    }
+}
+
+pub(crate) fn storage_location_picker_index(location: SkillStorageLocation) -> usize {
+    match location {
+        SkillStorageLocation::CcSwitch => 0,
+        SkillStorageLocation::Unified => 1,
+    }
+}
+
+pub(crate) fn storage_location_for_picker_index(index: usize) -> SkillStorageLocation {
+    match index {
+        1 => SkillStorageLocation::Unified,
+        _ => SkillStorageLocation::CcSwitch,
     }
 }
 

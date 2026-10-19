@@ -17,6 +17,37 @@ fn visible_apps_mode_label(mode: crate::settings::VisibleAppsMode) -> &'static s
     }
 }
 
+pub(super) fn set_global_outbound_proxy(
+    ctx: &mut RuntimeActionContext<'_>,
+    config: crate::services::GlobalOutboundProxyConfig,
+) -> Result<(), AppError> {
+    let state = load_state()?;
+    let full_url = config.to_full_url()?;
+    let daemon_warning = if full_url.is_empty() {
+        crate::services::global_proxy::clear(&state)?
+    } else {
+        crate::services::global_proxy::set(&state, &config)?
+    };
+    let persisted = (!full_url.is_empty())
+        .then(|| crate::services::GlobalOutboundProxyConfig::from_full_url(&full_url))
+        .transpose()?;
+    ctx.data.config.global_outbound_proxy = persisted.clone();
+    ctx.app.global_outbound_proxy_draft = Some(persisted.unwrap_or_default());
+    ctx.data.mark_current_app_data_changed();
+    ctx.app.push_toast(
+        if full_url.is_empty() {
+            crate::t!("Global outbound proxy cleared.", "全局出站代理已清除。")
+        } else {
+            crate::t!("Global outbound proxy saved.", "全局出站代理已保存。")
+        },
+        ToastKind::Success,
+    );
+    if let Some(message) = daemon_warning {
+        ctx.app.push_toast(message, ToastKind::Warning);
+    }
+    Ok(())
+}
+
 pub(super) fn set_proxy_enabled(
     ctx: &mut RuntimeActionContext<'_>,
     enabled: bool,
@@ -204,6 +235,68 @@ pub(super) fn set_openclaw_config_dir(
     Ok(())
 }
 
+pub(super) fn set_pi_config_dir(
+    ctx: &mut RuntimeActionContext<'_>,
+    path: Option<String>,
+) -> Result<(), AppError> {
+    let path = validate_pi_config_dir(path)?;
+    let mut settings = crate::settings::get_settings();
+    settings.pi_config_dir = path;
+    crate::settings::update_settings(settings)?;
+
+    let state = load_state()?;
+    let import_result =
+        crate::services::ProviderService::import_pi_providers_from_live(&state).err();
+
+    *ctx.data = UiData::load(&ctx.app.app_type)?;
+    ctx.app.push_toast(
+        texts::tui_toast_pi_config_dir_saved(),
+        super::super::app::ToastKind::Success,
+    );
+    if let Some(err) = import_result {
+        ctx.app.push_toast(
+            texts::tui_toast_pi_config_dir_import_failed(&err.to_string()),
+            super::super::app::ToastKind::Warning,
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_pi_config_dir(path: Option<String>) -> Result<Option<String>, AppError> {
+    let path = path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(raw) = path.as_deref() {
+        let resolved = crate::settings::resolve_override_path(raw);
+        if !resolved.is_absolute() {
+            return Err(AppError::InvalidInput(format!(
+                "Pi config directory must resolve to an absolute path: {}",
+                resolved.display()
+            )));
+        }
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
+mod pi_config_dir_tests {
+    use super::validate_pi_config_dir;
+
+    #[test]
+    fn pi_config_dir_is_validated_before_persistence() {
+        assert!(validate_pi_config_dir(Some("relative/pi".to_string())).is_err());
+        assert_eq!(
+            validate_pi_config_dir(Some(" /tmp/pi-agent ".to_string())).unwrap(),
+            Some("/tmp/pi-agent".to_string())
+        );
+        assert_eq!(
+            validate_pi_config_dir(Some("   ".to_string())).unwrap(),
+            None
+        );
+    }
+}
+
 pub(super) fn set_preferred_editor(
     ctx: &mut RuntimeActionContext<'_>,
     command: Option<String>,
@@ -340,6 +433,7 @@ pub(super) fn managed_auth_refresh(
 pub(super) fn managed_auth_start_login(
     ctx: &mut RuntimeActionContext<'_>,
     auth_provider: String,
+    account_id: Option<String>,
 ) -> Result<(), AppError> {
     let Some(tx) = ctx.managed_auth_req_tx else {
         ctx.app.push_toast(
@@ -352,7 +446,10 @@ pub(super) fn managed_auth_start_login(
     };
 
     ctx.app.managed_auth_loading = true;
-    if let Err(err) = tx.send(ManagedAuthReq::StartLogin { auth_provider }) {
+    if let Err(err) = tx.send(ManagedAuthReq::StartLogin {
+        auth_provider,
+        account_id,
+    }) {
         ctx.app.managed_auth_loading = false;
         ctx.app.push_toast(
             texts::tui_toast_managed_auth_request_failed(&err.to_string()),

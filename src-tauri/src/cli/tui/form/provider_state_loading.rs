@@ -28,6 +28,7 @@ pub(super) fn populate_form_from_provider(
         AppType::OpenCode => populate_opencode_form(form, provider),
         AppType::Hermes => populate_hermes_form(form, provider),
         AppType::OpenClaw => populate_openclaw_form(form, provider),
+        AppType::Pi => populate_openclaw_form(form, provider),
     }
     form.is_full_url = form.supports_full_url_mode()
         && provider
@@ -64,7 +65,7 @@ fn populate_local_proxy_settings_form(form: &mut ProviderAddFormState, provider:
     }
 }
 
-fn populate_usage_query_form(form: &mut ProviderAddFormState, provider: &Provider) {
+pub(super) fn populate_usage_query_form(form: &mut ProviderAddFormState, provider: &Provider) {
     form.usage_query_official_subscription = provider
         .official_subscription_tool(&form.app_type)
         .is_some();
@@ -192,7 +193,7 @@ fn populate_claude_form(form: &mut ProviderAddFormState, provider: &Provider) {
             .get(CLAUDE_DEFAULT_MODEL_ENV_KEY)
             .and_then(|value| value.as_str())
         {
-            form.claude_model.set(model);
+            form.set_claude_fallback_model_from_config(model);
         }
         let model = env
             .get(CLAUDE_DEFAULT_MODEL_ENV_KEY)
@@ -458,6 +459,8 @@ fn populate_openclaw_form(form: &mut ProviderAddFormState, provider: &Provider) 
         .and_then(|value| value.as_str())
     {
         form.opencode_npm_package.set(api);
+    } else if matches!(form.app_type, AppType::Pi) {
+        form.opencode_npm_package.set("");
     } else {
         form.opencode_npm_package.set(OPENCLAW_DEFAULT_API_PROTOCOL);
     }

@@ -49,6 +49,7 @@ fn normalize_route_for_app(app_type: &AppType, route: &super::route::Route) -> s
             | super::route::Route::ConfigOpenClawAgents
             | super::route::Route::Settings
             | super::route::Route::SettingsProxy
+            | super::route::Route::SettingsOutboundProxy
             | super::route::Route::SettingsManagedAccounts => route.clone(),
             _ => super::route::Route::Main,
         },
@@ -68,6 +69,27 @@ fn normalize_route_for_app(app_type: &AppType, route: &super::route::Route) -> s
             | super::route::Route::SkillDetail { .. }
             | super::route::Route::Settings
             | super::route::Route::SettingsProxy
+            | super::route::Route::SettingsOutboundProxy
+            | super::route::Route::SettingsManagedAccounts => route.clone(),
+            _ => super::route::Route::Main,
+        },
+        AppType::Pi => match route {
+            super::route::Route::Main
+            | super::route::Route::Providers
+            | super::route::Route::Usage
+            | super::route::Route::UsageLogs
+            | super::route::Route::UsageLogDetail { .. }
+            | super::route::Route::Pricing
+            | super::route::Route::Sessions
+            | super::route::Route::Prompts
+            | super::route::Route::PiSystemPrompts
+            | super::route::Route::PiPromptTemplates
+            | super::route::Route::Skills
+            | super::route::Route::SkillsDiscover
+            | super::route::Route::SkillsRepos
+            | super::route::Route::SkillDetail { .. }
+            | super::route::Route::Settings
+            | super::route::Route::SettingsProxy
             | super::route::Route::SettingsManagedAccounts => route.clone(),
             _ => super::route::Route::Main,
         },
@@ -78,6 +100,9 @@ fn normalize_route_for_app(app_type: &AppType, route: &super::route::Route) -> s
             | super::route::Route::ConfigOpenClawTools
             | super::route::Route::ConfigOpenClawAgents => super::route::Route::Config,
             super::route::Route::HermesMemory => super::route::Route::Main,
+            super::route::Route::PiSystemPrompts | super::route::Route::PiPromptTemplates => {
+                super::route::Route::Main
+            }
             _ => route.clone(),
         },
     }
@@ -619,6 +644,7 @@ pub(crate) fn handle_action(
                 return Ok(());
             };
             if ctx.app.sessions.scan_active.is_none() {
+                ctx.app.sessions.take_deferred_manual_refresh(&provider_id);
                 let request_id = ctx.app.sessions.start_scan(provider_id.clone());
                 ctx.app.sessions.mark_manual_refresh(request_id);
                 if let Err(err) = tx.send(SessionReq::Refresh {
@@ -636,6 +662,8 @@ pub(crate) fn handle_action(
                     );
                     return Ok(());
                 }
+            } else if !ctx.app.sessions.manual_refresh_is_active() {
+                ctx.app.sessions.defer_manual_refresh(provider_id);
             }
             queue_active_session_message_refresh(ctx.app, tx);
             Ok(())
@@ -848,6 +876,9 @@ pub(crate) fn handle_action(
         Action::SkillsUninstall { directory } => skills::uninstall(&mut ctx, directory),
         Action::SkillsSync { app: scope } => skills::sync(&mut ctx, scope),
         Action::SkillsSetSyncMethod { method } => skills::set_sync_method(&mut ctx, method),
+        Action::SkillsSetStorageLocation { location } => {
+            skills::set_storage_location(&mut ctx, location)
+        }
         Action::SkillsDiscover {
             query,
             source,
@@ -902,6 +933,8 @@ pub(crate) fn handle_action(
             is_full_url,
             api_key,
             custom_user_agent,
+            api_protocol,
+            request_headers,
             codex_oauth,
             codex_oauth_account_id,
             field,
@@ -912,6 +945,8 @@ pub(crate) fn handle_action(
             is_full_url,
             api_key,
             custom_user_agent,
+            api_protocol,
+            request_headers,
             codex_oauth,
             codex_oauth_account_id,
             field,
@@ -939,6 +974,26 @@ pub(crate) fn handle_action(
             content,
         } => prompts::save(&mut ctx, old_id, new_id, name, description, content),
         Action::PromptDelete { id } => prompts::delete(&mut ctx, id),
+        Action::PiSystemPromptDelete {
+            kind,
+            expected_revision,
+        } => prompts::delete_pi_system_prompt(&mut ctx, kind, expected_revision),
+        Action::PiPromptTemplateDelete {
+            slug,
+            expected_revision,
+        } => prompts::delete_pi_prompt_template(&mut ctx, slug, expected_revision),
+        Action::PiPromptTemplateRename {
+            original_slug,
+            new_slug,
+            expected_revision,
+            content,
+        } => prompts::rename_pi_prompt_template(
+            &mut ctx,
+            original_slug,
+            new_slug,
+            expected_revision,
+            content,
+        ),
         Action::PromptFormOpenExternal => prompts::open_form_external(&mut ctx),
         Action::PromptOpenImportCandidate { filename, content } => {
             prompts::open_import_candidate(&mut ctx, filename, content)
@@ -1033,6 +1088,9 @@ pub(crate) fn handle_action(
             settings::set_proxy_listen_address(&mut ctx, address)
         }
         Action::SetProxyListenPort { port } => settings::set_proxy_listen_port(&mut ctx, port),
+        Action::SetGlobalOutboundProxy { config } => {
+            settings::set_global_outbound_proxy(&mut ctx, config)
+        }
         Action::SetProxyAutoFailover { app_type, enabled } => {
             settings::set_proxy_auto_failover(&mut ctx, app_type, enabled)
         }
@@ -1040,6 +1098,7 @@ pub(crate) fn handle_action(
             settings::enable_proxy_and_auto_failover(&mut ctx, app_type)
         }
         Action::SetOpenClawConfigDir { path } => settings::set_openclaw_config_dir(&mut ctx, path),
+        Action::SetPiConfigDir { path } => settings::set_pi_config_dir(&mut ctx, path),
         Action::SetPreferredEditor { command } => settings::set_preferred_editor(&mut ctx, command),
         Action::SetManagedProxyForCurrentApp { app_type, enabled } => queue_managed_proxy_action(
             ctx.app,
@@ -1066,8 +1125,19 @@ pub(crate) fn handle_action(
         Action::ManagedAuthRefresh { auth_provider } => {
             settings::managed_auth_refresh(&mut ctx, auth_provider)
         }
-        Action::ManagedAuthStartLogin { auth_provider } => {
-            settings::managed_auth_start_login(&mut ctx, auth_provider)
+        Action::ManagedAuthStartLogin {
+            auth_provider,
+            account_id,
+        } => settings::managed_auth_start_login(&mut ctx, auth_provider, account_id),
+        Action::ManagedAuthCancelLogin { device_code } => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| AppError::Message(e.to_string()))?;
+            rt.block_on(
+                crate::services::CodexOAuthService::manager().cancel_device_flow(&device_code),
+            );
+            Ok(())
         }
         Action::ManagedAuthSetDefault {
             auth_provider,
@@ -1230,6 +1300,38 @@ mod tests {
         )
     }
 
+    fn run_action_with_skills(
+        app: &mut App,
+        data: &mut UiData,
+        skills_req_tx: &mpsc::Sender<SkillsReq>,
+        action: Action,
+    ) -> Result<(), AppError> {
+        let mut terminal = TuiTerminal::new_for_test().expect("create terminal");
+        let mut proxy_loading = RequestTracker::default();
+        let mut webdav_loading = RequestTracker::default();
+        let mut update_check = RequestTracker::default();
+
+        handle_action(
+            &mut terminal,
+            app,
+            data,
+            None,
+            None,
+            Some(skills_req_tx),
+            None,
+            &mut proxy_loading,
+            None,
+            None,
+            None,
+            &mut webdav_loading,
+            None,
+            &mut update_check,
+            None,
+            None,
+            action,
+        )
+    }
+
     fn app_with_base_session_manifest() -> (App, TempDir) {
         let manifest_dir = tempfile::tempdir().expect("manifest fixture directory");
         let store = crate::session_manager::paged_manifest::PagedManifestStore::open_at(
@@ -1284,6 +1386,41 @@ mod tests {
             app.sessions.take_cost_overlay_request(),
             "route re-entry must recover discarded or stale background cost results"
         );
+    }
+
+    #[test]
+    fn storage_migration_retires_a_pending_discovery_result() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.skills_discover_active_request_id = Some(7);
+        app.skills_discover_loading = true;
+        let mut data = UiData::default();
+        let (tx, rx) = mpsc::channel();
+
+        run_action_with_skills(
+            &mut app,
+            &mut data,
+            &tx,
+            Action::SkillsSetStorageLocation {
+                location: crate::services::skill::SkillStorageLocation::Unified,
+            },
+        )
+        .expect("queue storage migration");
+
+        assert!(app.skills_discover_active_request_id.is_none());
+        assert!(!app.skills_discover_loading);
+        assert!(matches!(
+            rx.recv().expect("migration request"),
+            SkillsReq::MigrateStorage {
+                target: crate::services::skill::SkillStorageLocation::Unified
+            }
+        ));
+        assert!(matches!(
+            app.overlay,
+            Overlay::Loading {
+                kind: super::super::app::LoadingKind::SkillOperation,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1447,6 +1584,7 @@ mod tests {
             .expect("manual refresh during list scan");
 
         assert_eq!(app.sessions.scan_active, Some(scan_request));
+        assert!(app.sessions.manual_refresh_is_deferred_for("codex"));
         assert!(matches!(
             rx.recv().expect("transcript refresh"),
             SessionReq::LoadMessagePage {
@@ -1457,6 +1595,31 @@ mod tests {
                 ..
             } if queued_key == key
         ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn repeated_manual_sessions_refresh_does_not_queue_another_full_scan() {
+        let mut app = App::new(Some(AppType::Codex));
+        let mut data = UiData::default();
+        let (tx, rx) = mpsc::channel();
+
+        run_action_with_sessions(&mut app, &mut data, &tx, Action::SessionsRefresh)
+            .expect("first manual refresh");
+        assert!(matches!(
+            rx.recv().expect("full refresh"),
+            SessionReq::Refresh {
+                provider_id,
+                force: true,
+                ..
+            } if provider_id == "codex"
+        ));
+
+        run_action_with_sessions(&mut app, &mut data, &tx, Action::SessionsRefresh)
+            .expect("repeated manual refresh");
+
+        assert!(app.sessions.manual_refresh_is_active());
+        assert!(!app.sessions.manual_refresh_is_deferred_for("codex"));
         assert!(rx.try_recv().is_err());
     }
 
@@ -1715,6 +1878,7 @@ mod tests {
             opencode: true,
             hermes: false,
             openclaw: true,
+            pi: false,
         })
         .expect("save initial visible apps");
 
@@ -1725,6 +1889,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         };
         let mut app = App::new(Some(AppType::OpenClaw));
         app.route = Route::ConfigOpenClawTools;
@@ -1785,6 +1950,7 @@ mod tests {
             opencode: true,
             hermes: false,
             openclaw: true,
+            pi: false,
         };
         crate::settings::set_visible_apps(initial_visible_apps.clone())
             .expect("save initial visible apps");
@@ -1807,6 +1973,7 @@ mod tests {
                     opencode: false,
                     hermes: false,
                     openclaw: false,
+                    pi: false,
                 },
             },
         )
@@ -1835,6 +2002,7 @@ mod tests {
             opencode: true,
             hermes: false,
             openclaw: true,
+            pi: false,
         })
         .expect("save initial visible apps");
         write_invalid_legacy_config(temp_home.path());
@@ -1846,6 +2014,7 @@ mod tests {
             opencode: true,
             hermes: false,
             openclaw: false,
+            pi: false,
         };
         let mut app = App::new(Some(AppType::Claude));
         let mut data = UiData::default();
@@ -1883,6 +2052,7 @@ mod tests {
             opencode: true,
             hermes: false,
             openclaw: true,
+            pi: false,
         };
         crate::settings::set_visible_apps(initial_visible_apps.clone())
             .expect("save initial visible apps");
@@ -1902,6 +2072,7 @@ mod tests {
                     opencode: false,
                     hermes: false,
                     openclaw: false,
+                    pi: false,
                 },
             },
         )
@@ -1931,6 +2102,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         };
         settings.visible_apps_settings.mode = crate::settings::VisibleAppsMode::Auto;
         settings.visible_apps_settings.auto_prompt_decided = true;
@@ -1943,6 +2115,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         };
         let mut app = App::new(Some(AppType::Claude));
         let mut data = UiData::default();
@@ -1989,6 +2162,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: true,
+            pi: false,
         };
         let mut settings = crate::settings::get_settings();
         settings.visible_apps = initial_visible_apps.clone();
@@ -2015,6 +2189,7 @@ mod tests {
                     opencode: false,
                     hermes: false,
                     openclaw: false,
+                    pi: false,
                 },
                 selected: 5,
             },

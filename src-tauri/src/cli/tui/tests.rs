@@ -255,6 +255,25 @@ fn sessions_help_describes_costs_as_local_estimates_without_ui_prefixes() {
     assert!(!chinese.contains('~'), "{chinese}");
 }
 
+#[test]
+fn pi_native_prompt_pages_put_behavioral_guidance_in_context_help() {
+    let mut app = App::new(Some(AppType::Pi));
+    let data = UiData::default();
+    let _english = crate::cli::i18n::use_test_language(crate::cli::i18n::Language::English);
+
+    app.route = route::Route::PiSystemPrompts;
+    let system = help::context_help_for_app(&app, &data).lines.join("\n");
+    assert!(system.contains("APPEND_SYSTEM.md"), "{system}");
+    assert!(system.contains("replaces"), "{system}");
+    assert!(system.contains("conflict"), "{system}");
+
+    app.route = route::Route::PiPromptTemplates;
+    let templates = help::context_help_for_app(&app, &data).lines.join("\n");
+    assert!(templates.contains("prompts/*.md"), "{templates}");
+    assert!(templates.contains("slash-command"), "{templates}");
+    assert!(templates.contains("traversal"), "{templates}");
+}
+
 struct EnvGuard {
     _lock: TestHomeSettingsLock,
     old_home: Option<OsString>,
@@ -1178,7 +1197,7 @@ fn no_op_reload_candidate_preserves_pending_app_data_load() {
 }
 
 #[test]
-fn switch_to_sessions_queues_cached_open_without_forcing_source_refresh() {
+fn switch_to_sessions_queues_cache_aware_source_refresh() {
     let mut terminal = TuiTerminal::new_for_test().expect("create terminal");
     let mut app = App::new(Some(AppType::Codex));
     let mut data = UiData::default();
@@ -1284,6 +1303,39 @@ fn failed_automatic_sessions_scan_is_not_retried_each_event_loop() {
     assert_eq!(
         app.sessions.last_error.as_deref(),
         Some("injected disk-full failure")
+    );
+}
+
+#[test]
+fn deferred_manual_sessions_refresh_runs_once_after_automatic_scan_settles() {
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = route::Route::Sessions;
+    let automatic_request = app.sessions.start_scan("claude".to_string());
+    app.sessions.defer_manual_refresh("claude".to_string());
+    let (tx, rx) = mpsc::channel();
+
+    queue_sessions_refresh_if_needed(&mut app, Some(&tx));
+    assert!(rx.try_recv().is_err(), "the active scan remains serialized");
+
+    app.sessions
+        .fail_scan(automatic_request, "injected automatic failure".to_string());
+    queue_sessions_refresh_if_needed(&mut app, Some(&tx));
+
+    let forced_request = match rx.recv().expect("deferred manual refresh") {
+        SessionReq::Refresh {
+            request_id,
+            provider_id,
+            force: true,
+            ..
+        } if provider_id == "claude" => request_id,
+        other => panic!("unexpected sessions request: {other:?}"),
+    };
+    assert!(app.sessions.take_manual_refresh_publication(forced_request));
+
+    queue_sessions_refresh_if_needed(&mut app, Some(&tx));
+    assert!(
+        rx.try_recv().is_err(),
+        "the deferred refresh runs only once"
     );
 }
 
@@ -5330,6 +5382,7 @@ async fn model_fetch_full_url_reports_when_models_endpoint_cannot_be_derived() {
         None,
         None,
         ModelFetchStrategy::Bearer,
+        None,
     )
     .await
     .expect_err("origin-only full URL should not invent a models endpoint");
@@ -5377,6 +5430,7 @@ async fn model_fetch_sends_trimmed_custom_user_agent() {
         Some("sk-test"),
         Some("  cc-switch-model-fetch/test  "),
         ModelFetchStrategy::Bearer,
+        None,
     )
     .await
     .expect("model fetch should succeed");
@@ -5404,6 +5458,7 @@ fn startup_hidden_requested_app_bootstrap_uses_visible_app_normalization_before_
         opencode: true,
         hermes: false,
         openclaw: true,
+        pi: false,
     })
     .expect("save visible apps");
 

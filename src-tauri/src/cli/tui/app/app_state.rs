@@ -66,6 +66,9 @@ pub enum Action {
     SkillsSetSyncMethod {
         method: SyncMethod,
     },
+    SkillsSetStorageLocation {
+        location: SkillStorageLocation,
+    },
     SkillsDiscover {
         query: String,
         source: SkillsDiscoverSource,
@@ -129,6 +132,8 @@ pub enum Action {
         is_full_url: bool,
         api_key: Option<String>,
         custom_user_agent: Option<String>,
+        api_protocol: Option<String>,
+        request_headers: Option<std::collections::BTreeMap<String, String>>,
         codex_oauth: bool,
         codex_oauth_account_id: Option<String>,
         field: ProviderAddField,
@@ -151,6 +156,10 @@ pub enum Action {
     },
     ManagedAuthStartLogin {
         auth_provider: String,
+        account_id: Option<String>,
+    },
+    ManagedAuthCancelLogin {
+        device_code: String,
     },
     ManagedAuthSetDefault {
         auth_provider: String,
@@ -196,6 +205,20 @@ pub enum Action {
     },
     PromptDelete {
         id: String,
+    },
+    PiSystemPromptDelete {
+        kind: crate::services::pi_prompt_files::PiPromptFileKind,
+        expected_revision: String,
+    },
+    PiPromptTemplateDelete {
+        slug: String,
+        expected_revision: String,
+    },
+    PiPromptTemplateRename {
+        original_slug: String,
+        new_slug: String,
+        expected_revision: String,
+        content: String,
     },
     PromptFormOpenExternal,
     PromptOpenImportCandidate {
@@ -314,10 +337,16 @@ pub enum Action {
         app_type: AppType,
         enabled: bool,
     },
+    SetGlobalOutboundProxy {
+        config: crate::services::GlobalOutboundProxyConfig,
+    },
     EnableProxyAndAutoFailover {
         app_type: AppType,
     },
     SetOpenClawConfigDir {
+        path: Option<String>,
+    },
+    SetPiConfigDir {
         path: Option<String>,
     },
     SetPreferredEditor {
@@ -497,18 +526,22 @@ pub enum SettingsItem {
     PreferredEditor,
     VisibleAppsMode,
     VisibleApps,
+    SkillsStorageLocation,
+    SkillsSyncMethod,
     OpenClawConfigDir,
+    PiConfigDir,
     ManagedAccounts,
     SkipClaudeOnboarding,
     ClaudePluginIntegration,
     PreserveCodexOfficialAuth,
     CodexUnifiedSessionHistory,
     Proxy,
+    OutboundProxy,
     CheckForUpdates,
 }
 
 impl SettingsItem {
-    pub const ALL: [SettingsItem; 14] = [
+    pub const ALL: [SettingsItem; 18] = [
         SettingsItem::ManagedAccounts,
         SettingsItem::Language,
         SettingsItem::Theme,
@@ -516,13 +549,32 @@ impl SettingsItem {
         SettingsItem::PreferredEditor,
         SettingsItem::VisibleAppsMode,
         SettingsItem::VisibleApps,
+        SettingsItem::SkillsStorageLocation,
+        SettingsItem::SkillsSyncMethod,
         SettingsItem::OpenClawConfigDir,
+        SettingsItem::PiConfigDir,
         SettingsItem::SkipClaudeOnboarding,
         SettingsItem::ClaudePluginIntegration,
         SettingsItem::PreserveCodexOfficialAuth,
         SettingsItem::CodexUnifiedSessionHistory,
         SettingsItem::Proxy,
+        SettingsItem::OutboundProxy,
         SettingsItem::CheckForUpdates,
+    ];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalOutboundProxySettingsItem {
+    Url,
+    Username,
+    Password,
+}
+
+impl GlobalOutboundProxySettingsItem {
+    pub const ALL: [GlobalOutboundProxySettingsItem; 3] = [
+        GlobalOutboundProxySettingsItem::Url,
+        GlobalOutboundProxySettingsItem::Username,
+        GlobalOutboundProxySettingsItem::Password,
     ];
 }
 
@@ -722,6 +774,8 @@ pub struct App {
     pub provider_idx: usize,
     pub mcp_idx: usize,
     pub prompt_idx: usize,
+    pub pi_system_prompt_idx: usize,
+    pub pi_prompt_template_idx: usize,
     pub skills_idx: usize,
     pub skills_discover_idx: usize,
     pub skills_repo_idx: usize,
@@ -754,6 +808,8 @@ pub struct App {
     pub language_idx: usize,
     pub settings_idx: usize,
     pub settings_proxy_idx: usize,
+    pub settings_outbound_proxy_idx: usize,
+    pub global_outbound_proxy_draft: Option<crate::services::GlobalOutboundProxyConfig>,
     pub settings_managed_accounts_idx: usize,
     pub managed_auth_status: Option<crate::services::ManagedAuthStatus>,
     pub managed_auth_loading: bool,

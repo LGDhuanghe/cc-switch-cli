@@ -4,16 +4,16 @@
 
 ## CC-Switch CLI
 
-**Manage Claude Code, Codex, Gemini, OpenCode, Hermes, and OpenClaw from one interactive TUI or scriptable CLI.**
+**Manage Claude Code, Codex, Gemini, OpenCode, Hermes, OpenClaw, and Pi from one interactive TUI or scriptable CLI.**
 
-[![Version](https://img.shields.io/badge/version-5.10.1-blue.svg)](https://github.com/saladday/cc-switch-cli/releases)
+[![Version](https://img.shields.io/badge/version-5.11.2-blue.svg)](https://github.com/saladday/cc-switch-cli/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/saladday/cc-switch-cli/releases)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 <a href="https://trendshift.io/repositories/22544" target="_blank"><img src="https://trendshift.io/api/badge/repositories/22544" alt="SaladDay%2Fcc-switch-cli | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
-English | [中文](README_ZH.md)
+English | [中文](README_ZH.md) | [日本語](README_JA.md)
 
 </div>
 
@@ -21,7 +21,7 @@ English | [中文](README_ZH.md)
 
 ## 📖 About
 
-This project is a **CLI fork** of [CC-Switch](https://github.com/farion1231/cc-switch). 
+This project is a **CLI fork** of [CC-Switch](https://github.com/farion1231/cc-switch).
 
 🔄 The WebDAV sync feature is fully compatible with the upstream project.
 
@@ -32,25 +32,15 @@ This project is a **CLI fork** of [CC-Switch](https://github.com/farion1231/cc-s
 
 ## ❤️ Sponsor
 
-[![AICodeMirror](assets/partners/banners/aicodemirror.png)](https://www.aicodemirror.ai/register?invitecode=77V9EA)
-
-Thanks to **AICodeMirror** for sponsoring this project! AICodeMirror provides highly reliable official relay services for Claude, Codex, and Gemini, supporting enterprise-grade concurrency, fast invoice issuance, and dedicated 24/7 technical support. Official Codex access is available for as little as **7% of the standard price**, with additional discounts on account top-ups!
-
-AICodeMirror also offers an exclusive benefit to users of the CC-Switch CLI project: register through [this link](https://www.aicodemirror.ai/register?invitecode=77V9EA) to receive **20% off your first top-up**.
-
----
-
 <table>
   <tr>
-    <td width="180">
-      <a href="https://console.apito.ai/agent/register/Bsi9NDlWGpkPoAii">
-        <img src="assets/partners/logos/claudeapi.png" alt="ClaudeAPI" width="150">
-      </a>
-    </td>
-    <td>
-      Thanks to <b>ClaudeAPI</b> for supporting this project! <b>ClaudeAPI</b> is a Claude-focused API access provider built on official and AWS channels, offering high stability, low latency, and full support for Claude Code, Codex, Agent workflows, and enterprise use cases. It also supports business onboarding, team usage management, and invoicing. Exclusive offer for CC-Switch CLI users: register via this <a href="https://console.apito.ai/agent/register/Bsi9NDlWGpkPoAii">exclusive link</a> to receive free trial credits and get started with Claude Code instantly.
-    </td>
-  </tr>
+<td width="180"><a href="https://88api.ai/sign-up?aff=TeNl"><img src="assets/partners/logos/88api-banner-en.jpg" alt="88API" width="150"></a></td>
+<td>Thanks to 88API Token Aggregation Platform for sponsoring this project! 88API is a one-stop multi-model API platform operated by a Hong Kong company, built mainly for developers, creators and AI application users. A unified interface gives access to text, image, speech and video models, covering common workflows such as AI coding, smart translation, content creation, voice-over, image generation and video generation. You can add it as a provider and switch to it right inside CC-Switch CLI. 88API supports major international payment methods, can issue invoices, and provides enterprise-grade stable service. Register via <a href="https://88api.ai/sign-up?aff=TeNl">this link</a> to receive exclusive bonus credits!</td>
+</tr>
+  <tr>
+<td width="180"><a href="https://go.apimart.ai/gh-cc-switch-cli"><img src="assets/partners/logos/apimart.png" alt="APIMart" width="150"></a></td>
+<td>Thanks to APIMart for sponsoring this project! APIMart is a low-cost API platform for AI image &amp; video generation — GPT-Image-2 from $0.006/image, 160+ images per dollar. One async API covers both image and video: submit a task, get an ID, fetch results via polling or callback. Batch tens of thousands of images without timeouts, switch models without changing code. Pay-as-you-go with no monthly fee — <a href="https://go.apimart.ai/gh-cc-switch-cli">sign up here</a> to get started.</td>
+</tr>
   <tr>
     <td width="180">
       <a href="https://cubence.com/signup?code=SC3M1CAH&source=ccscli">
@@ -71,38 +61,8 @@ AICodeMirror also offers an exclusive benefit to users of the CC-Switch CLI proj
       One API, every top model! <a href="https://www.openmodel.ai/?ref=JGDNqZl8"><b>OpenModel</b></a> is a production-grade, high-availability AI API gateway that makes your applications truly fast and stable: automatic failover, smart routing to the best-performing channel, and a production-grade SLA. An SLA that far surpasses any single provider — making stability your core competitive advantage. Works directly with Claude Code, Codex, and Gemini CLI. Register via <a href="https://www.openmodel.ai/?ref=JGDNqZl8">this link</a> to get started.
     </td>
   </tr>
-  <tr>
-    <td width="180">
-      <a href="https://runapi.co/register?aff=kTlB">
-        <img src="assets/partners/logos/runapi.png" alt="RunAPI" width="150">
-      </a>
-    </td>
-    <td>
-      Thanks to <b>RunAPI</b> for sponsoring this project! <a href="https://runapi.co/register?aff=kTlB"><b>RunAPI</b></a> is a fast, stable API platform and OpenRouter alternative. One API key gives access to 150+ mainstream models, including OpenAI, Claude, Gemini, DeepSeek, and Grok, with prices as low as 10% of the original cost. It works with tools such as Claude Code and OpenClaw. Exclusive benefit for cc-switch-cli users: register and contact the admin to claim CNY 7 in free credits.
-    </td>
-  </tr>
-  <tr>
-    <td width="180">
-      <a href="https://s.qiniu.com/FVfiEb">
-        <img src="assets/partners/logos/qiniuyun.png" alt="Qiniu Cloud AI" width="150">
-      </a>
-    </td>
-    <td>
-      Thanks to <b>Qiniu Cloud AI</b> for sponsoring this project! <b>Qiniu Cloud AI</b> is an enterprise-grade large-model MaaS platform from <b>Qiniu Cloud (HKEX: 02567)</b>, offering one-stop access to 150+ mainstream models worldwide, compatibility with the protocols of major global model vendors, and full-modality coverage across text, image, audio, video, and file processing — serving over <b>1.69 million</b> enterprise and developer users. <br/>
-      Exclusive benefits: enterprise users can claim <b>12 million free tokens</b>, and referring friends can earn up to <b>tens of billions of tokens</b>. Register via <a href="https://s.qiniu.com/FVfiEb">this link</a>.
-    </td>
-  </tr>
-  <tr>
-    <td width="180">
-      <a href="https://api.fenno.ai/register?redirect=/purchase?tab=subscription%26group=16&aff=Z6XB52KCVP6Y">
-        <img src="assets/partners/logos/fennoai.png" alt="Fenno.ai" width="150">
-      </a>
-    </td>
-    <td>
-      Thanks to <b>Fenno.ai</b> for sponsoring this project! Fenno.ai is a stable, efficient API relay provider currently focused on Codex relay. It is compatible with both the OpenAI and Anthropic protocols and plugs smoothly into mainstream coding tools such as Codex, Claude Code, and OpenCode, reliably sustaining enterprise workloads of hundreds of billions of tokens per day, with corporate (B2B) settlement and invoicing for both domestic and overseas entities. <br/>
-      Exclusive benefit for CC-Switch CLI users: register via <a href="https://api.fenno.ai/register?redirect=/purchase?tab=subscription%26group=16&aff=Z6XB52KCVP6Y">this link</a> to subscribe to a great-value Coding Plan — <b>¥9.9 for $150 of credit</b> — and earn up to a <b>20% reward</b> for referrals; the more you invite, the more you get!
-    </td>
-  </tr>
+
+
   <tr>
     <td width="180">
       <a href="https://www.packyapi.com/register?aff=cc-switch-cli">
@@ -166,6 +126,7 @@ cc-switch provider export <id>       # Export a Claude provider to a standalone 
 cc-switch provider stream-check <id> # Check provider stream health
 cc-switch start claude <id>          # Launch Claude with this provider without switching globally
 cc-switch start codex <id>           # Launch Codex with this provider without switching globally
+cc-switch start codex <id> --shared-sessions # Share persistent Codex history across providers
 cc-switch start claude <id> --dry-run # Preview the launch without starting Claude
 cc-switch auth list                  # List managed ChatGPT/Codex OAuth accounts
 cc-switch sessions list --all        # Review saved assistant sessions
@@ -181,11 +142,16 @@ cc-switch --app codex mcp sync          # Sync Codex MCP servers
 cc-switch --app gemini prompts list     # List Gemini prompts
 cc-switch --app hermes provider list    # Manage Hermes providers
 cc-switch --app openclaw provider list  # Manage OpenClaw providers
+cc-switch --app pi provider list        # Manage Pi providers
 
-# Supported apps: `claude` (default), `codex`, `gemini`, `opencode`, `hermes`, `openclaw`
+# Supported apps: `claude` (default), `codex`, `gemini`, `opencode`, `hermes`, `openclaw`, `pi`
 ```
 
 Use `cc-switch start` when you want different providers in multiple terminals. It only affects the Claude or Codex session launched by that command; `provider switch` and `use` still change the global provider. In the TUI, select a provider on the Providers page and press `o` for the same behavior.
+
+On macOS/Linux, add `--shared-sessions` to `start codex` to share the configured Codex home's sessions, archived sessions, and SQLite history index. Each provider uses a persistent, private directory under that home's `.cc-switch-launches/`; these directories must remain in place because Codex records session paths through them. Different providers can run concurrently; a second shared launch of the same provider is rejected while the first is running. Codex's per-thread writer locks are shared too, so close an active session before resuming it from another provider. Login changes are saved back to that provider, while launch-specific configuration is kept out of the saved provider settings. Native `--model`, `resume`, and `fork` arguments are supported; `--config`, `--profile`, and `--oss` overrides are not supported in shared mode.
+
+Shared launches use the existing unified `custom` provider identifier without changing the global history setting. To include older official sessions, use the existing **Unified Codex session history** setting and its optional migration. Cross-provider continuation still depends on the upstream accepting the old conversation's content, including encrypted reasoning. The default temporary launch and the TUI `o` shortcut remain unchanged.
 
 See the "Features" section for full command list.
 
@@ -310,7 +276,10 @@ copy target\release\cc-switch.exe C:\Windows\System32\
 
 ### 🔌 Provider Management
 
-Manage API configurations for **Claude Code**, **Codex**, **Gemini**, **OpenCode**, **Hermes**, and **OpenClaw**.
+Manage API configurations for **Claude Code**, **Codex**, **Gemini**, **OpenCode**, **Hermes**, **OpenClaw**, and **Pi**.
+
+Pi provider management follows Pi's native additive model: membership comes from `models.json.providers`. CC-Switch does not modify Pi login credentials or its global default provider/model.
+The Pi TUI keeps the same table/form/shortcut conventions as the other apps and exposes Presets, System Prompts, and Prompt Templates as separate pages.
 
 **Features:** One-click switching, standalone Claude settings export, multi-endpoint support, API key management, remote model discovery, and per-app diagnostics such as speed testing or stream health checks where supported.
 
@@ -339,10 +308,13 @@ Manage ChatGPT/Codex OAuth accounts locally and reuse them across provider profi
 ```bash
 cc-switch auth status                # Show managed account status
 cc-switch auth login                 # Sign in with ChatGPT/Codex OAuth
+cc-switch auth login --account-id <id> # Reauthenticate an existing account, preserving bindings
 cc-switch auth list                  # List signed-in accounts
 cc-switch auth default <account-id>  # Set the default account
 cc-switch auth remove <account-id>   # Remove an account
 ```
+
+Members of the same ChatGPT workspace have separate local account IDs. Managed accounts saved by older versions require reauthentication: find the ID with `cc-switch auth list`, then run `cc-switch auth login --account-id <id>`, or choose **Reauthenticate** in the TUI account menu. Sign in as the original user in the same workspace to preserve provider bindings.
 
 ### 🛠️ MCP Server Management
 
@@ -366,7 +338,7 @@ cc-switch mcp import --app claude    # Import from live config
 
 Manage system prompt presets for AI coding assistants.
 
-**Cross-app support:** Claude (`CLAUDE.md`), Codex (`AGENTS.md`), Gemini (`GEMINI.md`), OpenCode (`AGENTS.md`), Hermes (`AGENTS.md`), OpenClaw (`AGENTS.md`).
+**Cross-app support:** Claude (`CLAUDE.md`), Codex (`AGENTS.md`), Gemini (`GEMINI.md`), OpenCode (`AGENTS.md`), Hermes (`AGENTS.md`), OpenClaw (`AGENTS.md`), Pi (`AGENTS.md`, native system prompts, and prompt templates).
 
 ```bash
 cc-switch prompts list               # List prompt presets
@@ -378,11 +350,13 @@ cc-switch prompts rename <id> [name] # Rename prompt preset, interactive if name
 cc-switch prompts edit <id>          # Edit prompt preset
 cc-switch prompts show <id>          # Display full content
 cc-switch prompts delete <id>        # Delete prompt
+cc-switch --app pi prompts system edit append # Edit APPEND_SYSTEM.md
+cc-switch --app pi prompts templates list     # List Pi prompt templates
 ```
 
 ### 🎯 Skills Management
 
-Manage and extend Claude Code/Codex/Gemini/OpenCode/Hermes capabilities with community skills.
+Manage and extend Claude Code/Codex/Gemini/OpenCode/Hermes/Pi capabilities with community skills.
 
 **Features:** SSOT-based skills store, multi-app enable/disable, sync to app directories, manual update checks/updates, unmanaged scan/import, repo discovery, skills.sh marketplace search.
 
@@ -417,7 +391,7 @@ The TUI home page shows a responsive 30-day view by app and model, including tok
 
 Review saved assistant sessions, resume a session with one command, delete old records, and import local session logs into token/cost statistics.
 
-**Features:** complete paged history, cross-app scanning, message preview, copyable resume commands, safe deletion, JSON output, visible-page token/cost details, and usage sync for Claude, Codex, Gemini, and OpenCode. Hermes cost is shown when available.
+**Features:** complete paged history, cross-app scanning, message preview, copyable resume commands, safe deletion, JSON output, visible-page token/cost details, and usage sync for Claude, Codex, Gemini, OpenCode, and Pi. Hermes cost is shown when available.
 
 ```bash
 cc-switch sessions list --all        # List saved sessions across supported apps
@@ -504,7 +478,7 @@ Inspect environment conflicts and whether required local CLIs are installed.
 ```bash
 cc-switch env check                  # Check environment conflicts
 cc-switch env list                   # List relevant environment variables
-cc-switch env tools                  # Check Claude/Codex/Gemini/OpenCode/Hermes/OpenClaw CLIs
+cc-switch env tools                  # Check Claude/Codex/Gemini/OpenCode/Hermes/OpenClaw/Pi CLIs
 ```
 
 ### 🌐 Multi-language Support
@@ -568,8 +542,9 @@ When `CC_SWITCH_CONFIG_DIR` is set, CC-Switch uses that directory as its config 
   - Codex config directory uses CC-Switch's manual override first. If no override is configured, CC-Switch follows Codex's `$CODEX_HOME` when it points to an existing directory, otherwise it uses `$HOME/.codex`.
 - Gemini: `~/.gemini/.env` (provider env), `~/.gemini/settings.json` (settings + MCP), `~/.gemini/GEMINI.md` (prompts)
 - OpenCode: `~/.config/opencode/opencode.json` (providers + MCP + runtime config), `~/.config/opencode/AGENTS.md` (prompts)
-- Hermes: `~/.hermes/config.yaml` (providers + MCP + memory settings), `~/.hermes/AGENTS.md` (prompts), `~/.hermes/skills/` (skills), `~/.hermes/memories/` (memory)
+- Hermes: `<Hermes home>/config.yaml` (providers + MCP + memory settings), `AGENTS.md` (prompts), `skills/`, and `memories/`. Directory priority: `hermesConfigDir` in CC-Switch settings, then nonblank `HERMES_HOME`, then the platform default (`~/.hermes` on macOS/Linux; `%LOCALAPPDATA%\hermes` on Windows). Launch CC-Switch from an environment that exports the same `HERMES_HOME` as Hermes.
 - OpenClaw: `~/.openclaw/openclaw.json` (providers + env/tools/agents defaults), `~/.openclaw/AGENTS.md` (prompts)
+- Pi: `~/.pi/agent/models.json` (additive providers), `~/.pi/agent/settings.json` (read-only defaults/session location), `~/.pi/agent/AGENTS.md`, `SYSTEM.md`, `APPEND_SYSTEM.md`, `prompts/`, `skills/`, and `sessions/`
 
 ---
 
@@ -660,13 +635,14 @@ cc-switch
 
 <br>
 
-CC-Switch currently supports six AI coding assistants:
+CC-Switch currently supports seven AI coding assistants:
 - **Claude Code** (`--app claude`, default)
 - **Codex** (`--app codex`)
 - **Gemini** (`--app gemini`)
 - **OpenCode** (`--app opencode`)
 - **Hermes** (`--app hermes`)
 - **OpenClaw** (`--app openclaw`)
+- **Pi** (`--app pi`)
 
 Use the global `--app` flag to specify which app to manage:
 ```bash
@@ -710,6 +686,16 @@ cargo fmt                            # Format code
 cargo clippy                         # Lint code
 cargo test                           # Run tests
 ```
+
+### Library-only Builds
+
+Embedding consumers can omit CLI/TUI dependencies:
+
+```toml
+cc-switch = { git = "https://github.com/SaladDay/cc-switch-cli.git", default-features = false }
+```
+
+The `cli` feature is enabled by default and is required for the `cc-switch` binary.
 
 ### Code Structure
 

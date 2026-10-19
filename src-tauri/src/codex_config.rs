@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use std::path::PathBuf;
 
 use crate::config::{
@@ -43,6 +44,45 @@ impl CodexCatalogToolProfile {
             _ => Self::ProxyChat,
         }
     }
+}
+
+/// Native Responses gateways used by the migrated presets that reject Codex's
+/// hosted web-search tool.
+const CODEX_WEB_SEARCH_REJECT_HOSTS: &[&str] = &["xiaomimimo.com", "minimaxi.com"];
+const CODEX_WEB_SEARCH_REJECT_MODEL_PREFIXES: &[&str] = &["mimo", "minimax"];
+
+fn codex_top_level_model(config_text: &str) -> Option<String> {
+    let doc = config_text.parse::<toml::Value>().ok()?;
+    doc.get("model")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn codex_native_gateway_rejects_web_search(config_text: &str) -> bool {
+    if let Some(base_url) = extract_codex_base_url(config_text) {
+        let base_url = base_url.to_ascii_lowercase();
+        if CODEX_WEB_SEARCH_REJECT_HOSTS
+            .iter()
+            .any(|host| base_url.contains(host))
+        {
+            return true;
+        }
+    }
+
+    if let Some(model) = codex_top_level_model(config_text) {
+        let model = model.to_ascii_lowercase();
+        let model = model.rsplit('/').next().unwrap_or(model.as_str());
+        if CODEX_WEB_SEARCH_REJECT_MODEL_PREFIXES
+            .iter()
+            .any(|prefix| model.starts_with(prefix))
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Reserved built-in provider IDs from OpenAI Codex's config/model-provider
@@ -439,6 +479,88 @@ fn codex_catalog_input_modalities(
     modalities.iter().map(|item| (*item).to_string()).collect()
 }
 
+/// Canonical reasoning effort levels Codex understands, with the same
+/// descriptions the official gpt-5.5 template uses. `none` disables thinking.
+const CODEX_REASONING_LEVEL_DESCRIPTIONS: &[(&str, &str)] = &[
+    ("none", "Disable Thinking"),
+    ("minimal", "Minimal reasoning"),
+    ("low", "Fast responses with lighter reasoning"),
+    (
+        "medium",
+        "Balances speed and reasoning depth for everyday tasks",
+    ),
+    ("high", "Greater reasoning depth for complex problems"),
+    ("xhigh", "Extra high reasoning depth for complex problems"),
+    ("max", "Maximum reasoning depth for the hardest problems"),
+    ("ultra", "Ultra reasoning depth"),
+];
+
+fn codex_reasoning_level_description(effort: &str) -> Option<&'static str> {
+    CODEX_REASONING_LEVEL_DESCRIPTIONS
+        .iter()
+        .find(|(candidate, _)| *candidate == effort)
+        .map(|(_, description)| *description)
+}
+
+/// User-declared levels reduced to the canonical efforts Codex understands,
+/// in canonical (lowest → highest) order regardless of declaration order.
+/// Unknown efforts are dropped so a typo can never produce an entry Codex
+/// would reject.
+fn codex_canonical_efforts(levels: &[String]) -> Vec<&str> {
+    CODEX_REASONING_LEVEL_DESCRIPTIONS
+        .iter()
+        .filter(|(effort, _)| levels.iter().any(|candidate| candidate == effort))
+        .map(|(effort, _)| *effort)
+        .collect()
+}
+
+/// Build a `supported_reasoning_levels` array from user-declared effort values.
+fn codex_supported_reasoning_levels(levels: &[String]) -> Value {
+    let entries: Vec<Value> = codex_canonical_efforts(levels)
+        .into_iter()
+        .map(|effort| {
+            let description = codex_reasoning_level_description(effort)
+                .expect("canonical effort always has a description");
+            json!({ "effort": effort, "description": description })
+        })
+        .collect();
+    json!(entries)
+}
+
+/// Apply a per-model reasoning-level override onto a catalog entry. Returns
+/// true when the override was applied (so callers can skip further work).
+/// `template_default` is the base entry's `default_reasoning_level` used as the
+/// fallback when the user did not declare one explicitly.
+fn apply_codex_reasoning_level_override(
+    entry_obj: &mut serde_json::Map<String, Value>,
+    template_default: Option<&str>,
+    spec: &CodexCatalogModelSpec,
+) -> bool {
+    let Some(levels) = spec.reasoning_levels.as_deref() else {
+        return false;
+    };
+    let canonical = codex_canonical_efforts(levels);
+    if canonical.is_empty() {
+        return false;
+    }
+
+    let supported = codex_supported_reasoning_levels(levels);
+    entry_obj.insert("supported_reasoning_levels".to_string(), supported);
+
+    // Explicit value wins. Otherwise retain a still-supported template
+    // default, then fall back to the highest canonical supported level.
+    let default_level = spec
+        .default_reasoning_level
+        .as_deref()
+        .filter(|level| canonical.contains(level))
+        .or_else(|| template_default.filter(|level| canonical.contains(level)))
+        .or_else(|| canonical.last().copied());
+    if let Some(default_level) = default_level {
+        entry_obj.insert("default_reasoning_level".to_string(), json!(default_level));
+    }
+    true
+}
+
 fn codex_catalog_model_entry(
     template: &Value,
     spec: &CodexCatalogModelSpec,
@@ -507,6 +629,11 @@ fn codex_catalog_model_entry(
         }
     }
 
+    let template_default = template
+        .get("default_reasoning_level")
+        .and_then(Value::as_str);
+    apply_codex_reasoning_level_override(entry_obj, template_default, spec);
+
     entry
 }
 
@@ -527,6 +654,11 @@ struct CodexCatalogModelSpec {
     /// falls back to the template default when absent. Only consulted for
     /// `NativeResponses`.
     base_instructions: Option<String>,
+    /// Per-row override for the generated catalog's reasoning capabilities.
+    /// Consulted for every profile.
+    reasoning_levels: Option<Vec<String>>,
+    /// Preferred effort within `reasoning_levels`.
+    default_reasoning_level: Option<String>,
 }
 
 fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCatalogModelSpec> {
@@ -594,6 +726,27 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
             .map(str::trim)
             .filter(|text| !text.is_empty())
             .map(str::to_string);
+        let reasoning_levels = model_config
+            .get("reasoningLevels")
+            .or_else(|| model_config.get("reasoning_levels"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|level| !level.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|levels| !levels.is_empty());
+        let default_reasoning_level = model_config
+            .get("defaultReasoningLevel")
+            .or_else(|| model_config.get("default_reasoning_level"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|level| !level.is_empty())
+            .map(str::to_string);
 
         specs.push(CodexCatalogModelSpec {
             model: model.to_string(),
@@ -602,6 +755,8 @@ fn codex_catalog_model_specs(settings: &Value, config_text: &str) -> Vec<CodexCa
             supports_parallel_tool_calls,
             input_modalities,
             base_instructions,
+            reasoning_levels,
+            default_reasoning_level,
         });
     }
 
@@ -744,8 +899,23 @@ fn set_codex_model_catalog_json_field(
 
     match catalog_path {
         Some(_path) => {
-            // 使用相对文件名而非绝对路径，保持与 Codex 自身引用方式一致
-            doc["model_catalog_json"] = toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+            // Only claim the pointer when it is absent or already cc-switch-owned.
+            // A user-managed external catalog file (custom filename or path) is
+            // left untouched, mirroring the None arm's ownership rule that
+            // `resolve_cc_switch_catalog_path` relies on.
+            let is_cc_switch_owned = doc
+                .get("model_catalog_json")
+                .and_then(|item| item.as_str())
+                .map(|path| {
+                    Path::new(path).file_name().and_then(|name| name.to_str())
+                        == Some(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME)
+                })
+                .unwrap_or(true);
+            if is_cc_switch_owned {
+                // 使用相对文件名而非绝对路径，保持与 Codex 自身引用方式一致
+                doc["model_catalog_json"] =
+                    toml_edit::value(CC_SWITCH_CODEX_MODEL_CATALOG_FILENAME);
+            }
         }
         None => {
             let should_remove = doc
@@ -805,10 +975,14 @@ pub fn prepare_codex_config_text_with_model_catalog_payload(
 
     if let Some(catalog) = codex_model_catalog_from_settings(settings, config_text, profile)? {
         let config_text = set_codex_model_catalog_json_field(config_text, Some(&catalog_path))?;
-        let config_text = set_codex_web_search_field(
-            &config_text,
-            profile == CodexCatalogToolProfile::Anthropic,
-        )?;
+        let disable_web_search = match profile {
+            CodexCatalogToolProfile::Anthropic => true,
+            CodexCatalogToolProfile::NativeResponses => {
+                codex_native_gateway_rejects_web_search(&config_text)
+            }
+            CodexCatalogToolProfile::ProxyChat => false,
+        };
+        let config_text = set_codex_web_search_field(&config_text, disable_web_search)?;
         Ok(PreparedCodexConfigText {
             config_text,
             model_catalog: Some(catalog),
@@ -996,11 +1170,47 @@ pub fn write_codex_provider_live_with_catalog(
     config_text: Option<&str>,
     profile: CodexCatalogToolProfile,
 ) -> Result<(), AppError> {
-    let prepared_config = config_text
-        .map(|text| prepare_codex_config_text_with_model_catalog(settings, text, profile))
-        .transpose()?;
+    write_codex_provider_live_with_catalog_and_db(
+        settings,
+        category,
+        auth,
+        config_text,
+        profile,
+        None,
+    )
+}
 
-    write_codex_live_for_provider(category, auth, prepared_config.as_deref())
+pub(crate) fn write_codex_provider_live_with_catalog_and_db(
+    settings: &Value,
+    category: Option<&str>,
+    auth: &Value,
+    config_text: Option<&str>,
+    profile: CodexCatalogToolProfile,
+    db: Option<&crate::Database>,
+) -> Result<(), AppError> {
+    let prepared = prepare_codex_config_text_with_model_catalog_payload(
+        settings,
+        config_text.unwrap_or_default(),
+        profile,
+    )?;
+    let rows = db
+        .map(|db| db.get_all_providers("codex"))
+        .transpose()?
+        .map(|rows| rows.into_values().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let mut plan = crate::services::provider::codex_live::prepare(
+        category == Some("official"),
+        auth,
+        &prepared.config_text,
+        &rows,
+        None,
+    )?;
+    plan.config.catalog = prepared.model_catalog.is_some();
+    crate::services::provider::codex_live::apply(
+        &plan,
+        prepared.model_catalog.as_ref(),
+        db.map(|db| (db, None)),
+    )
 }
 
 /// Extract a provider-scoped `experimental_bearer_token` from Codex `config.toml`.
@@ -1362,43 +1572,14 @@ pub fn write_codex_live_for_provider(
     auth: &Value,
     config_text: Option<&str>,
 ) -> Result<(), AppError> {
-    let unified_official_config =
-        if category == Some("official") && crate::settings::unify_codex_session_history() {
-            Some(inject_codex_unified_session_bucket(
-                config_text.unwrap_or(""),
-            )?)
-        } else {
-            None
-        };
-    let config_text = unified_official_config.as_deref().or(config_text);
-
-    // A third-party provider must authenticate with its API key, never with a
-    // stray ChatGPT OAuth login that leaked into auth.json (e.g. from running
-    // `codex login` while it was active). Strip OAuth material for non-official
-    // providers, recovering the key from a config bearer token when auth.json
-    // only carried OAuth (issue #328). Official providers own auth.json.
-    let sanitized_auth = if category == Some("official") {
-        None
-    } else {
-        Some(sanitize_codex_third_party_auth(
-            Some(auth),
-            config_text,
-            None,
-            None,
-        ))
-    };
-    let auth = sanitized_auth.as_ref().unwrap_or(auth);
-
-    let should_write_auth = (category == Some("official") && codex_auth_has_login_material(auth))
-        || (category != Some("official")
-            && !crate::settings::preserve_codex_official_auth_on_switch());
-
-    if should_write_auth {
-        write_codex_live_atomic(auth, config_text)
-    } else {
-        let live_config = prepare_codex_provider_live_config(auth, config_text.unwrap_or(""))?;
-        write_codex_live_config_atomic(Some(&live_config))
-    }
+    let plan = crate::services::provider::codex_live::prepare(
+        category == Some("official"),
+        auth,
+        config_text.unwrap_or_default(),
+        &[],
+        None,
+    )?;
+    crate::services::provider::codex_live::apply(&plan, None, None)
 }
 
 /// Build the live Codex config for provider switching.
@@ -2025,6 +2206,50 @@ mod tests {
     }
 
     #[test]
+    fn selected_native_presets_disable_web_search_only_for_reject_gateways() {
+        let settings = json!({
+            "modelCatalog": { "models": [{ "model": "test-model" }] }
+        });
+        for config in [
+            r#"model_provider = "custom"
+model = "test-model"
+[model_providers.custom]
+base_url = "https://api.minimaxi.com/v1"
+"#,
+            r#"model_provider = "custom"
+model = "mimo-v2.5-pro"
+[model_providers.custom]
+base_url = "https://relay.example.com/v1"
+"#,
+        ] {
+            let prepared = prepare_codex_config_text_with_model_catalog_payload(
+                &settings,
+                config,
+                CodexCatalogToolProfile::NativeResponses,
+            )
+            .expect("prepare reject-gateway config");
+            let parsed: toml::Value = toml::from_str(&prepared.config_text).unwrap();
+            assert_eq!(
+                parsed.get("web_search").and_then(toml::Value::as_str),
+                Some("disabled")
+            );
+        }
+
+        let prepared = prepare_codex_config_text_with_model_catalog_payload(
+            &settings,
+            r#"model_provider = "custom"
+model = "deepseek-v4-flash"
+[model_providers.custom]
+base_url = "https://api.deepseek.com"
+"#,
+            CodexCatalogToolProfile::NativeResponses,
+        )
+        .expect("prepare capable-gateway config");
+        let parsed: toml::Value = toml::from_str(&prepared.config_text).unwrap();
+        assert!(parsed.get("web_search").is_none());
+    }
+
+    #[test]
     fn extract_base_url_prefers_active_provider_and_ignores_comments() {
         let config = r#"model_provider = 'current'
 
@@ -2561,6 +2786,41 @@ experimental_bearer_token = "PROXY_MANAGED"
     }
 
     #[test]
+    fn model_catalog_projects_per_model_reasoning_levels_for_every_profile() {
+        let settings = json!({
+            "modelCatalog": {
+                "models": [{
+                    "model": "glm-5.2",
+                    "reasoningLevels": ["none", "high"],
+                    "defaultReasoningLevel": "none"
+                }]
+            }
+        });
+        let specs = codex_catalog_model_specs(&settings, "");
+        let template = json!({
+            "default_reasoning_level": "high",
+            "supported_reasoning_levels": []
+        });
+
+        for profile in [
+            CodexCatalogToolProfile::ProxyChat,
+            CodexCatalogToolProfile::NativeResponses,
+            CodexCatalogToolProfile::Anthropic,
+        ] {
+            let catalog = codex_model_catalog_from_specs(&specs, &template, profile);
+            let entry = &catalog["models"][0];
+            assert_eq!(
+                entry["supported_reasoning_levels"],
+                json!([
+                    { "effort": "none", "description": "Disable Thinking" },
+                    { "effort": "high", "description": "Greater reasoning depth for complex problems" }
+                ])
+            );
+            assert_eq!(entry["default_reasoning_level"], json!("none"));
+        }
+    }
+
+    #[test]
     fn native_responses_profile_suppresses_apply_patch_and_keeps_shell() {
         // Native (direct) /responses providers must NOT emit a freeform
         // apply_patch (type=="custom") tool — gateways like MiMo reject it.
@@ -2642,6 +2902,8 @@ experimental_bearer_token = "PROXY_MANAGED"
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
                 base_instructions: None,
+                reasoning_levels: None,
+                default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
                 model: "deepseek/deepseek-v4-pro".to_string(),
@@ -2650,6 +2912,8 @@ experimental_bearer_token = "PROXY_MANAGED"
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
                 base_instructions: None,
+                reasoning_levels: None,
+                default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
                 model: "glm-5.2v".to_string(),
@@ -2658,6 +2922,8 @@ experimental_bearer_token = "PROXY_MANAGED"
                 supports_parallel_tool_calls: None,
                 input_modalities: None,
                 base_instructions: None,
+                reasoning_levels: None,
+                default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
                 model: "deepseek-v4-flash".to_string(),
@@ -2666,6 +2932,8 @@ experimental_bearer_token = "PROXY_MANAGED"
                 supports_parallel_tool_calls: None,
                 input_modalities: Some(vec!["text".to_string(), "image".to_string()]),
                 base_instructions: None,
+                reasoning_levels: None,
+                default_reasoning_level: None,
             },
             CodexCatalogModelSpec {
                 model: "custom-text-alias".to_string(),
@@ -2674,6 +2942,8 @@ experimental_bearer_token = "PROXY_MANAGED"
                 supports_parallel_tool_calls: None,
                 input_modalities: Some(vec!["text".to_string()]),
                 base_instructions: None,
+                reasoning_levels: None,
+                default_reasoning_level: None,
             },
         ];
 
@@ -2744,6 +3014,8 @@ experimental_bearer_token = "PROXY_MANAGED"
             supports_parallel_tool_calls: None,
             input_modalities: None,
             base_instructions: None,
+            reasoning_levels: None,
+            default_reasoning_level: None,
         }];
         // The native template lacks apply_patch_tool_type, so synthesize one to
         // prove ProxyChat leaves it intact (no native stripping).
@@ -2787,6 +3059,44 @@ name = "any"
                 .and_then(|value| value.get("model_catalog_json"))
                 .is_none(),
             "model_catalog_json should stay top-level"
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_some_preserves_user_owned_catalog() {
+        // When cc-switch generates a catalog (Some arm), it must still respect a
+        // user-managed external catalog file instead of clobbering it with the
+        // cc-switch-owned filename. Only an absent or cc-switch-owned pointer is
+        // claimed; this mirrors the None arm's ownership rule.
+        let input = r#"model_provider = "custom"
+model = "glm-5"
+model_catalog_json = "/Users/me/.codex/my-custom-catalog.json"
+"#;
+        let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed.get("model_catalog_json").and_then(|v| v.as_str()),
+            Some("/Users/me/.codex/my-custom-catalog.json"),
+            "Some arm should NOT clobber a user-owned catalog (full path)"
+        );
+    }
+
+    #[test]
+    fn set_catalog_json_some_preserves_user_owned_relative_filename() {
+        // A bare custom filename (no directory component) is also user-owned
+        // and must be preserved by the Some arm.
+        let input = r#"model_provider = "custom"
+model = "glm-5"
+model_catalog_json = "my-custom-catalog.json"
+"#;
+        let catalog_path = Path::new("/tmp/cc-switch-model-catalog.json");
+        let result = set_codex_model_catalog_json_field(input, Some(catalog_path)).unwrap();
+        let parsed: toml::Value = toml::from_str(&result).unwrap();
+        assert_eq!(
+            parsed.get("model_catalog_json").and_then(|v| v.as_str()),
+            Some("my-custom-catalog.json"),
+            "Some arm should NOT clobber a relative user-owned catalog"
         );
     }
 
@@ -3138,5 +3448,402 @@ experimental_bearer_token = "sk-live"
             !should_restore_codex_provider_token_for_backfill(Some("official"), &api_key_template),
             "official providers should never restore third-party bearer tokens"
         );
+    }
+}
+
+pub(crate) fn extract_codex_auth_user_identity(auth: &Value) -> Option<String> {
+    let id_token = auth.pointer("/tokens/id_token")?.as_str()?;
+    extract_codex_id_token_user_identity(id_token)
+}
+
+pub(crate) fn extract_codex_id_token_user_identity(id_token: &str) -> Option<String> {
+    extract_codex_id_token_subject(id_token).map(|subject| format!("sub:{subject}"))
+}
+
+pub(crate) fn extract_codex_id_token_subject(id_token: &str) -> Option<String> {
+    let mut segments = id_token.split('.');
+    let header = segments.next()?;
+    let payload = segments.next()?;
+    segments.next()?;
+    if segments.next().is_some() {
+        return None;
+    }
+
+    let header: Value = URL_SAFE_NO_PAD
+        .decode(header)
+        .ok()
+        .and_then(|decoded| serde_json::from_slice(&decoded).ok())?;
+    header
+        .get("alg")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    let claims: Value = URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()
+        .and_then(|decoded| serde_json::from_slice(&decoded).ok())?;
+    claims
+        .get("sub")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+pub(crate) fn test_codex_id_token(subject: &str) -> String {
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+    let payload = URL_SAFE_NO_PAD.encode(json!({ "sub": subject }).to_string());
+    format!("{header}.{payload}.")
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexResolvedAuthMode {
+    ApiKey,
+    Chatgpt,
+    ChatgptAuthTokens,
+    Headers,
+    AgentIdentity,
+    PersonalAccessToken,
+    BedrockApiKey,
+    BedrockAccessKeys,
+    /// An `auth_mode` string Codex's serde rejects (`rename_all =
+    /// "lowercase"` plus explicit camelCase renames, exact match): the whole
+    /// file fails to load, which Codex reports as signed out.
+    Unrecognized,
+}
+
+fn codex_auth_resolved_mode(auth: &serde_json::Map<String, Value>) -> CodexResolvedAuthMode {
+    let present = |key: &str| auth.get(key).is_some_and(|value| !value.is_null());
+
+    // `auth_mode: null` deserializes to `None` (serde default) and falls
+    // through to the implicit precedence below.
+    if let Some(mode) = auth.get("auth_mode").filter(|value| !value.is_null()) {
+        return match mode.as_str() {
+            Some("apikey") => CodexResolvedAuthMode::ApiKey,
+            Some("chatgpt") => CodexResolvedAuthMode::Chatgpt,
+            Some("chatgptAuthTokens") => CodexResolvedAuthMode::ChatgptAuthTokens,
+            Some("headers") => CodexResolvedAuthMode::Headers,
+            Some("agentIdentity") => CodexResolvedAuthMode::AgentIdentity,
+            Some("personalAccessToken") => CodexResolvedAuthMode::PersonalAccessToken,
+            Some("bedrockApiKey") => CodexResolvedAuthMode::BedrockApiKey,
+            Some("bedrockAccessKeys") => CodexResolvedAuthMode::BedrockAccessKeys,
+            _ => CodexResolvedAuthMode::Unrecognized,
+        };
+    }
+    if present("personal_access_token") {
+        return CodexResolvedAuthMode::PersonalAccessToken;
+    }
+    if present("bedrock_api_key") {
+        return CodexResolvedAuthMode::BedrockApiKey;
+    }
+    if present("bedrock_access_keys") {
+        return CodexResolvedAuthMode::BedrockAccessKeys;
+    }
+    if present("OPENAI_API_KEY") {
+        return CodexResolvedAuthMode::ApiKey;
+    }
+    CodexResolvedAuthMode::Chatgpt
+}
+
+/// True when Codex would load `auth` as a signed-in OpenAI account for a
+/// `requires_openai_auth` provider — the state its login screen and
+/// `ConfiguredModelProvider::account_state` (0.149+) go by. The auth mode is
+/// resolved exactly as Codex does (`codex_auth_resolved_mode`) and only then
+/// is the matching credential checked, so a Bedrock credential outranks a
+/// stale `OPENAI_API_KEY` sitting next to it just as it does in Codex, where
+/// that probe returns `UnsupportedBedrockApiKeyAuth` and fails TUI startup.
+/// Modes Codex cannot load from storage (`headers`, unrecognized) are signed
+/// out. The credential must be non-blank (stricter than Codex's `is_some`,
+/// erring toward "signed out"); metadata such as `last_refresh` never counts.
+pub fn codex_auth_has_openai_account_material(auth: &Value) -> bool {
+    let Some(obj) = auth.as_object() else {
+        return false;
+    };
+
+    let value_present = |value: &Value| match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(map) => !map.is_empty(),
+        _ => true,
+    };
+    let has = |key: &str| obj.get(key).is_some_and(value_present);
+
+    match codex_auth_resolved_mode(obj) {
+        CodexResolvedAuthMode::ApiKey => extract_codex_auth_api_key(auth).is_some(),
+        CodexResolvedAuthMode::PersonalAccessToken => has("personal_access_token"),
+        CodexResolvedAuthMode::AgentIdentity => has("agent_identity"),
+        CodexResolvedAuthMode::Chatgpt | CodexResolvedAuthMode::ChatgptAuthTokens => obj
+            .get("tokens")
+            .and_then(Value::as_object)
+            .is_some_and(|tokens| {
+                ["id_token", "access_token", "refresh_token"]
+                    .iter()
+                    .any(|key| tokens.get(*key).is_some_and(value_present))
+            }),
+        CodexResolvedAuthMode::Headers
+        | CodexResolvedAuthMode::BedrockApiKey
+        | CodexResolvedAuthMode::BedrockAccessKeys
+        | CodexResolvedAuthMode::Unrecognized => false,
+    }
+}
+
+/// Where Codex keeps CLI auth, per the top-level `cli_auth_credentials_store`
+/// key (`codex-rs/config/src/types.rs`, serde lowercase; unset = `file`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CodexAuthStoreMode {
+    /// `auth.json` is the only store — the file decides login state.
+    File,
+    /// Keyring only; `auth.json` is never read and is deleted after a save.
+    Keyring,
+    /// Keyring first, `auth.json` as fallback for both load and save.
+    Auto,
+    /// In-process only; nothing on disk is ever a login.
+    Ephemeral,
+    /// Unparsable config or a value Codex would reject.
+    Unknown,
+}
+
+pub(crate) fn codex_config_auth_store_mode(config_text: &str) -> CodexAuthStoreMode {
+    if !config_text.contains("cli_auth_credentials_store") {
+        return CodexAuthStoreMode::File;
+    }
+    let Ok(doc) = config_text.parse::<DocumentMut>() else {
+        return CodexAuthStoreMode::Unknown;
+    };
+    match doc
+        .get("cli_auth_credentials_store")
+        .and_then(|item| item.as_str())
+    {
+        None => CodexAuthStoreMode::File,
+        Some("file") => CodexAuthStoreMode::File,
+        Some("keyring") => CodexAuthStoreMode::Keyring,
+        Some("auto") => CodexAuthStoreMode::Auto,
+        Some("ephemeral") => CodexAuthStoreMode::Ephemeral,
+        Some(_) => CodexAuthStoreMode::Unknown,
+    }
+}
+
+/// True only when the auth carries material Codex itself authenticates with
+/// ahead of the API-key fallback: OAuth tokens or another first-class login
+/// carrier. Unlike `codex_auth_has_oauth_login_material`, pure metadata such
+/// as `last_refresh` or `tokens.account_id` does NOT count — metadata must not
+/// shield a stale third-party `OPENAI_API_KEY` from post-switch cleanup.
+pub fn codex_auth_has_credential_login_material(auth: &Value) -> bool {
+    let Some(obj) = auth.as_object() else {
+        return false;
+    };
+
+    let value_present = |value: &Value| match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(map) => !map.is_empty(),
+        _ => true,
+    };
+
+    if ["personal_access_token", "agent_identity", "bedrock_api_key"]
+        .iter()
+        .any(|key| obj.get(*key).is_some_and(value_present))
+    {
+        return true;
+    }
+
+    obj.get("tokens")
+        .and_then(Value::as_object)
+        .is_some_and(|tokens| {
+            ["id_token", "access_token", "refresh_token"]
+                .iter()
+                .any(|key| tokens.get(*key).is_some_and(value_present))
+        })
+}
+
+/// True when live `auth.json` is the shape a preserve-off third-party switch
+/// leaves behind: an `OPENAI_API_KEY` (possibly alongside metadata like
+/// `auth_mode` / `last_refresh`) with no real login credential next to it.
+pub fn codex_live_auth_is_stale_third_party_residue(live_auth: &Value) -> bool {
+    if codex_auth_has_credential_login_material(live_auth) {
+        return false;
+    }
+    live_auth
+        .get("OPENAI_API_KEY")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|key| !key.is_empty())
+}
+
+#[cfg(test)]
+mod upstream_login_tests {
+    use super::*;
+    #[test]
+    fn openai_account_material_mirrors_codex_account_probe() {
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "OPENAI_API_KEY": "sk-test"
+        })));
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "chatgpt",
+            "tokens": { "access_token": "acc" }
+        })));
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "personal_access_token": "pat"
+        })));
+        // Bedrock credentials make account_state() fail on a
+        // requires_openai_auth provider, so they must not count as a login.
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "bedrock_api_key": "bedrock"
+        })));
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "last_refresh": "2026-09-01T00:00:00Z",
+            "tokens": { "account_id": "acct" }
+        })));
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "OPENAI_API_KEY": "   "
+        })));
+
+        // Precedence mirrors AuthDotJson::resolved_mode: an implicit Bedrock
+        // credential outranks a leftover OPENAI_API_KEY, so the pair is still
+        // Bedrock and must not be promoted to an OpenAI login.
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "OPENAI_API_KEY": "sk-stale",
+            "bedrock_api_key": "bedrock"
+        })));
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "OPENAI_API_KEY": "sk-stale",
+            "bedrock_access_keys": { "access_key_id": "a", "secret_access_key": "s" }
+        })));
+        // An explicit auth_mode wins outright, in both directions.
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "bedrockApiKey",
+            "OPENAI_API_KEY": "sk-stale",
+            "bedrock_api_key": "bedrock"
+        })));
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "apikey",
+            "OPENAI_API_KEY": "sk-live",
+            "bedrock_api_key": "bedrock"
+        })));
+        // personal_access_token outranks the API key even when blank: Codex
+        // then attempts PAT auth with nothing and ends up signed out.
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "personal_access_token": "",
+            "OPENAI_API_KEY": "sk-live"
+        })));
+        // agent_identity only counts under an explicit mode; implicitly the
+        // payload resolves to ChatGPT, which has no tokens here.
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "agent_identity": "jwt"
+        })));
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "agentIdentity",
+            "agent_identity": "jwt"
+        })));
+        // `auth_mode: null` is absent to serde; a string it rejects fails the
+        // whole load (exact-match, so casing matters); headers auth cannot be
+        // loaded from storage at all.
+        assert!(codex_auth_has_openai_account_material(&json!({
+            "auth_mode": null,
+            "OPENAI_API_KEY": "sk-live"
+        })));
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "ApiKey",
+            "OPENAI_API_KEY": "sk-live"
+        })));
+        assert!(!codex_auth_has_openai_account_material(&json!({
+            "auth_mode": "headers",
+            "OPENAI_API_KEY": "sk-live"
+        })));
+    }
+    #[test]
+    fn auth_store_mode_reads_top_level_cli_auth_credentials_store() {
+        assert_eq!(
+            codex_config_auth_store_mode("model = \"gpt-5\"\n"),
+            CodexAuthStoreMode::File
+        );
+        assert_eq!(
+            codex_config_auth_store_mode("cli_auth_credentials_store = \"file\"\n"),
+            CodexAuthStoreMode::File
+        );
+        assert_eq!(
+            codex_config_auth_store_mode("cli_auth_credentials_store = \"keyring\"\n"),
+            CodexAuthStoreMode::Keyring
+        );
+        assert_eq!(
+            codex_config_auth_store_mode("cli_auth_credentials_store = \"auto\"\n"),
+            CodexAuthStoreMode::Auto
+        );
+        assert_eq!(
+            codex_config_auth_store_mode("cli_auth_credentials_store = \"ephemeral\"\n"),
+            CodexAuthStoreMode::Ephemeral
+        );
+        // Codex's serde is lowercase-only; anything else fails its load.
+        assert_eq!(
+            codex_config_auth_store_mode("cli_auth_credentials_store = \"Keyring\"\n"),
+            CodexAuthStoreMode::Unknown
+        );
+        // Only the top-level key counts.
+        assert_eq!(
+            codex_config_auth_store_mode(
+                "[model_providers.x]\ncli_auth_credentials_store = \"keyring\"\n"
+            ),
+            CodexAuthStoreMode::File
+        );
+    }
+    #[test]
+    fn credential_login_material_only_counts_real_credentials() {
+        assert!(codex_auth_has_credential_login_material(&json!({
+            "tokens": { "access_token": "t" }
+        })));
+        assert!(codex_auth_has_credential_login_material(&json!({
+            "tokens": { "refresh_token": "r" }
+        })));
+        assert!(codex_auth_has_credential_login_material(&json!({
+            "personal_access_token": "pat"
+        })));
+
+        // API key and pure metadata are not credentials in this predicate's
+        // sense — they must not shield a stale key from cleanup.
+        assert!(!codex_auth_has_credential_login_material(&json!({
+            "OPENAI_API_KEY": "sk-x"
+        })));
+        assert!(!codex_auth_has_credential_login_material(&json!({
+            "OPENAI_API_KEY": "sk-x",
+            "last_refresh": "2026-01-01T00:00:00Z",
+            "tokens": { "account_id": "acct-meta-only" }
+        })));
+        assert!(!codex_auth_has_credential_login_material(&json!({})));
+    }
+    #[test]
+    fn stale_third_party_residue_detection() {
+        // Shapes a preserve-off third-party switch leaves behind: cleared.
+        assert!(codex_live_auth_is_stale_third_party_residue(&json!({
+            "OPENAI_API_KEY": "sk-third-party"
+        })));
+        assert!(codex_live_auth_is_stale_third_party_residue(&json!({
+            "auth_mode": "apikey",
+            "OPENAI_API_KEY": "sk-third-party"
+        })));
+        assert!(codex_live_auth_is_stale_third_party_residue(&json!({
+            "OPENAI_API_KEY": "sk-third-party",
+            "last_refresh": "2026-01-01T00:00:00Z",
+            "tokens": { "account_id": "acct-meta-only" }
+        })));
+
+        // Anything carrying a real credential must survive untouched.
+        assert!(!codex_live_auth_is_stale_third_party_residue(&json!({
+            "OPENAI_API_KEY": "sk-x",
+            "tokens": { "access_token": "t" }
+        })));
+        assert!(!codex_live_auth_is_stale_third_party_residue(&json!({
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": null,
+            "tokens": { "access_token": "official-oauth-token" }
+        })));
+
+        // Nothing to clear.
+        assert!(!codex_live_auth_is_stale_third_party_residue(&json!({})));
+        assert!(!codex_live_auth_is_stale_third_party_residue(&json!({
+            "OPENAI_API_KEY": ""
+        })));
     }
 }

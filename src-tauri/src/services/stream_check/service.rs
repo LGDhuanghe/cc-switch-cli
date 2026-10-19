@@ -104,7 +104,10 @@ impl StreamCheckService {
         provider: &Provider,
         config: &StreamCheckConfig,
     ) -> Result<StreamCheckResult, AppError> {
-        if matches!(app_type, AppType::Hermes | AppType::OpenClaw) {
+        if matches!(
+            app_type,
+            AppType::Hermes | AppType::OpenClaw | AppType::Pi
+        ) {
             return Err(AppError::Message(format!("{} 暂不支持流式检查", app_type)));
         }
 
@@ -164,6 +167,7 @@ impl StreamCheckService {
             }
             AppType::Hermes => unreachable!("Hermes should return unsupported earlier"),
             AppType::OpenClaw => unreachable!("OpenClaw should return unsupported earlier"),
+            AppType::Pi => unreachable!("Pi should return unsupported earlier"),
         };
 
         let response_time = start.elapsed().as_millis() as u64;

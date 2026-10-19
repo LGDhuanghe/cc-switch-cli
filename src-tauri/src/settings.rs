@@ -22,6 +22,8 @@ pub struct VisibleApps {
     pub hermes: bool,
     #[serde(default = "default_visible_app_openclaw")]
     pub openclaw: bool,
+    #[serde(default = "default_visible_app_pi")]
+    pub pi: bool,
 }
 
 fn default_visible_app_claude() -> bool {
@@ -48,6 +50,10 @@ fn default_visible_app_openclaw() -> bool {
     true
 }
 
+fn default_visible_app_pi() -> bool {
+    true
+}
+
 pub fn default_visible_apps() -> VisibleApps {
     VisibleApps {
         claude: true,
@@ -56,6 +62,7 @@ pub fn default_visible_apps() -> VisibleApps {
         opencode: true,
         hermes: true,
         openclaw: true,
+        pi: true,
     }
 }
 
@@ -122,6 +129,7 @@ impl VisibleApps {
             AppType::OpenCode => self.opencode,
             AppType::Hermes => self.hermes,
             AppType::OpenClaw => self.openclaw,
+            AppType::Pi => self.pi,
         }
     }
 
@@ -133,6 +141,7 @@ impl VisibleApps {
             AppType::OpenCode => self.opencode = enabled,
             AppType::Hermes => self.hermes = enabled,
             AppType::OpenClaw => self.openclaw = enabled,
+            AppType::Pi => self.pi = enabled,
         }
     }
 
@@ -153,7 +162,7 @@ impl VisibleApps {
     }
 }
 
-fn app_order() -> [AppType; 6] {
+fn app_order() -> [AppType; 7] {
     [
         AppType::Claude,
         AppType::Codex,
@@ -161,6 +170,7 @@ fn app_order() -> [AppType; 6] {
         AppType::OpenCode,
         AppType::Hermes,
         AppType::OpenClaw,
+        AppType::Pi,
     ]
 }
 
@@ -531,6 +541,8 @@ pub struct AppSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openclaw_config_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_claude: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_provider_codex: Option<String>,
@@ -578,6 +590,9 @@ pub struct AppSettings {
     /// Skills 同步方式（auto|symlink|copy）
     #[serde(default)]
     pub skill_sync_method: crate::services::skill::SyncMethod,
+    /// Skills SSOT location: cc_switch (default) or unified (~/.agents/skills/).
+    #[serde(default)]
+    pub skill_storage_location: crate::services::skill::SkillStorageLocation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<SecuritySettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -629,6 +644,7 @@ impl Default for AppSettings {
             opencode_config_dir: None,
             hermes_config_dir: None,
             openclaw_config_dir: None,
+            pi_config_dir: None,
             current_provider_claude: None,
             current_provider_codex: None,
             current_provider_gemini: None,
@@ -646,6 +662,7 @@ impl Default for AppSettings {
             unify_codex_migrate_existing: None,
             usage_auto_sync: default_usage_auto_sync(),
             skill_sync_method: crate::services::skill::SyncMethod::default(),
+            skill_storage_location: crate::services::skill::SkillStorageLocation::default(),
             security: None,
             webdav_sync: None,
             s3_sync: None,
@@ -704,6 +721,13 @@ impl AppSettings {
 
         self.openclaw_config_dir = self
             .openclaw_config_dir
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        self.pi_config_dir = self
+            .pi_config_dir
             .as_ref()
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -808,7 +832,7 @@ pub(crate) fn reload_test_settings() {
     *guard = AppSettings::load();
 }
 
-fn resolve_override_path(raw: &str) -> PathBuf {
+pub(crate) fn resolve_override_path(raw: &str) -> PathBuf {
     if raw == "~" {
         if let Some(home) = home_dir() {
             return home;
@@ -1100,6 +1124,14 @@ pub fn get_openclaw_override_dir() -> Option<PathBuf> {
         .map(|p| resolve_override_path(p))
 }
 
+pub fn get_pi_override_dir() -> Option<PathBuf> {
+    let settings = settings_store().read().ok()?;
+    settings
+        .pi_config_dir
+        .as_ref()
+        .map(|path| resolve_override_path(path))
+}
+
 pub fn get_current_provider(app_type: &AppType) -> Option<String> {
     let settings = settings_store().read().ok()?;
     match app_type {
@@ -1109,6 +1141,7 @@ pub fn get_current_provider(app_type: &AppType) -> Option<String> {
         AppType::OpenCode => settings.current_provider_opencode.clone(),
         AppType::Hermes => settings.current_provider_hermes.clone(),
         AppType::OpenClaw => settings.current_provider_openclaw.clone(),
+        AppType::Pi => None,
     }
 }
 
@@ -1122,6 +1155,7 @@ pub fn set_current_provider(app_type: &AppType, id: Option<&str>) -> Result<(), 
         AppType::OpenCode => settings.current_provider_opencode = id.map(|value| value.to_string()),
         AppType::Hermes => settings.current_provider_hermes = id.map(|value| value.to_string()),
         AppType::OpenClaw => settings.current_provider_openclaw = id.map(|value| value.to_string()),
+        AppType::Pi => {}
     }
 
     update_settings(settings)
@@ -1252,6 +1286,21 @@ pub fn set_skill_sync_method(method: crate::services::skill::SyncMethod) -> Resu
     update_settings(settings)
 }
 
+pub fn get_skill_storage_location() -> crate::services::skill::SkillStorageLocation {
+    settings_store()
+        .read()
+        .map(|settings| settings.skill_storage_location)
+        .unwrap_or_default()
+}
+
+pub fn set_skill_storage_location(
+    location: crate::services::skill::SkillStorageLocation,
+) -> Result<(), AppError> {
+    let mut settings = get_settings();
+    settings.skill_storage_location = location;
+    update_settings(settings)
+}
+
 pub fn get_webdav_sync_settings() -> Option<WebDavSyncSettings> {
     settings_store()
         .read()
@@ -1375,11 +1424,26 @@ pub fn set_skip_claude_onboarding(enabled: bool) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        get_preferred_editor, get_s3_sync_settings, get_webdav_sync_settings, set_preferred_editor,
-        set_s3_sync_settings, set_webdav_sync_settings, update_settings, AppSettings,
-        LocalMigrations, S3SyncSettings, WebDavSyncSettings,
+        get_pi_override_dir, get_preferred_editor, get_s3_sync_settings, get_settings,
+        get_webdav_sync_settings, set_preferred_editor, set_s3_sync_settings,
+        set_webdav_sync_settings, update_settings, AppSettings, LocalMigrations, S3SyncSettings,
+        WebDavSyncSettings,
     };
     use crate::test_support::TestEnvGuard;
+
+    #[test]
+    fn pi_override_dir_is_normalized_and_resolved() {
+        let home = tempfile::tempdir().expect("create isolated home");
+        let _environment = TestEnvGuard::isolated(home.path());
+        let settings = AppSettings {
+            pi_config_dir: Some("  ~/custom-pi  ".to_string()),
+            ..Default::default()
+        };
+        update_settings(settings).expect("save isolated settings");
+
+        assert_eq!(get_pi_override_dir(), Some(home.path().join("custom-pi")));
+        assert_eq!(get_settings().pi_config_dir.as_deref(), Some("~/custom-pi"));
+    }
     use serde_json::json;
     use std::sync::RwLock;
 

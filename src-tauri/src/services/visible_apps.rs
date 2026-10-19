@@ -1,6 +1,6 @@
 use crate::app_config::AppType;
-use crate::cli::i18n::texts;
 use crate::error::AppError;
+use crate::i18n::{self, texts, Language};
 use crate::settings::{self, VisibleApps, VisibleAppsMode};
 use std::collections::HashMap;
 
@@ -34,11 +34,12 @@ pub struct VisibleAppsStartupOutcome {
     pub should_prompt: bool,
 }
 
-const CONTROLLED_APPS: [AppType; 4] = [
+const CONTROLLED_APPS: [AppType; 5] = [
     AppType::Gemini,
     AppType::OpenCode,
     AppType::Hermes,
     AppType::OpenClaw,
+    AppType::Pi,
 ];
 
 pub fn detect_visible_app_installation() -> VisibleAppsDetection {
@@ -174,7 +175,7 @@ pub fn notice_message(notice: &VisibleAppsNotice) -> String {
 }
 
 fn list_separator() -> &'static str {
-    if crate::cli::i18n::current_language() == crate::cli::i18n::Language::Chinese {
+    if i18n::current_language() == Language::Chinese {
         "、"
     } else {
         ", "
@@ -189,6 +190,7 @@ pub fn app_display_name(app: &AppType) -> &'static str {
         AppType::OpenCode => "OpenCode",
         AppType::Hermes => "Hermes",
         AppType::OpenClaw => "OpenClaw",
+        AppType::Pi => "Pi",
     }
 }
 
@@ -319,6 +321,7 @@ mod tests {
             opencode: true,
             hermes: true,
             openclaw: false,
+            pi: false,
         };
         settings.visible_apps_settings = VisibleAppsSettings {
             mode: VisibleAppsMode::Auto,
@@ -361,6 +364,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: true,
+            pi: false,
         };
         settings.visible_apps_settings = VisibleAppsSettings {
             mode: VisibleAppsMode::Manual,
@@ -428,6 +432,7 @@ mod tests {
             opencode: true,
             hermes: true,
             openclaw: true,
+            pi: false,
         };
         settings.visible_apps_settings = VisibleAppsSettings {
             mode: VisibleAppsMode::Auto,

@@ -129,7 +129,7 @@ pub fn is_chinese() -> bool {
 #[macro_export]
 macro_rules! t {
     ($en:expr, $zh:expr) => {
-        if $crate::cli::i18n::is_chinese() {
+        if $crate::i18n::is_chinese() {
             $zh
         } else {
             $en
@@ -1532,6 +1532,14 @@ pub mod texts {
         }
     }
 
+    pub fn tui_quota_resets_at(time: &str) -> String {
+        if is_chinese() {
+            format!("重置时间: {time}")
+        } else {
+            format!("reset: {time}")
+        }
+    }
+
     pub fn tui_quota_resets_in(time: &str) -> String {
         if is_chinese() {
             format!("{time} 后重置")
@@ -2300,6 +2308,46 @@ pub mod texts {
         }
     }
 
+    pub fn tui_codex_reasoning_levels_header() -> &'static str {
+        if is_chinese() {
+            "档位"
+        } else {
+            "Levels"
+        }
+    }
+
+    pub fn tui_codex_reasoning_levels() -> &'static str {
+        if is_chinese() {
+            "推理档位"
+        } else {
+            "Reasoning Levels"
+        }
+    }
+
+    pub fn tui_codex_default_reasoning_header() -> &'static str {
+        if is_chinese() {
+            "默认"
+        } else {
+            "Default"
+        }
+    }
+
+    pub fn tui_codex_default_reasoning_level() -> &'static str {
+        if is_chinese() {
+            "默认推理档位"
+        } else {
+            "Default Reasoning Level"
+        }
+    }
+
+    pub fn tui_codex_reasoning_auto() -> &'static str {
+        if is_chinese() {
+            "自动"
+        } else {
+            "Auto"
+        }
+    }
+
     pub fn tui_codex_model_catalog_model_prompt() -> &'static str {
         if is_chinese() {
             "模型 ID"
@@ -2356,6 +2404,14 @@ pub mod texts {
         }
     }
 
+    pub fn tui_label_claude_fallback_one_m() -> &'static str {
+        if is_chinese() {
+            "默认模型 1M"
+        } else {
+            "Default model 1M"
+        }
+    }
+
     pub fn tui_label_claude_quick_config() -> &'static str {
         if is_chinese() {
             "快捷配置菜单"
@@ -2364,11 +2420,11 @@ pub mod texts {
         }
     }
 
-    pub fn tui_claude_quick_config_summary(enabled: usize) -> String {
+    pub fn tui_claude_quick_config_summary(enabled: usize, total: usize) -> String {
         if is_chinese() {
-            format!("已启用 {}/4", enabled)
+            format!("已启用 {}/{}", enabled, total)
         } else {
-            format!("{}/4 enabled", enabled)
+            format!("{}/{} enabled", enabled, total)
         }
     }
 
@@ -3188,6 +3244,41 @@ pub mod texts {
         }
     }
 
+    /// Singular label for the provider form's Template field row, which holds
+    /// one selection. The plural `tui_form_templates_title` still titles the
+    /// MCP chips box, which shows the whole list at once.
+    pub fn tui_label_provider_template() -> &'static str {
+        if is_chinese() {
+            "模板"
+        } else {
+            "Template"
+        }
+    }
+
+    pub fn tui_provider_template_picker_title() -> &'static str {
+        if is_chinese() {
+            "供应商模板"
+        } else {
+            "Provider templates"
+        }
+    }
+
+    pub fn tui_provider_template_section_builtin() -> &'static str {
+        if is_chinese() {
+            "内置"
+        } else {
+            "Built-in"
+        }
+    }
+
+    pub fn tui_provider_template_section_sponsors() -> &'static str {
+        if is_chinese() {
+            "赞助商"
+        } else {
+            "Sponsors"
+        }
+    }
+
     pub fn tui_form_common_config_button() -> &'static str {
         if is_chinese() {
             "通用配置"
@@ -3952,6 +4043,22 @@ pub mod texts {
             "添加/移除"
         } else {
             "add/remove"
+        }
+    }
+
+    pub fn tui_managed_auth_reauthenticate() -> &'static str {
+        if is_chinese() {
+            "重新认证"
+        } else {
+            "Reauthenticate"
+        }
+    }
+
+    pub fn tui_managed_auth_reauth_required() -> &'static str {
+        if is_chinese() {
+            "需要重新认证"
+        } else {
+            "Reauthentication required"
         }
     }
 
@@ -4747,6 +4854,7 @@ pub mod texts {
         }
     }
 
+    #[cfg(feature = "cli")]
     pub fn tui_settings_theme_mode_name(mode: crate::cli::tui::theme::ThemeMode) -> &'static str {
         use crate::cli::tui::theme::ThemeMode;
         if is_chinese() {
@@ -4780,6 +4888,7 @@ pub mod texts {
         }
     }
 
+    #[cfg(feature = "cli")]
     pub fn tui_settings_icon_mode_name(mode: crate::cli::tui::icons::IconMode) -> &'static str {
         use crate::cli::tui::icons::IconMode;
         if is_chinese() {
@@ -5161,6 +5270,26 @@ pub mod texts {
         "Default (~/.openclaw)"
     }
 
+    pub fn tui_settings_pi_config_dir_label() -> &'static str {
+        if is_chinese() {
+            "Pi 配置目录"
+        } else {
+            "Pi Config Directory"
+        }
+    }
+
+    pub fn tui_settings_pi_config_dir_prompt() -> &'static str {
+        if is_chinese() {
+            "输入 Pi agent 配置目录；留空恢复默认 ~/.pi/agent"
+        } else {
+            "Enter the Pi agent config directory; leave empty to use ~/.pi/agent"
+        }
+    }
+
+    pub fn tui_settings_pi_config_dir_default_value() -> &'static str {
+        "Default (~/.pi/agent)"
+    }
+
     pub fn tui_settings_preferred_editor_label() -> &'static str {
         if is_chinese() {
             "外部编辑器"
@@ -5268,6 +5397,22 @@ pub mod texts {
             "OpenClaw 配置目录已保存。"
         } else {
             "OpenClaw config directory saved."
+        }
+    }
+
+    pub fn tui_toast_pi_config_dir_saved() -> &'static str {
+        if is_chinese() {
+            "Pi 配置目录已保存。"
+        } else {
+            "Pi config directory saved."
+        }
+    }
+
+    pub fn tui_toast_pi_config_dir_import_failed(err: &str) -> String {
+        if is_chinese() {
+            format!("Pi 配置目录已保存，但导入原生供应商失败: {err}")
+        } else {
+            format!("Pi config directory saved, but native provider import failed: {err}")
         }
     }
 
@@ -5610,33 +5755,82 @@ pub mod texts {
 
     pub fn tui_skills_sync_method_title() -> &'static str {
         if is_chinese() {
-            "选择同步方式"
+            "选择 Skills 同步方式"
         } else {
-            "Select Sync Method"
+            "Select Skill Sync Method"
+        }
+    }
+
+    pub fn tui_settings_skills_sync_method_label() -> &'static str {
+        if is_chinese() {
+            "Skills 同步方式"
+        } else {
+            "Skill Sync Method"
+        }
+    }
+
+    pub fn tui_settings_skills_storage_location_label() -> &'static str {
+        if is_chinese() {
+            "技能存储位置"
+        } else {
+            "Skill storage location"
+        }
+    }
+
+    pub fn tui_skills_storage_location_title() -> &'static str {
+        if is_chinese() {
+            "选择技能存储位置"
+        } else {
+            "Select Skill Storage Location"
+        }
+    }
+
+    pub fn tui_skills_storage_location_name(
+        location: crate::services::skill::SkillStorageLocation,
+    ) -> &'static str {
+        match location {
+            crate::services::skill::SkillStorageLocation::CcSwitch => {
+                "CC Switch (~/.cc-switch/skills)"
+            }
+            crate::services::skill::SkillStorageLocation::Unified => "Unified (~/.agents/skills)",
+        }
+    }
+
+    pub fn tui_confirm_skills_storage_location(
+        location: crate::services::skill::SkillStorageLocation,
+        count: usize,
+    ) -> String {
+        let target = tui_skills_storage_location_name(location);
+        if is_chinese() {
+            format!("将把 {count} 个已管理技能迁移到 {target}，并刷新各应用的技能部署。继续吗？")
+        } else {
+            format!("Move {count} managed Skill(s) to {target} and refresh their app deployments?")
+        }
+    }
+
+    pub fn tui_skills_storage_location_loading() -> &'static str {
+        if is_chinese() {
+            "正在迁移技能并刷新应用部署..."
+        } else {
+            "Moving Skills and refreshing app deployments..."
         }
     }
 
     pub fn tui_skills_sync_method_name(method: crate::services::skill::SyncMethod) -> &'static str {
         match method {
-            crate::services::skill::SyncMethod::Auto => {
+            crate::services::skill::SyncMethod::Auto
+            | crate::services::skill::SyncMethod::Symlink => {
                 if is_chinese() {
-                    "自动（优先使用链接，失败时复制）"
+                    "软连接"
                 } else {
-                    "Automatic (prefer links, fall back to copy)"
-                }
-            }
-            crate::services::skill::SyncMethod::Symlink => {
-                if is_chinese() {
-                    "仅链接"
-                } else {
-                    "Links only"
+                    "Symlink"
                 }
             }
             crate::services::skill::SyncMethod::Copy => {
                 if is_chinese() {
-                    "仅复制"
+                    "文件复制"
                 } else {
-                    "Copy only"
+                    "Copy Files"
                 }
             }
         }
@@ -5656,14 +5850,15 @@ pub mod texts {
         gemini: usize,
         opencode: usize,
         hermes: usize,
+        pi: usize,
     ) -> String {
         if is_chinese() {
             format!(
-                "已安装 · Claude: {claude} · Codex: {codex} · Gemini: {gemini} · OpenCode: {opencode} · Hermes: {hermes}"
+                "Claude: {claude} · Codex: {codex} · Gemini: {gemini} · OpenCode: {opencode} · Hermes: {hermes} · Pi: {pi}"
             )
         } else {
             format!(
-                "Installed · Claude: {claude} · Codex: {codex} · Gemini: {gemini} · OpenCode: {opencode} · Hermes: {hermes}"
+                "Claude: {claude} · Codex: {codex} · Gemini: {gemini} · OpenCode: {opencode} · Hermes: {hermes} · Pi: {pi}"
             )
         }
     }
@@ -8564,6 +8759,35 @@ pub mod texts {
         }
     }
 
+    pub fn tui_toast_skills_storage_location_set(
+        location: &str,
+        migrated: usize,
+        skipped: usize,
+    ) -> String {
+        if is_chinese() {
+            format!("技能存储位置已切换为 {location}：迁移 {migrated} 个，跳过 {skipped} 个。")
+        } else {
+            format!("Skill storage set to {location}: {migrated} moved, {skipped} skipped.")
+        }
+    }
+
+    pub fn tui_toast_skills_storage_location_partial(
+        location: &str,
+        migrated: usize,
+        skipped: usize,
+        failed: usize,
+    ) -> String {
+        if is_chinese() {
+            format!(
+                "技能存储已切换为 {location}：迁移 {migrated} 个，跳过 {skipped} 个，失败 {failed} 个。"
+            )
+        } else {
+            format!(
+                "Skill storage set to {location}: {migrated} moved, {skipped} skipped, {failed} failed."
+            )
+        }
+    }
+
     pub fn tui_toast_repo_spec_empty() -> &'static str {
         if is_chinese() {
             "仓库不能为空。"
@@ -9377,6 +9601,32 @@ pub mod texts {
 
     pub fn menu_manage_prompts_variants() -> (&'static str, &'static str) {
         ("💬 Prompts", "💬 提示词")
+    }
+
+    pub fn menu_pi_system_prompts() -> &'static str {
+        let (en, zh) = menu_pi_system_prompts_variants();
+        if is_chinese() {
+            zh
+        } else {
+            en
+        }
+    }
+
+    pub fn menu_pi_system_prompts_variants() -> (&'static str, &'static str) {
+        ("🧠 System Prompts", "🧠 系统提示词")
+    }
+
+    pub fn menu_pi_prompt_templates() -> &'static str {
+        let (en, zh) = menu_pi_prompt_templates_variants();
+        if is_chinese() {
+            zh
+        } else {
+            en
+        }
+    }
+
+    pub fn menu_pi_prompt_templates_variants() -> (&'static str, &'static str) {
+        ("📝 Prompt Templates", "📝 提示词模板")
     }
 
     pub fn menu_manage_config() -> &'static str {

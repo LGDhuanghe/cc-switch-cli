@@ -2,7 +2,7 @@ use crate::app_config::{AppType, SkillApps};
 use crate::cli::i18n::texts;
 use crate::error::AppError;
 use crate::services::{
-    skill::{ImportSkillSelection, SyncMethod},
+    skill::{ImportSkillSelection, SkillStorageLocation, SyncMethod},
     SkillService,
 };
 
@@ -164,6 +164,29 @@ pub(super) fn set_sync_method(
     Ok(())
 }
 
+pub(super) fn set_storage_location(
+    ctx: &mut RuntimeActionContext<'_>,
+    target: SkillStorageLocation,
+) -> Result<(), AppError> {
+    let Some(tx) = ctx.skills_req_tx else {
+        return Err(AppError::Message(
+            texts::tui_error_skills_worker_unavailable().to_string(),
+        ));
+    };
+    tx.send(super::super::runtime_systems::SkillsReq::MigrateStorage { target })
+        .map_err(|e| AppError::Message(e.to_string()))?;
+    // Discovery shares this worker but has no blocking overlay. Invalidate a
+    // queued result so it cannot dismiss the migration overlay when it lands.
+    ctx.app.skills_discover_active_request_id = None;
+    ctx.app.skills_discover_loading = false;
+    ctx.app.overlay = Overlay::Loading {
+        kind: LoadingKind::SkillOperation,
+        title: texts::tui_skills_storage_location_title().to_string(),
+        message: texts::tui_skills_storage_location_loading().to_string(),
+    };
+    Ok(())
+}
+
 pub(super) fn discover(
     ctx: &mut RuntimeActionContext<'_>,
     query: String,
@@ -241,16 +264,12 @@ pub(super) fn repo_toggle_enabled(
     name: String,
     enabled: bool,
 ) -> Result<(), AppError> {
-    let mut index = SkillService::load_index()?;
-    if let Some(repo) = index
-        .repos
-        .iter_mut()
-        .find(|r| r.owner == owner && r.name == name)
-    {
-        repo.enabled = enabled;
-        SkillService::save_index(&index)?;
-        clear_repo_discover_state(ctx);
+    if !SkillService::set_repo_enabled(&owner, &name, enabled)? {
+        return Err(AppError::Message(format!(
+            "Repository not found: {owner}/{name}"
+        )));
     }
+    clear_repo_discover_state(ctx);
     *ctx.data = super::super::data::UiData::load(&ctx.app.app_type)?;
     ctx.app
         .push_toast(texts::tui_toast_repo_toggled(enabled), ToastKind::Success);

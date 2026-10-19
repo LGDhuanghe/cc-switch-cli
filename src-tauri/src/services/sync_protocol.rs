@@ -4,6 +4,8 @@
 //! either transport receives the same validation and restore guarantees.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::sync::OnceLock;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -12,7 +14,9 @@ use tempfile::tempdir;
 
 use crate::database::{Database, SCHEMA_VERSION};
 use crate::error::AppError;
+use crate::store::AppState;
 
+use super::skill::{skill_state_read_guard, skill_state_write_guard};
 use super::webdav_sync::archive::{restore_skills_zip, zip_skills_ssot, SkillsBackup};
 
 pub(crate) const PROTOCOL_FORMAT: &str = "cc-switch-webdav-sync";
@@ -26,6 +30,55 @@ pub(crate) const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_SYNC_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
 
 pub(crate) const MAX_DEVICE_NAME_LEN: usize = 64;
+
+/// Serialize uploads and downloads across every cloud transport. Separate
+/// WebDAV and S3 locks allowed both to replace the database and Skills SSOT at
+/// the same time.
+pub(crate) fn sync_mutex() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+pub(crate) async fn run_with_sync_lock<T, Fut>(operation: Fut) -> Result<T, AppError>
+where
+    Fut: Future<Output = Result<T, AppError>>,
+{
+    let _guard = sync_mutex().lock().await;
+    operation.await
+}
+
+pub(crate) fn run_with_sync_lock_sync<T>(
+    operation: impl FnOnce() -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    // Only drive lock acquisition in LocalPool. The synchronous restore and
+    // post-import projection call async helpers through block_on themselves.
+    // Keep the guard alive across the operation without nesting executors.
+    let _guard = futures::executor::block_on(sync_mutex().lock());
+    operation()
+}
+
+pub(crate) fn project_restored_state_best_effort(
+    state: &AppState,
+    context: &str,
+) -> Option<String> {
+    match super::ProviderService::sync_current_to_live(state) {
+        Ok(()) => None,
+        Err(error) => {
+            log::warn!("{context} completed but live config sync failed: {error}");
+            Some(error.to_string())
+        }
+    }
+}
+
+pub(crate) fn project_current_restored_state_best_effort(context: &str) -> Option<String> {
+    match AppState::try_new() {
+        Ok(state) => project_restored_state_best_effort(&state, context),
+        Err(error) => {
+            log::warn!("{context} completed but state reload failed: {error}");
+            Some(error.to_string())
+        }
+    }
+}
 
 pub(crate) fn localized(
     key: &'static str,
@@ -91,7 +144,11 @@ impl RemoteLayout {
 }
 
 pub(crate) fn build_local_snapshot() -> Result<LocalSnapshot, AppError> {
-    let db_sql = Database::init()?.export_sql_string_for_sync()?.into_bytes();
+    let db = Database::init()?;
+    // Keep Skills database rows and the filesystem SSOT at one logical point
+    // in time while the two snapshot artifacts are built.
+    let _skill_state_guard = skill_state_read_guard();
+    let db_sql = db.export_sql_string_for_sync()?.into_bytes();
 
     let temp = tempdir().map_err(|error| {
         io_context_localized(
@@ -280,6 +337,9 @@ pub(crate) fn apply_snapshot(db_sql: &[u8], skills_zip: &[u8]) -> Result<(), App
     })?;
     validate_sql_user_version_for_import(sql)?;
 
+    // Exclude local Skills mutations while both the SSOT and its database rows
+    // are replaced. The outer sync/restore guards are acquired before this lock.
+    let _skill_state_guard = skill_state_write_guard();
     let skills_backup = SkillsBackup::backup_current_skills()?;
     restore_skills_zip(skills_zip)?;
 
@@ -428,6 +488,63 @@ pub(crate) fn normalize_device_name(raw: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn synchronous_restore_can_run_async_helpers_while_holding_sync_lock() {
+        let value = run_with_sync_lock_sync(|| {
+            assert!(sync_mutex().try_lock().is_err());
+            // Post-import projection acquires its own async mutation guard.
+            // It must be able to drive that future without nesting LocalPool.
+            let value = futures::executor::block_on(async { 42 });
+            assert!(sync_mutex().try_lock().is_err());
+            Ok(value)
+        })
+        .expect("synchronous restore should allow async helpers");
+        assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn synchronous_restore_releases_sync_lock_after_error() {
+        let error = run_with_sync_lock_sync::<()>(|| {
+            assert!(sync_mutex().try_lock().is_err());
+            Err(AppError::Message("restore failed".to_string()))
+        })
+        .expect_err("restore error should propagate");
+        assert_eq!(error.to_string(), "restore failed");
+        run_with_sync_lock_sync(|| Ok(())).expect("next restore can acquire the lock");
+    }
+
+    #[tokio::test]
+    async fn cloud_and_synchronous_restore_paths_share_one_sync_mutex() {
+        let webdav_lock = crate::services::webdav_sync::sync_mutex();
+        let s3_lock = crate::services::s3_sync::sync_mutex();
+        assert!(std::ptr::eq(webdav_lock, s3_lock));
+
+        let guard = webdav_lock.lock().await;
+        assert!(s3_lock.try_lock().is_err());
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            started_tx.send(()).expect("announce synchronous restore");
+            run_with_sync_lock_sync(|| {
+                entered_tx.send(()).expect("enter synchronous restore");
+                Ok(())
+            })
+            .expect("run synchronous restore");
+        });
+        started_rx.recv().expect("wait for synchronous restore");
+        assert!(
+            entered_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "the synchronous restore path must wait for the cloud sync lock"
+        );
+        drop(guard);
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("synchronous restore enters after cloud sync");
+        waiter.join().expect("join synchronous restore");
+    }
+
     fn manifest(db_compat_version: Option<u32>) -> SyncManifest {
         SyncManifest {
             format: PROTOCOL_FORMAT.to_string(),
@@ -450,6 +567,14 @@ mod tests {
     fn current_database_schema_is_accepted() {
         let sql = format!("PRAGMA user_version={SCHEMA_VERSION};\n");
         assert!(validate_sql_user_version_for_import(&sql).is_ok());
+    }
+
+    #[test]
+    fn upstream_v19_and_v20_database_schemas_are_accepted() {
+        for version in [19, 20] {
+            let sql = format!("PRAGMA user_version={version};\n");
+            assert!(validate_sql_user_version_for_import(&sql).is_ok());
+        }
     }
 
     #[test]

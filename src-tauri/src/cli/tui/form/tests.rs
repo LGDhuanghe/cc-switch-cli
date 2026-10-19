@@ -12,27 +12,27 @@ fn template_index_by_label(app_type: AppType, label: &str) -> usize {
 }
 
 fn claudeapi_template_index(app_type: AppType) -> usize {
-    template_index_by_label(app_type, "* ClaudeAPI")
+    template_index_by_label(app_type, "ClaudeAPI")
 }
 
 fn packycode_template_index(app_type: AppType) -> usize {
-    template_index_by_label(app_type, "* PackyCode")
+    template_index_by_label(app_type, "PackyCode")
 }
 
 fn aicodemirror_template_index(app_type: AppType) -> usize {
-    template_index_by_label(app_type, "* AICodeMirror")
+    template_index_by_label(app_type, "AICodeMirror")
 }
 
 fn cubence_template_index(app_type: AppType) -> usize {
-    template_index_by_label(app_type, "* Cubence")
+    template_index_by_label(app_type, "Cubence")
 }
 
 fn runapi_template_index(app_type: AppType) -> usize {
-    template_index_by_label(app_type, "* RunAPI")
+    template_index_by_label(app_type, "RunAPI")
 }
 
 fn dds_template_index(app_type: AppType) -> usize {
-    template_index_by_label(app_type, "* DDS")
+    template_index_by_label(app_type, "DDS")
 }
 
 fn deepseek_template_index(app_type: AppType) -> usize {
@@ -79,18 +79,33 @@ fn assert_cli_template_matches_tui_serializer(
     );
 }
 
+/// Chip labels keep the ASCII `"* "` marker for the chip-row consumers (the
+/// MCP form and the CLI template chooser); the provider form's flat labels
+/// strip it, because its collapsed row and picker show sponsors under an
+/// explicit Sponsors header instead.
 #[test]
 fn provider_add_form_template_labels_use_ascii_prefix_for_packycode() {
-    let form = ProviderAddFormState::new(AppType::Claude);
-    let labels = form.template_labels();
+    let chip_labels =
+        crate::provider_preset_sponsors::sponsor_provider_presets_for_app(&AppType::Claude)
+            .iter()
+            .map(|preset| preset.chip_label)
+            .collect::<Vec<_>>();
 
     assert!(
-        labels.contains(&"* PackyCode"),
+        chip_labels.contains(&"* PackyCode"),
         "expected PackyCode chip label to use ASCII prefix for alignment stability"
     );
     assert!(
-        labels.contains(&"* ClaudeAPI"),
+        chip_labels.contains(&"* ClaudeAPI"),
         "expected ClaudeAPI chip label to use ASCII prefix for alignment stability"
+    );
+
+    let labels = ProviderAddFormState::new(AppType::Claude).template_labels();
+    assert!(labels.contains(&"PackyCode"), "{labels:?}");
+    assert!(labels.contains(&"ClaudeAPI"), "{labels:?}");
+    assert!(
+        labels.iter().all(|label| !label.starts_with("* ")),
+        "provider template labels must drop the chip marker: {labels:?}"
     );
 }
 
@@ -103,15 +118,27 @@ fn provider_add_form_template_labels_follow_explicit_support_matrix() {
             "Custom",
             "Claude Official",
             "Codex",
-            "* AICodeMirror",
-            "* ClaudeAPI",
-            "* Cubence",
-            "* OpenModel",
-            "* RunAPI",
-            "* Qiniu",
-            "* FennoAI",
-            "* PackyCode",
-            "* DDS",
+            "88API",
+            "APIMart",
+            "Cubence",
+            "OpenModel",
+            "PackyCode",
+            "DDS",
+            "RunAPI",
+            "AICodeMirror",
+            "ClaudeAPI",
+            "Qiniu",
+            "PatewayAI",
+            "FennoAI",
+            "DeepSeek",
+            "Zhipu GLM",
+            "Zhipu GLM en",
+            "ModelScope",
+            "MiniMax",
+            "Xiaomi MiMo",
+            "Xiaomi MiMo Token Plan (China)",
+            "OpenCode Go",
+            "OpenRouter",
         ]
     );
 
@@ -121,15 +148,26 @@ fn provider_add_form_template_labels_follow_explicit_support_matrix() {
         vec![
             "Custom",
             "OpenAI Official",
-            "* AICodeMirror",
-            "* Cubence",
-            "* OpenModel",
-            "* RunAPI",
-            "* Qiniu",
-            "* FennoAI",
-            "* PackyCode",
-            "* DDS",
+            "88API",
+            "APIMart",
+            "Cubence",
+            "OpenModel",
+            "PackyCode",
+            "DDS",
+            "RunAPI",
+            "AICodeMirror",
+            "Qiniu",
+            "PatewayAI",
+            "FennoAI",
             "DeepSeek",
+            "Zhipu GLM",
+            "Zhipu GLM en",
+            "ModelScope",
+            "MiniMax",
+            "Xiaomi MiMo",
+            "Xiaomi MiMo Token Plan (China)",
+            "OpenCode Go",
+            "OpenRouter",
         ]
     );
 
@@ -139,11 +177,13 @@ fn provider_add_form_template_labels_follow_explicit_support_matrix() {
         vec![
             "Custom",
             "Google OAuth",
-            "* AICodeMirror",
-            "* Cubence",
-            "* OpenModel",
-            "* Qiniu",
-            "* PackyCode",
+            "88API",
+            "APIMart",
+            "Cubence",
+            "OpenModel",
+            "PackyCode",
+            "AICodeMirror",
+            "Qiniu",
         ]
     );
 
@@ -152,17 +192,19 @@ fn provider_add_form_template_labels_follow_explicit_support_matrix() {
         opencode_labels,
         vec![
             "Custom",
-            "* AICodeMirror",
-            "* Cubence",
-            "* OpenModel",
-            "* RunAPI",
-            "* Qiniu",
-            "* FennoAI",
-            "* PackyCode"
+            "88API",
+            "APIMart",
+            "Cubence",
+            "OpenModel",
+            "PackyCode",
+            "RunAPI",
+            "AICodeMirror",
+            "Qiniu",
+            "FennoAI",
         ]
     );
     assert!(
-        !opencode_labels.contains(&"* ClaudeAPI"),
+        !opencode_labels.contains(&"ClaudeAPI"),
         "OpenCode should not expose Claude-only sponsor presets"
     );
 
@@ -171,13 +213,15 @@ fn provider_add_form_template_labels_follow_explicit_support_matrix() {
         hermes_labels,
         vec![
             "Custom",
-            "* AICodeMirror",
-            "* Cubence",
-            "* OpenModel",
-            "* RunAPI",
-            "* Qiniu",
-            "* FennoAI",
-            "* PackyCode"
+            "88API",
+            "APIMart",
+            "Cubence",
+            "OpenModel",
+            "PackyCode",
+            "RunAPI",
+            "AICodeMirror",
+            "Qiniu",
+            "FennoAI",
         ]
     );
 
@@ -186,29 +230,416 @@ fn provider_add_form_template_labels_follow_explicit_support_matrix() {
         openclaw_labels,
         vec![
             "Custom",
-            "* AICodeMirror",
-            "* Cubence",
-            "* OpenModel",
-            "* RunAPI",
-            "* Qiniu",
-            "* FennoAI",
-            "* PackyCode"
+            "88API",
+            "APIMart",
+            "Cubence",
+            "OpenModel",
+            "PackyCode",
+            "RunAPI",
+            "AICodeMirror",
+            "Qiniu",
+            "FennoAI",
         ]
     );
     assert!(
-        !openclaw_labels.contains(&"* ClaudeAPI"),
+        !openclaw_labels.contains(&"ClaudeAPI"),
         "OpenClaw should not expose Claude-only sponsor presets"
+    );
+}
+
+#[test]
+fn provider_add_form_pi_exposes_only_the_selected_template_scope() {
+    let form = ProviderAddFormState::new(AppType::Pi);
+    assert_eq!(
+        form.template_labels(),
+        vec![
+            "Custom",
+            "DeepSeek",
+            "Zhipu GLM",
+            "Zhipu GLM en",
+            "ModelScope",
+            "MiniMax",
+            "Xiaomi MiMo",
+            "Xiaomi MiMo Token Plan (China)",
+            "OpenCode Go",
+            "OpenRouter",
+            "88API",
+            "APIMart",
+            "Cubence",
+            "PackyCode",
+            "RunAPI",
+            "AICodeMirror",
+            "Qiniu",
+            "FennoAI",
+        ]
+    );
+}
+
+#[test]
+fn provider_add_form_pi_picker_uses_family_sections() {
+    let rows = ProviderAddFormState::new(AppType::Pi).template_picker_rows();
+    assert_eq!(
+        rows.first(),
+        Some(&ProviderTemplateRow::Header(
+            ProviderTemplateSection::BuiltIn
+        ))
+    );
+    assert_eq!(
+        rows.get(11),
+        Some(&ProviderTemplateRow::Header(
+            ProviderTemplateSection::Sponsors
+        ))
+    );
+
+    let items = rows
+        .iter()
+        .filter_map(|row| match row {
+            ProviderTemplateRow::Item {
+                flat_idx,
+                label,
+                section,
+            } => Some((*flat_idx, *label, *section)),
+            ProviderTemplateRow::Header(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(items.len(), 18);
+    assert_eq!(items[0], (0, "Custom", ProviderTemplateSection::BuiltIn));
+    assert_eq!(
+        items[9],
+        (9, "OpenRouter", ProviderTemplateSection::BuiltIn)
+    );
+    assert_eq!(items[10], (10, "88API", ProviderTemplateSection::Sponsors));
+    assert_eq!(
+        items[17],
+        (17, "FennoAI", ProviderTemplateSection::Sponsors)
+    );
+}
+
+#[test]
+fn provider_add_form_pi_templates_preserve_upstream_native_settings() {
+    let presets = crate::provider_preset_pi::PI_BUILTIN_PROVIDER_PRESETS
+        .iter()
+        .chain(crate::provider_preset_pi::PI_SPONSOR_PROVIDER_PRESETS.iter());
+
+    for (offset, preset) in presets.enumerate() {
+        let mut form = ProviderAddFormState::new(AppType::Pi);
+        form.apply_template(offset + 1, &[]);
+        let provider = form.to_provider_json_value();
+
+        assert_eq!(provider["id"], preset.provider_key, "{} id", preset.label);
+        assert_eq!(provider["name"], preset.label, "{} name", preset.label);
+        assert_eq!(
+            provider["category"], preset.category,
+            "{} category",
+            preset.label
+        );
+        assert_eq!(provider["icon"], preset.icon, "{} icon", preset.label);
+        assert_eq!(
+            provider["settingsConfig"],
+            preset.settings_config(),
+            "{} native settings",
+            preset.label
+        );
+
+        if let Some(sponsor_id) = preset.sponsor_id {
+            let sponsor = crate::provider_preset_sponsors::sponsor_provider_preset(sponsor_id)
+                .expect("selected Pi sponsor must exist in the CLI sponsor registry");
+            assert_eq!(provider["websiteUrl"], sponsor.website_url);
+            assert_eq!(provider["meta"]["isPartner"], true);
+            assert_eq!(
+                provider["meta"]["partnerPromotionKey"],
+                sponsor.partner_promotion_key
+            );
+        } else {
+            assert_eq!(provider["websiteUrl"], preset.website_url);
+            assert!(provider["meta"].get("isPartner").is_none());
+            if let Some(promotion_key) = preset.partner_promotion_key {
+                assert_eq!(provider["meta"]["partnerPromotionKey"], promotion_key);
+            }
+        }
+    }
+}
+
+#[test]
+fn provider_add_form_claude_builtin_presets_match_upstream_fields() {
+    let cases = [
+        (
+            "DeepSeek",
+            "https://api.deepseek.com/anthropic",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "deepseek-v4-pro",
+            ClaudeApiKeyField::AuthToken,
+        ),
+        (
+            "Zhipu GLM",
+            "https://open.bigmodel.cn/api/anthropic",
+            "glm-5.1",
+            "glm-5.1",
+            "glm-5.1",
+            "glm-5.1",
+            ClaudeApiKeyField::AuthToken,
+        ),
+        (
+            "Zhipu GLM en",
+            "https://api.z.ai/api/anthropic",
+            "glm-5.1",
+            "glm-5.1",
+            "glm-5.1",
+            "glm-5.1",
+            ClaudeApiKeyField::AuthToken,
+        ),
+        (
+            "ModelScope",
+            "https://api-inference.modelscope.cn",
+            "ZhipuAI/GLM-5.2",
+            "ZhipuAI/GLM-5.2",
+            "ZhipuAI/GLM-5.2",
+            "ZhipuAI/GLM-5.2",
+            ClaudeApiKeyField::AuthToken,
+        ),
+        (
+            "MiniMax",
+            "https://api.minimaxi.com/anthropic",
+            "MiniMax-M2.7",
+            "MiniMax-M2.7",
+            "MiniMax-M2.7",
+            "MiniMax-M2.7",
+            ClaudeApiKeyField::AuthToken,
+        ),
+        (
+            "Xiaomi MiMo",
+            "https://api.xiaomimimo.com/anthropic",
+            "mimo-v2.5-pro",
+            "mimo-v2.5-pro",
+            "mimo-v2.5-pro",
+            "mimo-v2.5-pro",
+            ClaudeApiKeyField::AuthToken,
+        ),
+        (
+            "Xiaomi MiMo Token Plan (China)",
+            "https://token-plan-cn.xiaomimimo.com/anthropic",
+            "mimo-v2.5-pro",
+            "mimo-v2.5-pro",
+            "mimo-v2.5-pro",
+            "mimo-v2.5-pro",
+            ClaudeApiKeyField::AuthToken,
+        ),
+        (
+            "OpenCode Go",
+            "https://opencode.ai/zen/go",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash",
+            ClaudeApiKeyField::ApiKey,
+        ),
+        (
+            "OpenRouter",
+            "https://openrouter.ai/api",
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-opus-5",
+            ClaudeApiKeyField::AuthToken,
+        ),
+    ];
+
+    for (label, base_url, model, haiku, sonnet, opus, key_field) in cases {
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        form.apply_template(template_index_by_label(AppType::Claude, label), &[]);
+        assert_eq!(form.claude_api_key_field, key_field, "{label}");
+
+        let provider = form.to_provider_json_value();
+        let env = &provider["settingsConfig"]["env"];
+        assert_eq!(provider["name"], label, "{label}");
+        assert_eq!(env["ANTHROPIC_BASE_URL"], base_url, "{label}");
+        assert_eq!(env["ANTHROPIC_MODEL"], model, "{label}");
+        assert_eq!(env["ANTHROPIC_DEFAULT_HAIKU_MODEL"], haiku, "{label}");
+        assert_eq!(env["ANTHROPIC_DEFAULT_SONNET_MODEL"], sonnet, "{label}");
+        assert_eq!(env["ANTHROPIC_DEFAULT_OPUS_MODEL"], opus, "{label}");
+        assert!(provider.get("apiKeyUrl").is_none(), "{label}");
+        assert!(
+            provider["meta"].get("partnerPromotionKey").is_none(),
+            "{label}"
+        );
+    }
+
+    let mut minimax = ProviderAddFormState::new(AppType::Claude);
+    minimax.apply_template(template_index_by_label(AppType::Claude, "MiniMax"), &[]);
+    let minimax = minimax.to_provider_json_value();
+    assert_eq!(
+        minimax["settingsConfig"]["env"]["API_TIMEOUT_MS"],
+        "3000000"
+    );
+    assert_eq!(
+        minimax["settingsConfig"]["env"]["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"],
+        1
+    );
+}
+
+#[test]
+fn provider_add_form_codex_builtin_presets_match_upstream_fields() {
+    let cases = [
+        (
+            "DeepSeek",
+            "deepseek",
+            "https://api.deepseek.com",
+            "deepseek-v4-flash",
+            "openai_responses",
+            2,
+        ),
+        (
+            "Zhipu GLM",
+            "zhipu_glm",
+            "https://open.bigmodel.cn/api/coding/paas/v4",
+            "glm-5.2",
+            "openai_chat",
+            1,
+        ),
+        (
+            "Zhipu GLM en",
+            "zhipu_glm_en",
+            "https://api.z.ai/api/coding/paas/v4",
+            "glm-5.2",
+            "openai_chat",
+            1,
+        ),
+        (
+            "ModelScope",
+            "modelscope",
+            "https://api-inference.modelscope.cn/v1",
+            "ZhipuAI/GLM-5.2",
+            "openai_chat",
+            1,
+        ),
+        (
+            "MiniMax",
+            "minimax",
+            "https://api.minimaxi.com/v1",
+            "MiniMax-M3",
+            "openai_responses",
+            1,
+        ),
+        (
+            "Xiaomi MiMo",
+            "xiaomi_mimo",
+            "https://api.xiaomimimo.com/v1",
+            "mimo-v2.5-pro",
+            "openai_responses",
+            2,
+        ),
+        (
+            "Xiaomi MiMo Token Plan (China)",
+            "xiaomi_mimo_token_plan",
+            "https://token-plan-cn.xiaomimimo.com/v1",
+            "mimo-v2.5-pro",
+            "openai_responses",
+            2,
+        ),
+        (
+            "OpenCode Go",
+            "opencode_go",
+            "https://opencode.ai/zen/go/v1",
+            "glm-5.2",
+            "openai_chat",
+            6,
+        ),
+        (
+            "OpenRouter",
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            "gpt-5.6-sol",
+            "openai_responses",
+            0,
+        ),
+    ];
+
+    for (label, provider_name, base_url, model, api_format, catalog_len) in cases {
+        let mut form = ProviderAddFormState::new(AppType::Codex);
+        form.apply_template(template_index_by_label(AppType::Codex, label), &[]);
+        let provider = form.to_provider_json_value();
+        let config = provider["settingsConfig"]["config"]
+            .as_str()
+            .expect("Codex preset config should be text");
+        let models = provider["settingsConfig"]["modelCatalog"]["models"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+
+        assert_eq!(provider["name"], label, "{label}");
+        assert_eq!(provider["meta"]["apiFormat"], api_format, "{label}");
+        assert!(
+            config.contains(&format!("name = \"{provider_name}\"")),
+            "{label}"
+        );
+        assert!(
+            config.contains(&format!("base_url = \"{base_url}\"")),
+            "{label}"
+        );
+        assert!(config.contains(&format!("model = \"{model}\"")), "{label}");
+        assert!(config.contains("wire_api = \"responses\""), "{label}");
+        assert_eq!(models.len(), catalog_len, "{label}");
+        assert!(provider.get("apiKeyUrl").is_none(), "{label}");
+        assert!(
+            provider["meta"].get("partnerPromotionKey").is_none(),
+            "{label}"
+        );
+    }
+
+    let mut deepseek = ProviderAddFormState::new(AppType::Codex);
+    deepseek.apply_template(template_index_by_label(AppType::Codex, "DeepSeek"), &[]);
+    let deepseek = deepseek.to_provider_json_value();
+    assert_eq!(
+        deepseek["settingsConfig"]["modelCatalog"]["models"][0]["reasoningLevels"],
+        json!(["low", "high", "max"])
+    );
+    assert_eq!(
+        deepseek["settingsConfig"]["modelCatalog"]["models"][0]["contextWindow"],
+        1_048_576
+    );
+
+    let mut opencode = ProviderAddFormState::new(AppType::Codex);
+    opencode.apply_template(template_index_by_label(AppType::Codex, "OpenCode Go"), &[]);
+    let opencode = opencode.to_provider_json_value();
+    assert_eq!(
+        opencode["meta"]["codexChatReasoning"]["effortValueMode"],
+        "zen"
+    );
+    assert_eq!(
+        opencode["settingsConfig"]["modelCatalog"]["models"][4]["reasoningLevels"],
+        json!(["low", "high", "max"])
+    );
+
+    let mut minimax = ProviderAddFormState::new(AppType::Codex);
+    minimax.apply_template(template_index_by_label(AppType::Codex, "MiniMax"), &[]);
+    let minimax = minimax.to_provider_json_value();
+    let minimax_model = &minimax["settingsConfig"]["modelCatalog"]["models"][0];
+    assert_eq!(minimax_model["supportsParallelToolCalls"], true);
+    assert_eq!(minimax_model["inputModalities"], json!(["text", "image"]));
+    assert_eq!(
+        minimax_model["baseInstructions"],
+        "You are Codex, a coding agent based on MiniMax-M3. You and the user share the same workspace and collaborate to achieve the user's goals."
     );
 }
 
 #[test]
 fn cli_provider_templates_match_tui_serializer_output() {
     for (app_type, template, label) in [
+        (AppType::Claude, ProviderAddTemplate::Apimart, "APIMart"),
+        (AppType::Codex, ProviderAddTemplate::Apimart, "APIMart"),
+        (AppType::Gemini, ProviderAddTemplate::Apimart, "APIMart"),
+        (AppType::OpenCode, ProviderAddTemplate::Apimart, "APIMart"),
+        (AppType::Hermes, ProviderAddTemplate::Apimart, "APIMart"),
+        (AppType::OpenClaw, ProviderAddTemplate::Apimart, "APIMart"),
         (
             AppType::Claude,
             ProviderAddTemplate::ClaudeOfficial,
             "Claude Official",
         ),
+        (AppType::Claude, ProviderAddTemplate::Patewayai, "PatewayAI"),
+        (AppType::Codex, ProviderAddTemplate::Patewayai, "PatewayAI"),
         (AppType::Claude, ProviderAddTemplate::CodexOauth, "Codex"),
         (
             AppType::Codex,
@@ -220,97 +651,69 @@ fn cli_provider_templates_match_tui_serializer_output() {
             ProviderAddTemplate::GoogleOauth,
             "Google OAuth",
         ),
-        (
-            AppType::Claude,
-            ProviderAddTemplate::Claudeapi,
-            "* ClaudeAPI",
-        ),
-        (
-            AppType::Claude,
-            ProviderAddTemplate::Packycode,
-            "* PackyCode",
-        ),
-        (
-            AppType::Claude,
-            ProviderAddTemplate::Openmodel,
-            "* OpenModel",
-        ),
-        (
-            AppType::Codex,
-            ProviderAddTemplate::Openmodel,
-            "* OpenModel",
-        ),
-        (
-            AppType::Gemini,
-            ProviderAddTemplate::Openmodel,
-            "* OpenModel",
-        ),
+        (AppType::Claude, ProviderAddTemplate::Claudeapi, "ClaudeAPI"),
+        (AppType::Claude, ProviderAddTemplate::Packycode, "PackyCode"),
+        (AppType::Claude, ProviderAddTemplate::Openmodel, "OpenModel"),
+        (AppType::Codex, ProviderAddTemplate::Openmodel, "OpenModel"),
+        (AppType::Gemini, ProviderAddTemplate::Openmodel, "OpenModel"),
         (
             AppType::OpenCode,
             ProviderAddTemplate::Openmodel,
-            "* OpenModel",
+            "OpenModel",
         ),
-        (
-            AppType::Hermes,
-            ProviderAddTemplate::Openmodel,
-            "* OpenModel",
-        ),
+        (AppType::Hermes, ProviderAddTemplate::Openmodel, "OpenModel"),
         (
             AppType::OpenClaw,
             ProviderAddTemplate::Openmodel,
-            "* OpenModel",
+            "OpenModel",
         ),
         (
             AppType::Codex,
             ProviderAddTemplate::Aicodemirror,
-            "* AICodeMirror",
+            "AICodeMirror",
         ),
-        (AppType::Codex, ProviderAddTemplate::Runapi, "* RunAPI"),
+        (AppType::Codex, ProviderAddTemplate::Runapi, "RunAPI"),
         (AppType::Codex, ProviderAddTemplate::Deepseek, "DeepSeek"),
-        (AppType::Gemini, ProviderAddTemplate::Cubence, "* Cubence"),
-        (AppType::Claude, ProviderAddTemplate::Dds, "* DDS"),
+        (AppType::Gemini, ProviderAddTemplate::Cubence, "Cubence"),
+        (AppType::Claude, ProviderAddTemplate::Dds, "DDS"),
         (
             AppType::OpenCode,
             ProviderAddTemplate::Aicodemirror,
-            "* AICodeMirror",
+            "AICodeMirror",
         ),
-        (AppType::OpenCode, ProviderAddTemplate::Cubence, "* Cubence"),
-        (AppType::OpenCode, ProviderAddTemplate::Runapi, "* RunAPI"),
+        (AppType::OpenCode, ProviderAddTemplate::Cubence, "Cubence"),
+        (AppType::OpenCode, ProviderAddTemplate::Runapi, "RunAPI"),
         (
             AppType::OpenCode,
             ProviderAddTemplate::Packycode,
-            "* PackyCode",
+            "PackyCode",
         ),
-        (AppType::Hermes, ProviderAddTemplate::Cubence, "* Cubence"),
-        (AppType::Hermes, ProviderAddTemplate::Runapi, "* RunAPI"),
-        (
-            AppType::Hermes,
-            ProviderAddTemplate::Packycode,
-            "* PackyCode",
-        ),
+        (AppType::Hermes, ProviderAddTemplate::Cubence, "Cubence"),
+        (AppType::Hermes, ProviderAddTemplate::Runapi, "RunAPI"),
+        (AppType::Hermes, ProviderAddTemplate::Packycode, "PackyCode"),
         (
             AppType::OpenClaw,
             ProviderAddTemplate::Aicodemirror,
-            "* AICodeMirror",
+            "AICodeMirror",
         ),
-        (AppType::OpenClaw, ProviderAddTemplate::Cubence, "* Cubence"),
-        (AppType::OpenClaw, ProviderAddTemplate::Runapi, "* RunAPI"),
+        (AppType::OpenClaw, ProviderAddTemplate::Cubence, "Cubence"),
+        (AppType::OpenClaw, ProviderAddTemplate::Runapi, "RunAPI"),
         (
             AppType::OpenClaw,
             ProviderAddTemplate::Packycode,
-            "* PackyCode",
+            "PackyCode",
         ),
-        (AppType::Claude, ProviderAddTemplate::Qiniu, "* Qiniu"),
-        (AppType::Codex, ProviderAddTemplate::Qiniu, "* Qiniu"),
-        (AppType::Gemini, ProviderAddTemplate::Qiniu, "* Qiniu"),
-        (AppType::OpenCode, ProviderAddTemplate::Qiniu, "* Qiniu"),
-        (AppType::Hermes, ProviderAddTemplate::Qiniu, "* Qiniu"),
-        (AppType::OpenClaw, ProviderAddTemplate::Qiniu, "* Qiniu"),
-        (AppType::Claude, ProviderAddTemplate::Fenno, "* FennoAI"),
-        (AppType::Codex, ProviderAddTemplate::Fenno, "* FennoAI"),
-        (AppType::OpenCode, ProviderAddTemplate::Fenno, "* FennoAI"),
-        (AppType::Hermes, ProviderAddTemplate::Fenno, "* FennoAI"),
-        (AppType::OpenClaw, ProviderAddTemplate::Fenno, "* FennoAI"),
+        (AppType::Claude, ProviderAddTemplate::Qiniu, "Qiniu"),
+        (AppType::Codex, ProviderAddTemplate::Qiniu, "Qiniu"),
+        (AppType::Gemini, ProviderAddTemplate::Qiniu, "Qiniu"),
+        (AppType::OpenCode, ProviderAddTemplate::Qiniu, "Qiniu"),
+        (AppType::Hermes, ProviderAddTemplate::Qiniu, "Qiniu"),
+        (AppType::OpenClaw, ProviderAddTemplate::Qiniu, "Qiniu"),
+        (AppType::Claude, ProviderAddTemplate::Fenno, "FennoAI"),
+        (AppType::Codex, ProviderAddTemplate::Fenno, "FennoAI"),
+        (AppType::OpenCode, ProviderAddTemplate::Fenno, "FennoAI"),
+        (AppType::Hermes, ProviderAddTemplate::Fenno, "FennoAI"),
+        (AppType::OpenClaw, ProviderAddTemplate::Fenno, "FennoAI"),
     ] {
         assert_cli_template_matches_tui_serializer(app_type, template, label);
     }
@@ -334,8 +737,8 @@ fn provider_add_form_codex_deepseek_template_matches_upstream_preset_values() {
     let labels = ProviderAddFormState::new(AppType::Codex).template_labels();
     assert_eq!(
         labels.last().copied(),
-        Some("DeepSeek"),
-        "DeepSeek should stay after all partner presets"
+        Some("OpenRouter"),
+        "migrated built-ins should stay after all partner presets in flat order"
     );
 
     let fields = form.fields();
@@ -349,18 +752,8 @@ fn provider_add_form_codex_deepseek_template_matches_upstream_preset_values() {
     assert_eq!(provider["category"], "cn_official");
     assert_eq!(provider["icon"], "deepseek");
     assert_eq!(provider["iconColor"], "#1E88E5");
-    assert_eq!(provider["meta"]["apiFormat"], "openai_chat");
-    assert_eq!(
-        provider["meta"]["codexChatReasoning"],
-        json!({
-            "supportsThinking": true,
-            "supportsEffort": true,
-            "thinkingParam": "thinking",
-            "effortParam": "reasoning_effort",
-            "effortValueMode": "deepseek",
-            "outputFormat": "reasoning_content",
-        })
-    );
+    assert_eq!(provider["meta"]["apiFormat"], "openai_responses");
+    assert!(provider["meta"].get("codexChatReasoning").is_none());
 
     let cfg = provider["settingsConfig"]["config"]
         .as_str()
@@ -384,12 +777,14 @@ fn provider_add_form_codex_deepseek_template_matches_upstream_preset_values() {
                 {
                     "model": "deepseek-v4-flash",
                     "displayName": "DeepSeek V4 Flash",
-                    "contextWindow": 1000000,
+                    "contextWindow": 1048576,
+                    "reasoningLevels": ["low", "high", "max"],
                 },
                 {
                     "model": "deepseek-v4-pro",
                     "displayName": "DeepSeek V4 Pro",
-                    "contextWindow": 1000000,
+                    "contextWindow": 1048576,
+                    "reasoningLevels": ["low", "high", "max"],
                 },
             ],
         })
@@ -1966,7 +2361,9 @@ fn provider_edit_form_codex_conflict_preserves_local_routing_storage() {
                 "contextWindow": 200000,
                 "supportsParallelToolCalls": true,
                 "inputModalities": ["text", "image"],
-                "baseInstructions": "Use native Responses."
+                "baseInstructions": "Use native Responses.",
+                "reasoningLevels": ["none", "high"],
+                "defaultReasoningLevel": "high"
             },
             {
                 "model": "gpt-y",
@@ -2574,6 +2971,28 @@ fn provider_add_form_aicodemirror_template_claude_sets_partner_meta_and_base_url
         .is_none());
     assert_eq!(provider["meta"]["isPartner"], true);
     assert_eq!(provider["meta"]["partnerPromotionKey"], "aicodemirror");
+}
+
+#[test]
+fn provider_add_form_patewayai_template_uses_api_key_auth_and_upstream_base_url() {
+    let mut form = ProviderAddFormState::new(AppType::Claude);
+
+    form.apply_template(template_index_by_label(AppType::Claude, "PatewayAI"), &[]);
+
+    let provider = form.to_provider_json_value();
+    assert_eq!(provider["name"], "PatewayAI");
+    assert_eq!(provider["websiteUrl"], "https://pateway.ai");
+    assert_eq!(
+        provider["settingsConfig"]["env"]["ANTHROPIC_BASE_URL"],
+        "https://api.pateway.ai"
+    );
+    assert_eq!(form.claude_api_key_field, ClaudeApiKeyField::ApiKey);
+    assert!(provider["settingsConfig"]["env"]
+        .get("ANTHROPIC_API_KEY")
+        .is_none());
+    assert_eq!(provider["meta"]["apiKeyField"], "ANTHROPIC_API_KEY");
+    assert_eq!(provider["meta"]["isPartner"], true);
+    assert_eq!(provider["meta"]["partnerPromotionKey"], "patewayai");
 }
 
 #[test]
@@ -3811,6 +4230,8 @@ fn codex_config_preview_builder_matches_save_when_enabled_catalog_is_empty() {
         supports_parallel_tool_calls: None,
         input_modalities: Vec::new(),
         base_instructions: String::new(),
+        reasoning_levels: Vec::new(),
+        default_reasoning_level: String::new(),
     }];
 
     let preview_config = form.effective_codex_config_text();
@@ -5707,13 +6128,15 @@ fn provider_add_form_opencode_exposes_supported_sponsor_presets() {
         labels,
         vec![
             "Custom",
-            "* AICodeMirror",
-            "* Cubence",
-            "* OpenModel",
-            "* RunAPI",
-            "* Qiniu",
-            "* FennoAI",
-            "* PackyCode"
+            "88API",
+            "APIMart",
+            "Cubence",
+            "OpenModel",
+            "PackyCode",
+            "RunAPI",
+            "AICodeMirror",
+            "Qiniu",
+            "FennoAI",
         ]
     );
 }
@@ -5730,13 +6153,15 @@ fn provider_add_form_openclaw_uses_dedicated_template_defs() {
         openclaw_labels,
         vec![
             "Custom",
-            "* AICodeMirror",
-            "* Cubence",
-            "* OpenModel",
-            "* RunAPI",
-            "* Qiniu",
-            "* FennoAI",
-            "* PackyCode"
+            "88API",
+            "APIMart",
+            "Cubence",
+            "OpenModel",
+            "PackyCode",
+            "RunAPI",
+            "AICodeMirror",
+            "Qiniu",
+            "FennoAI",
         ]
     );
     assert!(
@@ -5753,6 +6178,8 @@ fn provider_add_form_hermes_exposes_upstream_provider_fields_only() {
     assert_eq!(
         fields,
         vec![
+            ProviderAddField::Template,
+            ProviderAddField::TemplateDivider,
             ProviderAddField::Id,
             ProviderAddField::Name,
             ProviderAddField::WebsiteUrl,
@@ -6110,7 +6537,15 @@ fn provider_add_form_openclaw_exposes_minimal_dedicated_fields() {
     let form = ProviderAddFormState::new(AppType::OpenClaw);
     let fields = form.fields();
 
-    assert_eq!(fields.first(), Some(&ProviderAddField::Id));
+    // Add mode leads with the template group, then the app-specific key field.
+    assert_eq!(
+        &fields[..3],
+        &[
+            ProviderAddField::Template,
+            ProviderAddField::TemplateDivider,
+            ProviderAddField::Id,
+        ]
+    );
     assert!(fields.contains(&ProviderAddField::OpenClawApiProtocol));
     assert!(fields.contains(&ProviderAddField::OpenCodeApiKey));
     assert!(fields.contains(&ProviderAddField::OpenCodeBaseUrl));
@@ -6627,6 +7062,36 @@ fn provider_add_form_openclaw_ignores_legacy_api_aliases_when_loading() {
 }
 
 #[test]
+fn provider_add_form_pi_uses_model_url_without_materializing_provider_url() {
+    let provider = Provider::with_id(
+        "pi-model-url".to_string(),
+        "Pi Model URL".to_string(),
+        json!({
+            "api": "openai-completions",
+            "models": [{
+                "id": "pi-model",
+                "baseUrl": "https://pi-model.example/v1"
+            }]
+        }),
+        None,
+    );
+
+    let form = ProviderAddFormState::from_provider(AppType::Pi, &provider);
+    assert!(form.opencode_base_url.value.is_empty());
+    assert_eq!(
+        form.current_provider_base_url(),
+        "https://pi-model.example/v1"
+    );
+
+    let roundtrip = form.to_provider_json_value();
+    assert!(roundtrip["settingsConfig"].get("baseUrl").is_none());
+    assert_eq!(
+        roundtrip["settingsConfig"]["models"][0]["baseUrl"],
+        "https://pi-model.example/v1"
+    );
+}
+
+#[test]
 fn provider_add_form_openclaw_ignores_legacy_context_window_alias_when_loading() {
     let provider = Provider::with_id(
         "oclaw1".to_string(),
@@ -6873,6 +7338,49 @@ fn provider_edit_form_roundtrip_no_duplicate_common_config_key() {
         .expect("roundtrip deserialization should succeed without duplicate field error");
     assert_eq!(roundtrip.id, "test-provider");
     assert_eq!(roundtrip.name, "Test Provider");
+}
+
+/// A copy form is Add mode, so it grows a Template row — but it arrives
+/// pre-filled, so it must not open on that row: "Custom" would mislabel the
+/// copied values and Enter-Enter would wipe them.
+#[test]
+fn provider_copy_form_opens_on_the_first_real_field() {
+    let provider = Provider::with_id(
+        "test-provider".to_string(),
+        "Test Provider".to_string(),
+        json!({ "env": { "ANTHROPIC_AUTH_TOKEN": "sk-copied" } }),
+        Some("https://example.com".to_string()),
+    );
+
+    let form = ProviderAddFormState::copy_from_provider_with_common_snippet(
+        AppType::Claude,
+        &provider,
+        "",
+        &["test-provider".to_string()],
+    );
+
+    assert!(matches!(form.mode, FormMode::Add));
+    assert_eq!(form.focus, FormFocus::Fields);
+
+    let fields = form.fields();
+    assert!(
+        fields.contains(&ProviderAddField::Template),
+        "add-mode copy forms still expose the template row"
+    );
+    let selected = fields.get(form.field_idx).copied();
+    assert!(
+        !matches!(
+            selected,
+            Some(ProviderAddField::Template) | Some(ProviderAddField::TemplateDivider)
+        ),
+        "copy form must not open on the template group, got: {selected:?}"
+    );
+    assert_eq!(selected, Some(ProviderAddField::Name));
+
+    // The copied values are intact and one Enter away from being edited.
+    assert_eq!(form.name.value, "Test Provider copy");
+    assert_eq!(form.claude_api_key.value, "sk-copied");
+    assert_eq!(form.website_url.value, "https://example.com");
 }
 
 #[test]
@@ -7343,6 +7851,56 @@ fn provider_add_form_usage_query_table_fields_hide_script_row() {
 }
 
 #[test]
+fn opencode_go_templates_enable_token_plan_usage_query() {
+    for app_type in [AppType::Claude, AppType::Codex, AppType::Pi] {
+        let mut form = ProviderAddFormState::new(app_type.clone());
+        form.apply_template(
+            template_index_by_label(app_type.clone(), "OpenCode Go"),
+            &[],
+        );
+
+        assert!(form.usage_query_enabled, "{app_type:?}");
+        assert_eq!(
+            form.usage_query_template,
+            UsageQueryTemplate::TokenPlan,
+            "{app_type:?}"
+        );
+        assert_eq!(
+            form.usage_query_coding_plan_provider.value, "opencode_go",
+            "{app_type:?}"
+        );
+
+        let provider = form.to_provider_json_value();
+        let script = &provider["meta"]["usage_script"];
+        assert_eq!(script["enabled"], true, "{app_type:?}");
+        assert_eq!(script["language"], "javascript", "{app_type:?}");
+        assert_eq!(script["code"], "", "{app_type:?}");
+        assert_eq!(script["timeout"], 10, "{app_type:?}");
+        assert_eq!(script["templateType"], "token_plan", "{app_type:?}");
+        assert_eq!(script["autoQueryInterval"], 5, "{app_type:?}");
+        assert_eq!(script["codingPlanProvider"], "opencode_go", "{app_type:?}");
+    }
+}
+
+#[test]
+fn switching_from_opencode_go_template_clears_its_usage_default() {
+    for app_type in [AppType::Claude, AppType::Codex, AppType::Pi] {
+        let mut form = ProviderAddFormState::new(app_type.clone());
+        form.apply_template(
+            template_index_by_label(app_type.clone(), "OpenCode Go"),
+            &[],
+        );
+        form.apply_template(template_index_by_label(app_type, "DeepSeek"), &[]);
+
+        assert!(!form.usage_query_enabled);
+        assert_ne!(form.usage_query_template, UsageQueryTemplate::TokenPlan);
+        assert!(form.to_provider_json_value()["meta"]
+            .get("usage_script")
+            .is_none());
+    }
+}
+
+#[test]
 fn provider_add_form_usage_query_custom_template_includes_dynamic_variable_comments() {
     let mut form = ProviderAddFormState::new(AppType::Claude);
     form.claude_base_url.set("https://nowcoding.ai/v1");
@@ -7410,4 +7968,338 @@ fn provider_add_form_usage_query_numeric_fields_match_upstream_normalization() {
 
     assert_eq!(script["timeout"], 10);
     assert_eq!(script["autoQueryInterval"], 0);
+}
+
+#[test]
+fn provider_pi_models_editor_value_round_trips_through_form() {
+    let mut form = ProviderAddFormState::new(AppType::Pi);
+    let models = json!([
+        {
+            "id": "primary-model",
+            "name": "Primary Model",
+            "contextWindow": 128000,
+            "futureCapability": { "preserve": true }
+        },
+        { "id": "fallback-model", "name": "Fallback Model" }
+    ]);
+
+    form.apply_openclaw_models_value(models.clone())
+        .expect("Pi models array should apply");
+
+    assert_eq!(
+        form.to_provider_json_value()["settingsConfig"]["models"],
+        models
+    );
+}
+
+#[test]
+fn provider_add_form_pi_uses_native_api_default() {
+    let mut form = ProviderAddFormState::new(AppType::Pi);
+    form.name.set("Custom Pi");
+
+    assert_eq!(
+        form.opencode_npm_package.value,
+        crate::openclaw_config::OPENCLAW_DEFAULT_API_PROTOCOL
+    );
+    assert_eq!(
+        form.to_provider_json_value()["settingsConfig"]["api"],
+        "openai-completions"
+    );
+    assert_eq!(
+        form.to_provider_json_value()["settingsConfig"]["name"],
+        "Custom Pi"
+    );
+}
+
+#[test]
+fn provider_edit_form_pi_updates_only_a_native_name_that_followed_the_display_name() {
+    let following = Provider::with_id(
+        "following".to_string(),
+        "Original".to_string(),
+        json!({
+            "name": "Original",
+            "api": "openai-completions",
+            "models": [{ "id": "model" }]
+        }),
+        None,
+    );
+    let mut following_form = ProviderAddFormState::from_provider(AppType::Pi, &following);
+    following_form.name.set("Renamed");
+    assert_eq!(
+        following_form.to_provider_json_value()["settingsConfig"]["name"],
+        "Renamed"
+    );
+
+    let independent = Provider::with_id(
+        "independent".to_string(),
+        "Catalog label".to_string(),
+        json!({
+            "name": "Native label",
+            "api": "openai-completions",
+            "models": [{ "id": "model" }]
+        }),
+        None,
+    );
+    let mut independent_form = ProviderAddFormState::from_provider(AppType::Pi, &independent);
+    independent_form.name.set("Renamed catalog label");
+    assert_eq!(
+        independent_form.to_provider_json_value()["settingsConfig"]["name"],
+        "Native label"
+    );
+}
+
+#[test]
+fn provider_add_form_pi_preserves_missing_api_on_existing_partial_node() {
+    let provider = Provider::with_id(
+        "anthropic".to_string(),
+        "Anthropic override".to_string(),
+        json!({
+            "futureField": { "preserve": true },
+            "models": [{ "id": "claude-sonnet" }]
+        }),
+        None,
+    );
+
+    let form = ProviderAddFormState::from_provider(AppType::Pi, &provider);
+    assert!(form.opencode_npm_package.value.is_empty());
+    let roundtrip = form.to_provider_json_value();
+    assert!(roundtrip["settingsConfig"].get("api").is_none());
+    assert_eq!(
+        roundtrip["settingsConfig"]["futureField"],
+        json!({ "preserve": true })
+    );
+}
+
+#[test]
+fn provider_add_form_pi_preserves_raw_native_settings_and_names_a_copy() {
+    let settings = json!({
+        "api": "openai-completions",
+        "apiKey": " key-with-native-spacing ",
+        "baseUrl": "https://pi.example/v1",
+        "models": [
+            {
+                "id": "float-context",
+                "contextWindow": 1000000.0,
+                "compat": { "future": true }
+            },
+            {
+                "id": "alias-context",
+                "context_window": 64000,
+                "extension": [1, 2, 3]
+            }
+        ],
+        "unknownNested": { "keep": { "exact": true } }
+    });
+    let provider = Provider::with_id(
+        "native-shape".to_string(),
+        "Native Shape".to_string(),
+        settings.clone(),
+        None,
+    );
+
+    let form = ProviderAddFormState::from_provider(AppType::Pi, &provider);
+    assert_eq!(form.initial_pi_settings_config(), Some(settings.clone()));
+    assert_eq!(form.to_provider_json_value()["settingsConfig"], settings);
+
+    let copy = ProviderAddFormState::copy_from_provider_with_common_snippet(
+        AppType::Pi,
+        &provider,
+        "",
+        &[provider.id.clone()],
+    );
+    assert_eq!(copy.initial_pi_settings_config(), None);
+    let mut expected_copy = settings;
+    expected_copy["name"] = json!("Native Shape copy");
+    assert_eq!(
+        copy.to_provider_json_value()["settingsConfig"],
+        expected_copy
+    );
+}
+
+#[test]
+fn api88_templates_match_cli_and_upstream_model_defaults() {
+    for app in [
+        AppType::Claude,
+        AppType::Codex,
+        AppType::Gemini,
+        AppType::OpenCode,
+        AppType::Hermes,
+        AppType::OpenClaw,
+    ] {
+        let mut form = ProviderAddFormState::new(app.clone());
+        form.apply_template(template_index_by_label(app.clone(), "88API"), &[]);
+        let seed = build_provider_template_seed(&app, ProviderAddTemplate::Api88, &[]).unwrap();
+        // The editor omits blank credential placeholders until a key is entered.
+        fn without_empty_credentials(mut value: Value) -> Value {
+            match &mut value {
+                Value::Object(map) => {
+                    map.retain(|key, v| {
+                        !(v == ""
+                            && matches!(
+                                key.as_str(),
+                                "apiKey"
+                                    | "api_key"
+                                    | "ANTHROPIC_AUTH_TOKEN"
+                                    | "GEMINI_API_KEY"
+                                    | "OPENAI_API_KEY"
+                            ))
+                    });
+                    for v in map.values_mut() {
+                        *v = without_empty_credentials(v.take());
+                    }
+                }
+                Value::Array(items) => {
+                    for v in items {
+                        *v = without_empty_credentials(v.take());
+                    }
+                }
+                _ => {}
+            }
+            value
+        }
+        assert_eq!(
+            without_empty_credentials(normalize_template_provider_json(
+                serde_json::to_value(seed).unwrap()
+            )),
+            without_empty_credentials(normalize_template_provider_json(
+                form.to_provider_json_value()
+            )),
+            "88API CLI/TUI parity for {app:?}"
+        );
+    }
+    let gemini =
+        build_provider_template_seed(&AppType::Gemini, ProviderAddTemplate::Api88, &[]).unwrap();
+    assert_eq!(
+        gemini.settings_config["env"]["GEMINI_MODEL"],
+        "gemini-3.8-flash"
+    );
+    let opencode =
+        build_provider_template_seed(&AppType::OpenCode, ProviderAddTemplate::Api88, &[]).unwrap();
+    assert_eq!(opencode.settings_config["npm"], "@ai-sdk/anthropic");
+    assert_eq!(
+        opencode.settings_config["models"]["claude-opus-5-5"]["limit"]["context"],
+        1000000
+    );
+}
+
+#[test]
+fn api88_claude_key_and_pi_catalog_survive_form_save() {
+    let mut claude = ProviderAddFormState::new(AppType::Claude);
+    claude.apply_template(template_index_by_label(AppType::Claude, "88API"), &[]);
+    claude.claude_api_key.set("test-api-key");
+    let saved = claude.to_provider_json_value();
+    assert_eq!(
+        saved["settingsConfig"]["env"]["ANTHROPIC_AUTH_TOKEN"],
+        "test-api-key"
+    );
+    assert!(saved["settingsConfig"]["env"]
+        .get("ANTHROPIC_API_KEY")
+        .is_none());
+    let mut pi = ProviderAddFormState::new(AppType::Pi);
+    pi.apply_template(template_index_by_label(AppType::Pi, "88API"), &[]);
+    let saved = pi.to_provider_json_value();
+    assert_eq!(saved["id"], "cc-switch-88api");
+    assert_eq!(saved["settingsConfig"]["baseUrl"], "https://api.88api.ai");
+    assert_eq!(saved["settingsConfig"]["api"], "anthropic-messages");
+    assert_eq!(
+        saved["settingsConfig"]["models"].as_array().unwrap().len(),
+        4
+    );
+    assert_eq!(
+        saved["settingsConfig"]["models"][0]["id"],
+        "claude-opus-5-5"
+    );
+    assert_eq!(
+        crate::provider_preset_sponsors::API88.register_url,
+        "https://88api.ai/sign-up?aff=TeNl"
+    );
+}
+
+#[test]
+fn api88_selection_clears_previous_additive_template_options() {
+    let mut hermes = ProviderAddFormState::new(AppType::Hermes);
+    hermes.apply_template(template_index_by_label(AppType::Hermes, "Cubence"), &[]);
+    hermes.hermes_rate_limit_delay.set("42");
+    hermes.apply_template(template_index_by_label(AppType::Hermes, "88API"), &[]);
+    assert!(hermes.hermes_rate_limit_delay.is_blank());
+    assert!(hermes.to_provider_json_value()["settingsConfig"]
+        .get("rate_limit_delay")
+        .is_none());
+
+    let mut openclaw = ProviderAddFormState::new(AppType::OpenClaw);
+    openclaw.apply_template(template_index_by_label(AppType::OpenClaw, "Cubence"), &[]);
+    openclaw.openclaw_user_agent = true;
+    openclaw.apply_template(template_index_by_label(AppType::OpenClaw, "88API"), &[]);
+    assert!(!openclaw.openclaw_user_agent);
+    assert!(
+        openclaw.to_provider_json_value()["settingsConfig"]["headers"]
+            .get("User-Agent")
+            .is_none()
+    );
+}
+
+#[test]
+fn claude_fallback_one_m_roundtrip_is_independent_of_roles() {
+    let provider = Provider::with_id(
+        "p1".into(),
+        "Provider".into(),
+        json!({"env": {
+            "ANTHROPIC_MODEL": "deepseek-flash[1m]",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet[1M]",
+            "CUSTOM_SETTING": "keep"
+        }}),
+        None,
+    );
+    let mut form = ProviderAddFormState::from_provider(AppType::Claude, &provider);
+    assert_eq!(form.claude_model.value, "deepseek-flash");
+    assert!(form.claude_fallback_one_m);
+    // Untouched records retain their original spelling.
+    assert_eq!(
+        form.to_provider_json_value()["settingsConfig"]["env"],
+        provider.settings_config["env"]
+    );
+    form.claude_model.set("new-model");
+    form.mark_claude_fallback_model_touched();
+    let saved = form.to_provider_json_value();
+    assert_eq!(
+        saved["settingsConfig"]["env"]["ANTHROPIC_MODEL"],
+        "new-model[1M]"
+    );
+    assert!(form.toggle_claude_fallback_one_m());
+    let saved = form.to_provider_json_value();
+    assert_eq!(
+        saved["settingsConfig"]["env"]["ANTHROPIC_MODEL"],
+        "new-model"
+    );
+    assert_eq!(
+        saved["settingsConfig"]["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+        "sonnet[1M]"
+    );
+    assert_eq!(saved["settingsConfig"]["env"]["CUSTOM_SETTING"], "keep");
+    form.claude_model.set("manual[1m]");
+    form.mark_claude_fallback_model_touched();
+    assert!(form.claude_fallback_one_m);
+    assert_eq!(form.claude_fallback_model_value_for_config(), "manual[1M]");
+    form.claude_model.set("");
+    form.mark_claude_fallback_model_touched();
+    assert!(!form.claude_fallback_one_m);
+    assert!(!form.toggle_claude_fallback_one_m());
+    assert!(form.to_provider_json_value()["settingsConfig"]["env"]
+        .get("ANTHROPIC_MODEL")
+        .is_none());
+}
+
+#[test]
+fn claude_fallback_one_m_is_adjacent_and_resets_with_template() {
+    let mut form = ProviderAddFormState::new(AppType::Claude);
+    let fields = form.fields();
+    let idx = fields
+        .iter()
+        .position(|f| *f == ProviderAddField::ClaudeFallbackModel)
+        .unwrap();
+    assert_eq!(fields[idx + 1], ProviderAddField::ClaudeFallbackOneM);
+    form.set_claude_fallback_model_from_config("custom[1M]");
+    form.apply_template(template_index_by_label(AppType::Claude, "PatewayAI"), &[]);
+    assert!(!form.claude_fallback_one_m);
+    assert!(form.claude_model.value.is_empty());
 }

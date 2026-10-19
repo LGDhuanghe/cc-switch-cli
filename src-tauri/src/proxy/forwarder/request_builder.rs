@@ -133,7 +133,12 @@ impl RequestForwarder {
         headers: &HeaderMap,
         options: ForwardOptions,
     ) -> Result<reqwest::RequestBuilder, ProxyError> {
-        let adapter = get_adapter(app_type);
+        let adapter = get_adapter(app_type).ok_or_else(|| {
+            ProxyError::ConfigError(format!(
+                "{} does not support proxy routing",
+                app_type.as_str()
+            ))
+        })?;
         let is_claude_request = matches!(app_type, AppType::Claude);
         let mut upstream_endpoint = self.router.upstream_endpoint(app_type, provider, endpoint);
         let mut base_url = adapter.extract_base_url(provider)?;
@@ -547,6 +552,7 @@ async fn build_request(
         adapter.build_url(base_url, endpoint)
     };
     let mut request = client.post(url);
+    let mut codex_oauth_workspace = None;
 
     for (key, value) in headers {
         if codex_responses_to_anthropic {
@@ -641,20 +647,24 @@ async fn build_request(
                 .as_ref()
                 .and_then(|meta| meta.managed_account_id_for("codex_oauth"));
 
-            match match &account_id {
-                Some(id) => CodexOAuthService::get_valid_token_for_account(id).await,
-                None => CodexOAuthService::get_valid_token().await,
-            } {
+            // Resolve the local binding once; defaults may change concurrently.
+            let resolved_account_id = match account_id {
+                Some(id) => id,
+                None => CodexOAuthService::default_account_id()
+                    .await
+                    .ok_or_else(|| {
+                        ProxyError::AuthError("Codex OAuth 认证失败: 无可用的 ChatGPT 账号".into())
+                    })?,
+            };
+            match CodexOAuthService::get_valid_token_for_account(&resolved_account_id).await {
                 Ok(token) => {
                     effective_auth.api_key = token;
                     request = adapter.add_auth_headers(request, &effective_auth);
-                    let resolved_account_id = match account_id {
-                        Some(id) => Some(id),
-                        None => CodexOAuthService::default_account_id().await,
-                    };
-                    if let Some(account_id) = resolved_account_id {
-                        request = request.header("ChatGPT-Account-Id", account_id);
-                    }
+                    let workspace = CodexOAuthService::manager()
+                        .chatgpt_account_id_for_account(&resolved_account_id)
+                        .await
+                        .map_err(|error| ProxyError::AuthError(error.to_string()))?;
+                    codex_oauth_workspace = Some(workspace);
                     if let Some(session_id) = client_session_id {
                         for (name, value) in build_codex_oauth_session_headers(session_id) {
                             request = request.header(name, value);
@@ -716,6 +726,14 @@ async fn build_request(
                 .meta
                 .as_ref()
                 .and_then(|meta| meta.local_proxy_request_overrides.as_ref()),
+        );
+    }
+    // Match upstream: the bound workspace wins over incoming and local headers.
+    if let Some(workspace) = codex_oauth_workspace {
+        replacements.insert(
+            "chatgpt-account-id",
+            reqwest::header::HeaderValue::from_str(&workspace)
+                .map_err(|error| ProxyError::AuthError(error.to_string()))?,
         );
     }
     request = request.headers(replacements);

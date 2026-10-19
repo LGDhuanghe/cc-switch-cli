@@ -236,7 +236,9 @@ fn common_json_preview_value(app_type: &AppType, common_snippet: &str) -> Option
         AppType::Gemini => serde_json::from_str::<Value>(common_snippet)
             .ok()
             .map(|env| json!({ "env": env })),
-        AppType::Codex | AppType::OpenCode | AppType::Hermes | AppType::OpenClaw => None,
+        AppType::Codex | AppType::OpenCode | AppType::Hermes | AppType::OpenClaw | AppType::Pi => {
+            None
+        }
     }
     .filter(Value::is_object)
 }
@@ -448,18 +450,11 @@ pub(crate) fn render_provider_add_form(
     frame.render_widget(outer.clone(), area);
     let inner = outer.inner(area);
 
-    let template_height = if matches!(provider.mode, super::form::FormMode::Add) {
-        3
-    } else {
-        0
-    };
+    // The template used to own a bordered row here; it is a field row inside
+    // the table now, so the body is just the key bar plus the fields/preview.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(template_height),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(inner);
 
     let fields = provider.fields();
@@ -483,18 +478,6 @@ pub(crate) fn render_provider_add_form(
         ),
     );
 
-    if matches!(provider.mode, super::form::FormMode::Add) {
-        let labels = provider.template_labels();
-        render_form_template_chips(
-            frame,
-            &labels,
-            provider.template_idx,
-            matches!(provider.focus, FormFocus::Templates),
-            chunks[1],
-            theme,
-        );
-    }
-
     let rows_data = fields
         .iter()
         .map(|field| provider_field_label_and_value(provider, *field))
@@ -510,24 +493,24 @@ pub(crate) fn render_provider_add_form(
         1,
     );
 
-    let split = form_can_split(chunks[2].width, label_col_width, theme);
+    let split = form_can_split(chunks[1].width, label_col_width, theme);
     let panes = split.then(|| {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-            .split(chunks[2])
+            .split(chunks[1])
     });
     let fields_area = if split {
         Some(panes.as_ref().expect("split panes")[0])
     } else if !matches!(provider.focus, FormFocus::JsonPreview) {
-        Some(chunks[2])
+        Some(chunks[1])
     } else {
         None
     };
     let preview_area = if split {
         Some(panes.as_ref().expect("split panes")[1])
     } else if matches!(provider.focus, FormFocus::JsonPreview) {
-        Some(chunks[2])
+        Some(chunks[1])
     } else {
         None
     };
@@ -598,6 +581,23 @@ fn render_provider_inline_fields(
                 ])
                 .style(Style::default().fg(theme.dim)),
             );
+            continue;
+        }
+
+        if matches!(*field, ProviderAddField::Template) {
+            let labels = provider.template_labels();
+            let spans = template_field_value_spans(
+                &labels,
+                provider.template_idx,
+                editor_active && idx == selected_idx,
+                value_width,
+                theme,
+            );
+            row_heights.push(1);
+            rows.push(Row::new(vec![
+                Cell::from(cell_pad(label)),
+                Cell::from(Line::from(spans)),
+            ]));
             continue;
         }
 
@@ -1211,6 +1211,8 @@ fn render_codex_model_catalog_inline(
         Cell::from(cell_pad(texts::tui_codex_model_catalog_model_header())),
         Cell::from(cell_pad(texts::tui_codex_model_catalog_display_header())),
         Cell::from(cell_pad(texts::tui_codex_model_catalog_context_header())),
+        Cell::from(cell_pad(texts::tui_codex_reasoning_levels_header())),
+        Cell::from(cell_pad(texts::tui_codex_default_reasoning_header())),
     ])
     .style(Style::default().fg(theme.dim).add_modifier(Modifier::BOLD));
 
@@ -1229,6 +1231,12 @@ fn render_codex_model_catalog_inline(
         let model = bounded_trimmed_text_for_display(&row.model);
         let display_name = bounded_trimmed_text_for_display(&row.display_name);
         let context_window = codex_model_catalog_context_for_display(&row.context_window);
+        let levels = codex_model_catalog_reasoning_for_display(row);
+        let default = if row.default_reasoning_level.is_empty() {
+            texts::tui_codex_reasoning_auto().to_string()
+        } else {
+            bounded_trimmed_text_for_display(&row.default_reasoning_level)
+        };
         let cell = |value: &str, field: super::form::CodexModelCatalogField| {
             if active {
                 codex_model_catalog_cell(value, idx, selected_idx, field, selected_field, theme)
@@ -1246,15 +1254,25 @@ fn render_codex_model_catalog_inline(
                 &context_window,
                 super::form::CodexModelCatalogField::ContextWindow,
             ),
+            cell(
+                &levels,
+                super::form::CodexModelCatalogField::ReasoningLevels,
+            ),
+            cell(
+                &default,
+                super::form::CodexModelCatalogField::DefaultReasoningLevel,
+            ),
         ])
     });
 
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(45),
-            Constraint::Percentage(35),
+            Constraint::Percentage(24),
             Constraint::Percentage(20),
+            Constraint::Length(9),
+            Constraint::Fill(1),
+            Constraint::Length(8),
         ],
     )
     .header(header)
@@ -1313,6 +1331,8 @@ fn render_codex_model_catalog_form(
         Cell::from(cell_pad(texts::tui_codex_model_catalog_model_header())),
         Cell::from(texts::tui_codex_model_catalog_display_header()),
         Cell::from(texts::tui_codex_model_catalog_context_header()),
+        Cell::from(cell_pad(texts::tui_codex_reasoning_levels_header())),
+        Cell::from(cell_pad(texts::tui_codex_default_reasoning_header())),
     ])
     .style(Style::default().fg(theme.dim).add_modifier(Modifier::BOLD));
 
@@ -1331,6 +1351,12 @@ fn render_codex_model_catalog_form(
         let model = bounded_trimmed_text_for_display(&row.model);
         let display_name = bounded_trimmed_text_for_display(&row.display_name);
         let context_window = codex_model_catalog_context_for_display(&row.context_window);
+        let levels = codex_model_catalog_reasoning_for_display(row);
+        let default = if row.default_reasoning_level.is_empty() {
+            texts::tui_codex_reasoning_auto().to_string()
+        } else {
+            bounded_trimmed_text_for_display(&row.default_reasoning_level)
+        };
         Row::new(vec![
             codex_model_catalog_cell(
                 &model,
@@ -1356,21 +1382,51 @@ fn render_codex_model_catalog_form(
                 selected_field,
                 theme,
             ),
+            codex_model_catalog_cell(
+                &levels,
+                idx,
+                selected_idx,
+                super::form::CodexModelCatalogField::ReasoningLevels,
+                selected_field,
+                theme,
+            ),
+            codex_model_catalog_cell(
+                &default,
+                idx,
+                selected_idx,
+                super::form::CodexModelCatalogField::DefaultReasoningLevel,
+                selected_field,
+                theme,
+            ),
         ])
     });
 
     let table = Table::new(
         rows,
         [
-            Constraint::Percentage(45),
-            Constraint::Percentage(35),
+            Constraint::Percentage(24),
             Constraint::Percentage(20),
+            Constraint::Length(9),
+            Constraint::Fill(1),
+            Constraint::Length(8),
         ],
     )
     .header(header)
     .block(Block::default().borders(Borders::NONE));
 
     frame.render_widget(table, table_area);
+}
+
+fn codex_model_catalog_reasoning_for_display(row: &super::form::CodexModelCatalogRow) -> String {
+    if row.reasoning_levels.is_empty() {
+        return "-".to_string();
+    }
+    row.reasoning_levels
+        .iter()
+        .take(super::form::CODEX_REASONING_LEVELS.len())
+        .map(|level| bounded_trimmed_text_for_display(level))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn codex_model_catalog_context_for_display(raw: &str) -> String {
@@ -1882,6 +1938,9 @@ pub(crate) fn provider_field_label_and_value(
         ProviderAddField::ClaudeFallbackModel => {
             texts::tui_label_claude_fallback_model().to_string()
         }
+        ProviderAddField::ClaudeFallbackOneM => {
+            texts::tui_label_claude_fallback_one_m().to_string()
+        }
         ProviderAddField::ClaudeQuickConfig => texts::tui_label_claude_quick_config().to_string(),
         ProviderAddField::CodexQuickConfig => texts::tui_label_codex_quick_config().to_string(),
         ProviderAddField::CodexGoalMode => texts::tui_label_codex_goal_mode().to_string(),
@@ -1962,6 +2021,8 @@ pub(crate) fn provider_field_label_and_value(
         ProviderAddField::IncludeCommonConfig => texts::tui_form_attach_common_config().to_string(),
         ProviderAddField::UsageQueryDivider => "- - - - - - - - -".to_string(),
         ProviderAddField::UsageQuery => texts::tui_config_item_usage_query().to_string(),
+        ProviderAddField::Template => texts::tui_label_provider_template().to_string(),
+        ProviderAddField::TemplateDivider => "- - - - - - - - -".to_string(),
     };
 
     let value = match field {
@@ -1988,9 +2049,10 @@ pub(crate) fn provider_field_label_and_value(
         ProviderAddField::ClaudeModelConfig => {
             texts::tui_claude_model_config_summary(provider.claude_model_configured_count())
         }
-        ProviderAddField::ClaudeQuickConfig => {
-            texts::tui_claude_quick_config_summary(provider.claude_quick_config_enabled_count())
-        }
+        ProviderAddField::ClaudeQuickConfig => texts::tui_claude_quick_config_summary(
+            provider.claude_quick_config_enabled_count(),
+            provider.claude_quick_config_fields().len(),
+        ),
         ProviderAddField::CodexQuickConfig => texts::tui_codex_quick_config_summary(
             provider.codex_quick_config_enabled_count(),
             provider.codex_quick_config_fields().len(),
@@ -2025,6 +2087,13 @@ pub(crate) fn provider_field_label_and_value(
         }
         ProviderAddField::ClaudeToolSearch => {
             if provider.claude_tool_search {
+                format!("[{}]", texts::tui_marker_active())
+            } else {
+                "[ ]".to_string()
+            }
+        }
+        ProviderAddField::ClaudeFallbackOneM => {
+            if provider.claude_fallback_one_m {
                 format!("[{}]", texts::tui_marker_active())
             } else {
                 "[ ]".to_string()
@@ -2101,6 +2170,15 @@ pub(crate) fn provider_field_label_and_value(
         ProviderAddField::CommonConfigDivider => "- - - - - - - - - -".to_string(),
         ProviderAddField::CommonSnippet => format!("{} ›", texts::tui_key_open()),
         ProviderAddField::UsageQueryDivider => String::new(),
+        ProviderAddField::TemplateDivider => String::new(),
+        // Plain-text fallback; the row itself renders chip-styled spans and
+        // this value only feeds column sizing and non-styled consumers.
+        ProviderAddField::Template => provider
+            .template_labels()
+            .get(provider.template_idx)
+            .copied()
+            .unwrap_or_default()
+            .to_string(),
         ProviderAddField::UsageQuery => {
             if provider.usage_query_enabled {
                 format!(
@@ -2190,7 +2268,8 @@ pub(crate) fn codex_local_routing_field_label_and_value(
 fn provider_field_is_divider(field: ProviderAddField) -> bool {
     matches!(
         field,
-        ProviderAddField::ClaudeAdvancedDivider
+        ProviderAddField::TemplateDivider
+            | ProviderAddField::ClaudeAdvancedDivider
             | ProviderAddField::CodexAdvancedDivider
             | ProviderAddField::HermesAdvancedDivider
             | ProviderAddField::CommonConfigDivider

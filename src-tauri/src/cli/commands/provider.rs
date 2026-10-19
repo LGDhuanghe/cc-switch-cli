@@ -498,7 +498,9 @@ fn prompt_and_apply_provider_api_format(
     match app_type {
         AppType::Claude => prompt_and_apply_claude_api_format(app_type, provider),
         AppType::Codex => prompt_and_apply_codex_api_format(app_type, provider),
-        AppType::Gemini | AppType::OpenCode | AppType::Hermes | AppType::OpenClaw => Ok(()),
+        AppType::Gemini | AppType::OpenCode | AppType::Hermes | AppType::OpenClaw | AppType::Pi => {
+            Ok(())
+        }
     }
 }
 
@@ -817,6 +819,15 @@ pub enum ProviderCommand {
         /// Output raw quota result as JSON
         #[arg(long)]
         json: bool,
+        /// Redeem a rate limit reset credit to reset quota (Codex / OpenAI only)
+        #[arg(long)]
+        reset: bool,
+        /// Specific credit ID to consume (defaults to earliest expiring credit)
+        #[arg(long)]
+        credit_id: Option<String>,
+        /// Confirm consumption of a rate limit reset credit (safety gate; required to actually consume)
+        #[arg(long)]
+        confirm: bool,
     },
     /// Configure provider Usage Query
     #[command(subcommand)]
@@ -920,9 +931,13 @@ pub fn execute(cmd: ProviderCommand, app: Option<AppType>) -> Result<(), AppErro
                 )
             }
         }
-        ProviderCommand::Quota { id, json } => {
-            provider_inspect::quota_provider(app_type, &id, json)
-        }
+        ProviderCommand::Quota {
+            id,
+            json,
+            reset,
+            credit_id,
+            confirm,
+        } => provider_inspect::quota_provider(app_type, &id, json, reset, credit_id, confirm),
         ProviderCommand::UsageQuery(cmd) => provider_usage_query::execute(cmd, app_type),
         ProviderCommand::Export { id, output } => export_provider(app_type, &id, output),
     }
@@ -990,7 +1005,8 @@ fn resolve_provider_for_switch(
 fn switch_provider(app_type: AppType, id: &str) -> Result<(), AppError> {
     let state = get_state()?;
     let app_str = app_type.as_str().to_string();
-    let skip_live_sync = !crate::sync_policy::should_sync_live(&app_type);
+    let skip_live_sync =
+        !matches!(app_type, AppType::Pi) && !crate::sync_policy::should_sync_live(&app_type);
 
     // 检查 provider 是否存在（支持按 id 或名称解析）
     let providers = ProviderService::list(&state, app_type.clone())?;
@@ -1038,6 +1054,21 @@ fn delete_provider(app_type: AppType, id: &str) -> Result<(), AppError> {
             "Cannot delete the current active provider. Please switch to another provider first."
                 .to_string(),
         ));
+    }
+
+    if matches!(app_type, AppType::Pi)
+        && crate::services::pi_state::PiStateService::current(&state)
+            .ok()
+            .and_then(|current| current.default_provider_id)
+            .as_deref()
+            == Some(id)
+    {
+        println!(
+            "{}",
+            warning(
+                "Pi references this provider as the global default; deletion will not rewrite Pi's default setting."
+            )
+        );
     }
 
     // 确认删除
@@ -1309,6 +1340,7 @@ fn build_add_settings_config(
     args: &AddProviderArgs,
     raw_config: Option<&serde_json::Value>,
     current: Option<&serde_json::Value>,
+    current_meta: Option<&ProviderMeta>,
     provider_name: &str,
     prompt_result: &mut Option<SettingsConfigPromptResult>,
 ) -> Result<serde_json::Value, AppError> {
@@ -1337,7 +1369,13 @@ fn build_add_settings_config(
                 .ok_or_else(|| add_missing_field_error("--base-url"))?;
             let api_key = non_empty(args.api_key.clone())
                 .ok_or_else(|| add_missing_field_error("--api-key"))?;
-            let field = args.api_key_field.unwrap_or(ClaudeApiKeyField::AuthToken);
+            let field = args.api_key_field.unwrap_or_else(|| {
+                current
+                    .map(|settings| {
+                        ClaudeApiKeyField::from_meta_and_settings(current_meta, settings)
+                    })
+                    .unwrap_or(ClaudeApiKeyField::AuthToken)
+            });
             let model_fields = args.claude_model_fields();
             let settings = build_claude_settings_config_from_prompt(
                 current,
@@ -1387,6 +1425,35 @@ fn build_add_settings_config(
             }
             None => Ok(build_gemini_oauth_settings_config(current)),
         },
+        AppType::Pi => {
+            let base_url = non_empty(args.base_url.clone())
+                .ok_or_else(|| add_missing_field_error("--base-url"))?;
+            if !crate::pi_config::is_valid_request_url(&base_url) {
+                return Err(AppError::InvalidInput(
+                    "Pi --base-url must be an absolute HTTP(S) URL".to_string(),
+                ));
+            }
+            let model =
+                non_empty(args.model.clone()).ok_or_else(|| add_missing_field_error("--model"))?;
+            let api = non_empty(args.api_format.clone())
+                .unwrap_or_else(|| "openai-completions".to_string());
+            if !crate::openclaw_config::OPENCLAW_API_PROTOCOLS.contains(&api.as_str()) {
+                return Err(add_invalid_api_format_error(
+                    &api,
+                    &crate::openclaw_config::OPENCLAW_API_PROTOCOLS.join("|"),
+                ));
+            }
+            let mut settings = serde_json::json!({
+                "name": provider_name,
+                "baseUrl": base_url,
+                "api": api,
+                "models": [{ "id": model }],
+            });
+            if let Some(api_key) = non_empty(args.api_key.clone()) {
+                settings["apiKey"] = serde_json::json!(api_key);
+            }
+            Ok(settings)
+        }
         AppType::OpenCode | AppType::Hermes | AppType::OpenClaw => {
             let current = current.ok_or_else(|| add_additive_requires_config_error(app_type))?;
             let api_key = non_empty(args.api_key.clone());
@@ -1474,7 +1541,8 @@ fn apply_add_provider_api_format(
             };
             apply_codex_api_format(provider, format);
         }
-        AppType::Gemini | AppType::OpenCode | AppType::Hermes | AppType::OpenClaw => {}
+        AppType::Gemini | AppType::OpenCode | AppType::Hermes | AppType::OpenClaw | AppType::Pi => {
+        }
     }
     Ok(())
 }
@@ -1530,6 +1598,7 @@ fn add_provider(app_type: AppType, args: AddProviderArgs) -> Result<(), AppError
             &args,
             raw_config.as_ref(),
             None,
+            None,
             &name,
             &mut settings_prompt_result,
         )?;
@@ -1570,6 +1639,7 @@ fn add_provider(app_type: AppType, args: AddProviderArgs) -> Result<(), AppError
                 &args,
                 raw_config.as_ref(),
                 Some(&current),
+                provider.meta.as_ref(),
                 &name,
                 &mut settings_prompt_result,
             )?;
@@ -1701,6 +1771,13 @@ fn edit_provider(app_type: AppType, id: &str) -> Result<(), AppError> {
         OptionalFields::from_provider(&original)
     };
 
+    let pi_native_name_follows_display = matches!(app_type, AppType::Pi)
+        && original
+            .settings_config
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|native| native.trim() == original.name.trim());
+
     // 6. 构建更新后的 Provider（保留 meta 和 created_at）
     let mut updated = Provider {
         id: id.to_string(),
@@ -1716,6 +1793,9 @@ fn edit_provider(app_type: AppType, id: &str) -> Result<(), AppError> {
         meta: original.meta,                           // 保留元数据
         in_failover_queue: original.in_failover_queue, // 保留故障转移状态
     };
+    if pi_native_name_follows_display {
+        updated.settings_config["name"] = serde_json::Value::String(updated.name.clone());
+    }
     apply_settings_prompt_result_metadata(&app_type, &mut updated, settings_prompt_result.as_ref());
     prompt_and_apply_provider_api_format(&app_type, &mut updated)?;
     prompt_and_apply_codex_oauth_provider_options(&app_type, &mut updated)?;
@@ -1947,6 +2027,20 @@ fn import_live_config(app_type: AppType) -> Result<(), AppError> {
 
 fn remove_from_config(app_type: AppType, id: &str) -> Result<(), AppError> {
     let state = get_state()?;
+    if matches!(app_type, AppType::Pi)
+        && crate::services::pi_state::PiStateService::current(&state)
+            .ok()
+            .and_then(|current| current.default_provider_id)
+            .as_deref()
+            == Some(id)
+    {
+        println!(
+            "{}",
+            warning(
+                "Pi references this provider as the global default; removal will not rewrite Pi's default setting."
+            )
+        );
+    }
     ProviderService::remove_from_live_config(&state, app_type.clone(), id)?;
     println!(
         "{}",
@@ -2048,7 +2142,7 @@ fn export_provider(app_type: AppType, id: &str, output: Option<PathBuf>) -> Resu
         }
     }
 
-    let settings_content = ProviderService::build_live_backup_snapshot(
+    let settings_content = ProviderService::build_effective_live_snapshot(
         &app_type,
         &provider,
         common_config_snippet.as_deref(),
@@ -2124,6 +2218,7 @@ mod tests {
             },
             None,
             None,
+            None,
             "Custom Codex",
             &mut prompt_result,
         )
@@ -2142,6 +2237,7 @@ mod tests {
             },
             None,
             None,
+            None,
             "Custom Gemini",
             &mut prompt_result,
         )
@@ -2150,6 +2246,33 @@ mod tests {
             gemini["env"]["GEMINI_MODEL"],
             crate::provider_preset_models::GEMINI_DEFAULT_MODEL
         );
+    }
+
+    #[test]
+    fn noninteractive_pi_add_validates_transport_fields() {
+        let build = |base_url: &str, api_format: &str| {
+            build_add_settings_config(
+                &AppType::Pi,
+                &AddProviderArgs {
+                    base_url: Some(base_url.to_string()),
+                    model: Some("model-a".to_string()),
+                    api_format: Some(api_format.to_string()),
+                    ..Default::default()
+                },
+                None,
+                None,
+                None,
+                "Custom Pi",
+                &mut None,
+            )
+        };
+
+        assert!(build("relative/path", "openai-completions").is_err());
+        assert!(build("https://pi.example/v1", "unknown-protocol").is_err());
+        let settings =
+            build("https://pi.example/v1", "anthropic-messages").expect("valid Pi transport");
+        assert_eq!(settings["api"], "anthropic-messages");
+        assert_eq!(settings["models"][0]["id"], "model-a");
     }
 
     #[test]

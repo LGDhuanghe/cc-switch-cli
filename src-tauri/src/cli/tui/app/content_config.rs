@@ -837,7 +837,7 @@ impl App {
         }
     }
 
-    pub(crate) fn on_settings_key(&mut self, key: KeyEvent, _data: &UiData) -> Action {
+    pub(crate) fn on_settings_key(&mut self, key: KeyEvent, data: &UiData) -> Action {
         let settings_len = SettingsItem::ALL.len();
         match key.code {
             KeyCode::Up => {
@@ -929,6 +929,20 @@ impl App {
                     };
                     Action::None
                 }
+                Some(SettingsItem::SkillsStorageLocation) => {
+                    self.overlay = Overlay::SkillsStorageLocationPicker {
+                        selected: storage_location_picker_index(
+                            crate::settings::get_skill_storage_location(),
+                        ),
+                    };
+                    Action::None
+                }
+                Some(SettingsItem::SkillsSyncMethod) => {
+                    self.overlay = Overlay::SkillsSyncMethodPicker {
+                        selected: sync_method_picker_index(data.skills.sync_method),
+                    };
+                    Action::None
+                }
                 Some(SettingsItem::OpenClawConfigDir) => {
                     let buffer = crate::settings::get_settings()
                         .openclaw_config_dir
@@ -938,6 +952,18 @@ impl App {
                         prompt: texts::tui_settings_openclaw_config_dir_prompt().to_string(),
                         input: TextInput::new(buffer),
                         submit: TextSubmit::SettingsOpenClawConfigDir,
+                    });
+                    Action::None
+                }
+                Some(SettingsItem::PiConfigDir) => {
+                    let buffer = crate::settings::get_settings()
+                        .pi_config_dir
+                        .unwrap_or_default();
+                    self.overlay = Overlay::TextInput(TextInputState {
+                        title: texts::tui_settings_pi_config_dir_label().to_string(),
+                        prompt: texts::tui_settings_pi_config_dir_prompt().to_string(),
+                        input: TextInput::new(buffer),
+                        submit: TextSubmit::SettingsPiConfigDir,
                     });
                     Action::None
                 }
@@ -1007,6 +1033,17 @@ impl App {
                     Action::None
                 }
                 Some(SettingsItem::Proxy) => self.push_route_and_switch(Route::SettingsProxy),
+                Some(SettingsItem::OutboundProxy) => {
+                    if self.global_outbound_proxy_draft.is_none() {
+                        self.global_outbound_proxy_draft = Some(
+                            data.config
+                                .global_outbound_proxy
+                                .clone()
+                                .unwrap_or_default(),
+                        );
+                    }
+                    self.push_route_and_switch(Route::SettingsOutboundProxy)
+                }
                 Some(SettingsItem::CheckForUpdates) => Action::CheckUpdate,
                 None => Action::None,
             },
@@ -1118,6 +1155,93 @@ impl App {
         }
     }
 
+    pub(crate) fn on_settings_outbound_proxy_key(
+        &mut self,
+        key: KeyEvent,
+        data: &UiData,
+    ) -> Action {
+        let items_len = GlobalOutboundProxySettingsItem::ALL.len();
+        match key.code {
+            KeyCode::Up => {
+                self.settings_outbound_proxy_idx =
+                    self.settings_outbound_proxy_idx.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Down => {
+                self.settings_outbound_proxy_idx =
+                    (self.settings_outbound_proxy_idx + 1).min(items_len - 1);
+                Action::None
+            }
+            KeyCode::Enter => {
+                let draft = self
+                    .global_outbound_proxy_draft
+                    .get_or_insert_with(|| {
+                        data.config
+                            .global_outbound_proxy
+                            .clone()
+                            .unwrap_or_default()
+                    })
+                    .clone();
+                match GlobalOutboundProxySettingsItem::ALL.get(self.settings_outbound_proxy_idx) {
+                    Some(GlobalOutboundProxySettingsItem::Url) => {
+                        self.overlay = Overlay::TextInput(global_outbound_proxy_text_input(
+                            TextSubmit::SettingsOutboundProxyUrl,
+                            draft.url,
+                        ));
+                        Action::None
+                    }
+                    Some(GlobalOutboundProxySettingsItem::Username) => {
+                        self.overlay = Overlay::TextInput(global_outbound_proxy_text_input(
+                            TextSubmit::SettingsOutboundProxyUsername,
+                            draft.username,
+                        ));
+                        Action::None
+                    }
+                    Some(GlobalOutboundProxySettingsItem::Password) => {
+                        self.overlay = Overlay::TextInput(global_outbound_proxy_text_input(
+                            TextSubmit::SettingsOutboundProxyPassword,
+                            draft.password,
+                        ));
+                        Action::None
+                    }
+                    None => Action::None,
+                }
+            }
+            _ => Action::None,
+        }
+    }
+
+    pub(crate) fn save_global_outbound_proxy(
+        &mut self,
+        config: crate::services::GlobalOutboundProxyConfig,
+    ) -> Action {
+        let full_url = match config.to_full_url() {
+            Ok(url) => url,
+            Err(error) => {
+                self.push_toast(global_outbound_proxy_error_message(error), ToastKind::Error);
+                return Action::None;
+            }
+        };
+        self.global_outbound_proxy_draft = Some(config.clone());
+        let environment_variables =
+            crate::services::global_proxy::configured_environment_variables();
+        if !full_url.is_empty() && !environment_variables.is_empty() {
+            self.overlay = Overlay::Confirm(ConfirmOverlay {
+                title: crate::t!("Environment proxy detected", "检测到环境变量代理")
+                    .to_string(),
+                message: crate::t!(
+                    "Proxy environment variables are set. Saving this configuration will take precedence over them. Continue?",
+                    "当前已设置代理环境变量。保存后，本配置的优先级将高于这些环境变量。是否继续？"
+                )
+                .to_string(),
+                action: ConfirmAction::SettingsSetGlobalOutboundProxy { config },
+            });
+            Action::None
+        } else {
+            Action::SetGlobalOutboundProxy { config }
+        }
+    }
+
     pub(crate) fn on_settings_managed_accounts_key(
         &mut self,
         key: KeyEvent,
@@ -1166,6 +1290,7 @@ impl App {
         }
 
         Action::ManagedAuthStartLogin {
+            account_id: None,
             auth_provider: "codex_oauth".to_string(),
         }
     }
@@ -1206,6 +1331,7 @@ impl App {
         }
 
         Action::ManagedAuthStartLogin {
+            account_id: None,
             auth_provider: "codex_oauth".to_string(),
         }
     }

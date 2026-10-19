@@ -5,9 +5,10 @@ use crate::app_config::{AppType, SkillApps};
 use crate::cli::commands::app_targets::{
     app_target_names, app_targets_or_default, parse_app_targets, supported_app_target_labels,
 };
+use crate::cli::i18n::texts;
 use crate::cli::ui::{create_table, highlight, info, success};
 use crate::error::AppError;
-use crate::services::skill::{ImportSkillSelection, SkillRepo, SyncMethod};
+use crate::services::skill::{ImportSkillSelection, SkillRepo, SkillStorageLocation, SyncMethod};
 use crate::services::SkillService;
 
 #[derive(Subcommand)]
@@ -110,6 +111,12 @@ pub enum SkillsCommand {
         #[arg(value_enum)]
         method: Option<SyncMethod>,
     },
+    /// Get or change the managed Skills storage location
+    StorageLocation {
+        /// Optional location to set (omit to show current)
+        #[arg(value_enum)]
+        location: Option<SkillStorageLocation>,
+    },
     /// Manage skill repositories
     #[command(subcommand)]
     Repos(SkillReposCommand),
@@ -164,6 +171,7 @@ pub fn execute(cmd: SkillsCommand, app: Option<AppType>) -> Result<(), AppError>
         SkillsCommand::ImportFromApps { apps, directories } => import_from_apps(apps, directories),
         SkillsCommand::Info { spec } => show_skill_info(&spec),
         SkillsCommand::SyncMethod { method } => sync_method(method),
+        SkillsCommand::StorageLocation { location } => storage_location(location),
         SkillsCommand::Repos(repos_cmd) => execute_repos(repos_cmd),
     }
 }
@@ -234,6 +242,7 @@ fn list_installed() -> Result<(), AppError> {
         "Gemini",
         "OpenCode",
         "Hermes",
+        "Pi",
     ]);
     for skill in skills {
         table.add_row(vec![
@@ -244,6 +253,7 @@ fn list_installed() -> Result<(), AppError> {
             if skill.apps.gemini { "✓" } else { " " }.to_string(),
             if skill.apps.opencode { "✓" } else { " " }.to_string(),
             if skill.apps.hermes { "✓" } else { " " }.to_string(),
+            if skill.apps.pi { "✓" } else { " " }.to_string(),
         ]);
     }
 
@@ -517,12 +527,13 @@ fn show_skill_info(spec: &str) -> Result<(), AppError> {
         println!("Desc:      {}", desc);
     }
     println!(
-        "Enabled:   claude={} codex={} gemini={} opencode={} hermes={}",
+        "Enabled:   claude={} codex={} gemini={} opencode={} hermes={} pi={}",
         record.apps.claude,
         record.apps.codex,
         record.apps.gemini,
         record.apps.opencode,
-        record.apps.hermes
+        record.apps.hermes,
+        record.apps.pi
     );
 
     Ok(())
@@ -575,17 +586,12 @@ fn remove_repo(_url: &str) -> Result<(), AppError> {
 
 fn set_repo_enabled(url: &str, enabled: bool) -> Result<(), AppError> {
     let repo = parse_repo_spec(url)?;
-    let existing = SkillService::list_repos()?
-        .into_iter()
-        .find(|candidate| candidate.owner == repo.owner && candidate.name == repo.name)
-        .ok_or_else(|| {
-            AppError::Message(format!(
-                "Repository not found: {}/{}",
-                repo.owner, repo.name
-            ))
-        })?;
-
-    SkillService::upsert_repo(repo_with_enabled(existing, enabled))?;
+    if !SkillService::set_repo_enabled(&repo.owner, &repo.name, enabled)? {
+        return Err(AppError::Message(format!(
+            "Repository not found: {}/{}",
+            repo.owner, repo.name
+        )));
+    }
     println!(
         "{}",
         success(&format!(
@@ -594,11 +600,6 @@ fn set_repo_enabled(url: &str, enabled: bool) -> Result<(), AppError> {
         ))
     );
     Ok(())
-}
-
-fn repo_with_enabled(mut repo: SkillRepo, enabled: bool) -> SkillRepo {
-    repo.enabled = enabled;
-    repo
 }
 
 fn sync_method(method: Option<SyncMethod>) -> Result<(), AppError> {
@@ -617,6 +618,46 @@ fn sync_method(method: Option<SyncMethod>) -> Result<(), AppError> {
         }
     }
     Ok(())
+}
+
+fn storage_location(location: Option<SkillStorageLocation>) -> Result<(), AppError> {
+    let Some(target) = location else {
+        println!(
+            "{}",
+            match crate::settings::get_skill_storage_location() {
+                SkillStorageLocation::CcSwitch => "cc-switch",
+                SkillStorageLocation::Unified => "unified",
+            }
+        );
+        return Ok(());
+    };
+
+    let result = SkillService::migrate_storage(target)?;
+    let location = texts::tui_skills_storage_location_name(target);
+    let summary = if result.errors.is_empty() {
+        texts::tui_toast_skills_storage_location_set(
+            location,
+            result.migrated_count,
+            result.skipped_count,
+        )
+    } else {
+        texts::tui_toast_skills_storage_location_partial(
+            location,
+            result.migrated_count,
+            result.skipped_count,
+            result.errors.len(),
+        )
+    };
+
+    if result.errors.is_empty() {
+        println!("{}", success(&summary));
+        Ok(())
+    } else {
+        Err(AppError::Message(format!(
+            "{summary}\n{}",
+            result.errors.join("\n")
+        )))
+    }
 }
 
 fn parse_repo_spec(raw: &str) -> Result<SkillRepo, AppError> {
@@ -657,8 +698,7 @@ fn parse_repo_spec(raw: &str) -> Result<SkillRepo, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_repo_spec, repo_with_enabled};
-    use crate::services::skill::SkillRepo;
+    use super::parse_repo_spec;
 
     #[test]
     fn parse_repo_spec_supports_plain_owner_repo() {
@@ -678,22 +718,5 @@ mod tests {
         assert_eq!(repo.name, "bar");
         assert_eq!(repo.branch, "dev");
         assert!(repo.enabled);
-    }
-
-    #[test]
-    fn repo_with_enabled_preserves_branch_and_identity() {
-        let repo = SkillRepo {
-            owner: "foo".to_string(),
-            name: "bar".to_string(),
-            branch: "release".to_string(),
-            enabled: true,
-        };
-
-        let updated = repo_with_enabled(repo, false);
-
-        assert_eq!(updated.owner, "foo");
-        assert_eq!(updated.name, "bar");
-        assert_eq!(updated.branch, "release");
-        assert!(!updated.enabled);
     }
 }

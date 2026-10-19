@@ -1168,6 +1168,9 @@ pub struct SessionsState {
     cost_request_pending: bool,
     cost_cancel_pending: Option<u64>,
     manual_refresh_scan: Option<u64>,
+    manual_refresh_publication_pending: bool,
+    /// One manual list refresh requested while that scope already has a scan.
+    deferred_manual_refresh_scope: Option<String>,
     manual_usage_sync_pending: bool,
     /// Scope of the most recent open/bootstrap attempt, successful or failed.
     /// The event loop uses this terminal marker to avoid retrying a failed
@@ -1279,6 +1282,8 @@ impl Default for SessionsState {
             cost_request_pending: false,
             cost_cancel_pending: None,
             manual_refresh_scan: None,
+            manual_refresh_publication_pending: false,
+            deferred_manual_refresh_scope: None,
             manual_usage_sync_pending: false,
             scan_attempted_scope: None,
             detail_key: None,
@@ -3682,6 +3687,9 @@ impl SessionsState {
     pub(crate) fn start_scan(&mut self, provider_id: String) -> u64 {
         let changing_scope = self.provider_id.as_deref() != Some(provider_id.as_str());
         if changing_scope {
+            if self.deferred_manual_refresh_scope.as_deref() != Some(provider_id.as_str()) {
+                self.deferred_manual_refresh_scope = None;
+            }
             self.request_cost_cancel();
             self.scope_epoch = self.scope_epoch.wrapping_add(1);
             self.view_epoch = self.view_epoch.wrapping_add(1);
@@ -3714,6 +3722,7 @@ impl SessionsState {
         self.scan_seq = self.scan_seq.wrapping_add(1);
         self.scan_active = Some(self.scan_seq);
         self.manual_refresh_scan = None;
+        self.manual_refresh_publication_pending = false;
         self.scan_tombstones_to_clear = Some((
             self.scan_seq,
             provider_id,
@@ -3728,12 +3737,34 @@ impl SessionsState {
     pub(crate) fn mark_manual_refresh(&mut self, request_id: u64) {
         if self.scan_active == Some(request_id) {
             self.manual_refresh_scan = Some(request_id);
+            self.manual_refresh_publication_pending = true;
+        }
+    }
+
+    pub(crate) fn manual_refresh_is_active(&self) -> bool {
+        self.scan_active.is_some() && self.manual_refresh_scan == self.scan_active
+    }
+
+    pub(crate) fn defer_manual_refresh(&mut self, provider_id: String) {
+        self.deferred_manual_refresh_scope = Some(provider_id);
+    }
+
+    pub(crate) fn manual_refresh_is_deferred_for(&self, provider_id: &str) -> bool {
+        self.deferred_manual_refresh_scope.as_deref() == Some(provider_id)
+    }
+
+    pub(crate) fn take_deferred_manual_refresh(&mut self, provider_id: &str) -> bool {
+        if self.manual_refresh_is_deferred_for(provider_id) {
+            self.deferred_manual_refresh_scope = None;
+            true
+        } else {
+            false
         }
     }
 
     pub(crate) fn take_manual_refresh_publication(&mut self, request_id: u64) -> bool {
-        if self.manual_refresh_scan == Some(request_id) {
-            self.manual_refresh_scan = None;
+        if self.manual_refresh_scan == Some(request_id) && self.manual_refresh_publication_pending {
+            self.manual_refresh_publication_pending = false;
             true
         } else {
             false
@@ -3778,6 +3809,7 @@ impl SessionsState {
         if self.scan_active == Some(request_id) {
             if self.manual_refresh_scan == Some(request_id) {
                 self.manual_refresh_scan = None;
+                self.manual_refresh_publication_pending = false;
             }
             if self
                 .scan_tombstones_to_clear
@@ -4331,6 +4363,14 @@ pub enum ConfirmAction {
     PromptDelete {
         id: String,
     },
+    PiSystemPromptDelete {
+        kind: crate::services::pi_prompt_files::PiPromptFileKind,
+        expected_revision: String,
+    },
+    PiPromptTemplateDelete {
+        slug: String,
+        expected_revision: String,
+    },
     PricingDelete {
         model_id: String,
     },
@@ -4342,6 +4382,9 @@ pub enum ConfirmAction {
     },
     SkillsUninstall {
         directory: String,
+    },
+    SkillsMigrateStorage {
+        location: crate::services::skill::SkillStorageLocation,
     },
     SkillsRepoRemove {
         owner: String,
@@ -4359,6 +4402,9 @@ pub enum ConfirmAction {
     },
     SettingsSetClaudePluginIntegration {
         enabled: bool,
+    },
+    SettingsSetGlobalOutboundProxy {
+        config: crate::services::GlobalOutboundProxyConfig,
     },
     VisibleAppsAutoDetection,
     VisibleAppsSwitchToManual {
@@ -4453,8 +4499,18 @@ pub enum TextSubmit {
     ConfigBackupName,
     SettingsProxyListenAddress,
     SettingsProxyListenPort,
+    SettingsOutboundProxyUrl,
+    SettingsOutboundProxyUsername,
+    SettingsOutboundProxyPassword,
     SettingsOpenClawConfigDir,
+    SettingsPiConfigDir,
     SettingsPreferredEditor,
+    PiPromptTemplateCreate,
+    PiPromptTemplateRename {
+        original_slug: String,
+        expected_revision: String,
+        content: String,
+    },
     #[allow(dead_code)]
     SkillsInstallSpec,
     SkillsDiscoverQuery,
@@ -4477,12 +4533,37 @@ pub enum TextSubmit {
     WebDavJianguoyunPassword,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TextInputState {
     pub title: String,
     pub prompt: String,
     pub input: TextInput,
     pub submit: TextSubmit,
+}
+
+impl std::fmt::Debug for TextInputState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut input = self.input.clone();
+        match &self.submit {
+            TextSubmit::SettingsOutboundProxyUrl => {
+                input.value = crate::proxy::http_client::mask_url(&input.value);
+            }
+            TextSubmit::SettingsOutboundProxyUsername
+            | TextSubmit::SettingsOutboundProxyPassword => {
+                if !input.value.is_empty() {
+                    input.value = "***".to_string();
+                }
+            }
+            _ => {}
+        }
+        formatter
+            .debug_struct("TextInputState")
+            .field("title", &self.title)
+            .field("prompt", &self.prompt)
+            .field("input", &input)
+            .field("submit", &self.submit)
+            .finish()
+    }
 }
 
 impl TextInputState {
@@ -4606,6 +4687,16 @@ pub enum Overlay {
     ClaudeApiFormatPicker {
         selected: usize,
     },
+    CodexReasoningLevelsPicker {
+        row: usize,
+        selected: usize,
+        checked: [bool; 8],
+    },
+    CodexDefaultReasoningPicker {
+        row: usize,
+        selected: usize,
+        options: Vec<String>,
+    },
     UserAgentPicker {
         selected: usize,
     },
@@ -4614,6 +4705,12 @@ pub enum Overlay {
         editors: Vec<crate::cli::editor::DetectedEditor>,
     },
     UsageQueryTemplatePicker {
+        selected: usize,
+    },
+    /// Provider Add form template picker. `selected` is the flat template
+    /// index shared with `ProviderAddFormState::apply_template`, not the
+    /// picker's display row, because the picker regroups templates.
+    ProviderTemplatePicker {
         selected: usize,
     },
     S3PresetPicker {
@@ -4691,6 +4788,9 @@ pub enum Overlay {
     },
     #[allow(dead_code)]
     SkillsSyncMethodPicker {
+        selected: usize,
+    },
+    SkillsStorageLocationPicker {
         selected: usize,
     },
     McpKeyValuePicker {
@@ -4842,9 +4942,12 @@ impl Overlay {
                 | Overlay::ProviderTestMenu { .. }
                 | Overlay::FailoverQueueManager { .. }
                 | Overlay::ClaudeApiFormatPicker { .. }
+                | Overlay::CodexReasoningLevelsPicker { .. }
+                | Overlay::CodexDefaultReasoningPicker { .. }
                 | Overlay::UserAgentPicker { .. }
                 | Overlay::ExternalEditorPicker { .. }
                 | Overlay::UsageQueryTemplatePicker { .. }
+                | Overlay::ProviderTemplatePicker { .. }
                 | Overlay::S3PresetPicker { .. }
                 | Overlay::ManagedAccountPicker { .. }
                 | Overlay::ManagedAccountActionPicker { .. }
@@ -4858,6 +4961,7 @@ impl Overlay {
                 | Overlay::SkillsAppsPicker { .. }
                 | Overlay::SkillsImportPicker { .. }
                 | Overlay::SkillsSyncMethodPicker { .. }
+                | Overlay::SkillsStorageLocationPicker { .. }
                 | Overlay::McpKeyValuePicker { .. }
                 | Overlay::McpTypePicker { .. }
                 | Overlay::SpeedtestResult { .. }
@@ -4887,9 +4991,12 @@ impl Overlay {
             | Overlay::ProviderTestMenu { .. }
             | Overlay::FailoverQueueManager { .. }
             | Overlay::ClaudeApiFormatPicker { .. }
+            | Overlay::CodexReasoningLevelsPicker { .. }
+            | Overlay::CodexDefaultReasoningPicker { .. }
             | Overlay::UserAgentPicker { .. }
             | Overlay::ExternalEditorPicker { .. }
             | Overlay::UsageQueryTemplatePicker { .. }
+            | Overlay::ProviderTemplatePicker { .. }
             | Overlay::S3PresetPicker { .. }
             | Overlay::ManagedAccountPicker { .. }
             | Overlay::ManagedAccountActionPicker { .. }
@@ -4900,6 +5007,7 @@ impl Overlay {
             | Overlay::SkillsAppsPicker { .. }
             | Overlay::SkillsImportPicker { .. }
             | Overlay::SkillsSyncMethodPicker { .. }
+            | Overlay::SkillsStorageLocationPicker { .. }
             | Overlay::McpKeyValuePicker { .. }
             | Overlay::McpTypePicker { .. }
             | Overlay::Loading { .. }

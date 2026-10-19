@@ -109,7 +109,7 @@ fn insert_codex_managed_mcp(config: &mut MultiAppConfig) {
 }
 
 #[test]
-fn reapply_codex_official_live_resyncs_mcp_servers() {
+fn reapply_codex_official_live_preserves_existing_mcp_servers() {
     let _guard = lock_test_mutex();
     reset_test_fs();
     let _home = ensure_test_home();
@@ -119,7 +119,11 @@ fn reapply_codex_official_live_resyncs_mcp_servers() {
         "OPENAI_API_KEY": null,
         "tokens": { "access_token": "official-oauth-token", "account_id": "acct" }
     });
-    write_codex_live_atomic(&live_auth, Some("")).expect("seed official live auth");
+    write_codex_live_atomic(
+        &live_auth,
+        Some("[mcp_servers.echo-server]\ncommand = \"user-command\"\n"),
+    )
+    .expect("seed official live auth");
 
     let mut initial_config = MultiAppConfig::default();
     {
@@ -153,7 +157,7 @@ fn reapply_codex_official_live_resyncs_mcp_servers() {
         .expect("read config.toml after switch");
     assert!(
         live.contains("mcp_servers.echo-server"),
-        "switch should sync enabled MCP servers into live"
+        "switch should preserve existing MCP servers in live"
     );
 
     let reapplied =
@@ -167,7 +171,7 @@ fn reapply_codex_official_live_resyncs_mcp_servers() {
         .expect("read config.toml after reapply");
     assert!(
         live.contains("mcp_servers.echo-server"),
-        "reapply must re-project enabled MCP servers after the full live rewrite, got: {live}"
+        "reapply must preserve existing MCP servers, got: {live}"
     );
 }
 
@@ -182,7 +186,11 @@ fn codex_unified_session_bucket_stays_live_only_across_provider_switches() {
         "OPENAI_API_KEY": null,
         "tokens": { "access_token": "official-oauth-token", "account_id": "acct" }
     });
-    write_codex_live_atomic(&live_auth, Some("")).expect("seed official live auth");
+    write_codex_live_atomic(
+        &live_auth,
+        Some("[mcp_servers.echo-server]\ncommand = \"user-command\"\n"),
+    )
+    .expect("seed official live auth");
 
     let mut settings = AppSettings::load();
     settings.unify_codex_session_history = true;
@@ -337,14 +345,14 @@ command = "echo"
     let config_text =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
     assert!(
-        config_text.contains("mcp_servers.echo-server"),
-        "config.toml should contain synced MCP servers"
+        config_text.contains("mcp_servers.legacy"),
+        "switch must preserve live MCP servers instead of resyncing stored definitions"
     );
     let parsed_config: toml::Value = toml::from_str(&config_text).expect("parse config.toml");
     assert_eq!(
         parsed_config
             .get("model_providers")
-            .and_then(|value| value.get("latest"))
+            .and_then(|value| value.get("custom"))
             .and_then(|value| value.get("experimental_bearer_token"))
             .and_then(|value| value.as_str()),
         Some("fresh-key"),
@@ -386,8 +394,8 @@ command = "echo"
         .and_then(|v| v.as_str())
         .unwrap_or("");
     assert_eq!(
-        legacy_auth_value, "legacy-key",
-        "previous provider should be backfilled with live auth"
+        legacy_auth_value, "stale",
+        "switching must not backfill native login into a provider row"
     );
 }
 
@@ -460,28 +468,13 @@ requires_openai_auth = true
 
     let state = state_from_config(initial_config);
 
-    // Upstream parity (clean-write, preservation OFF): switching to a
-    // third-party provider OVERWRITES auth.json with the provider's API key and
-    // overwrites config.toml. The live OAuth cache is intentionally replaced
-    // because preserve_codex_official_auth_on_switch is off.
-    ProviderService::switch(&state, AppType::Codex, "third-party")
-        .expect("clean-write switch should succeed");
-
-    let auth_value: serde_json::Value =
-        read_json_file(&cc_switch_lib::get_codex_auth_path()).expect("read auth.json");
-    assert_eq!(
-        auth_value
-            .get("OPENAI_API_KEY")
-            .and_then(|value| value.as_str()),
-        Some("third-party-key"),
-        "clean switch should overwrite auth.json with the incoming provider key"
-    );
-
+    ProviderService::switch(&state, AppType::Codex, "third-party").expect("switch should succeed");
+    assert!(!cc_switch_lib::get_codex_auth_path().exists());
     let config_text =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
     assert!(
-        config_text.contains("aihubmix"),
-        "clean switch should overwrite config.toml with the third-party provider: {config_text}"
+        config_text.contains("experimental_bearer_token = \"third-party-key\""),
+        "the key belongs to the custom route: {config_text}"
     );
 
     let guard = state.config.read().expect("read config after switch");
@@ -568,8 +561,8 @@ requires_openai_auth = true
 
     assert_eq!(
         parsed.get("model_provider").and_then(|v| v.as_str()),
-        Some("aihubmix"),
-        "live Codex model_provider should preserve the selected provider template"
+        Some("custom"),
+        "live routing uses the upstream stable custom bucket"
     );
 
     let model_providers = parsed
@@ -578,7 +571,7 @@ requires_openai_auth = true
         .expect("model_providers table exists");
     assert_eq!(
         model_providers
-            .get("aihubmix")
+            .get("custom")
             .and_then(|v| v.get("base_url"))
             .and_then(|v| v.as_str()),
         Some("https://aihubmix.example/v1"),
@@ -840,8 +833,8 @@ command = "echo"
     let config_text =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
     assert!(
-        config_text.contains("disable_response_storage = true"),
-        "common snippet should still be present after update"
+        !config_text.contains("disable_response_storage = true"),
+        "provider-owned fields follow the row without replaying saved common snippets"
     );
     assert!(
         config_text.contains("[mcp_servers.echo-server]"),
@@ -1376,6 +1369,7 @@ fn switch_packycode_gemini_updates_security_selected_type() {
     let _guard = lock_test_mutex();
     reset_test_fs();
     let home = ensure_test_home();
+    std::fs::create_dir_all(home.join(".gemini")).expect("initialize Gemini config directory");
 
     let mut config = MultiAppConfig::default();
     {
@@ -1404,7 +1398,7 @@ fn switch_packycode_gemini_updates_security_selected_type() {
     ProviderService::switch(&state, AppType::Gemini, "packy-gemini")
         .expect("switching to PackyCode Gemini should succeed");
 
-    let settings_path = home.join(".cc-switch").join("settings.json");
+    let settings_path = home.join(".gemini").join("settings.json");
     assert!(
         settings_path.exists(),
         "settings.json should exist at {}",
@@ -1428,6 +1422,7 @@ fn packycode_partner_meta_triggers_security_flag_even_without_keywords() {
     let _guard = lock_test_mutex();
     reset_test_fs();
     let home = ensure_test_home();
+    std::fs::create_dir_all(home.join(".gemini")).expect("initialize Gemini config directory");
 
     let mut config = MultiAppConfig::default();
     {
@@ -1458,7 +1453,7 @@ fn packycode_partner_meta_triggers_security_flag_even_without_keywords() {
     ProviderService::switch(&state, AppType::Gemini, "packy-meta")
         .expect("switching to partner meta provider should succeed");
 
-    let settings_path = home.join(".cc-switch").join("settings.json");
+    let settings_path = home.join(".gemini").join("settings.json");
     assert!(
         settings_path.exists(),
         "settings.json should exist at {}",
@@ -1512,7 +1507,7 @@ fn switch_google_official_gemini_sets_oauth_security() {
     ProviderService::switch(&state, AppType::Gemini, "google-official")
         .expect("switching to Google official Gemini should succeed");
 
-    let settings_path = home.join(".cc-switch").join("settings.json");
+    let settings_path = home.join(".gemini").join("settings.json");
     assert!(
         settings_path.exists(),
         "settings.json should exist at {}",
@@ -1526,7 +1521,7 @@ fn switch_google_official_gemini_sets_oauth_security() {
             .pointer("/security/auth/selectedType")
             .and_then(|v| v.as_str()),
         Some("oauth-personal"),
-        "Google official Gemini should set oauth-personal selectedType in app settings"
+        "Google official Gemini should set oauth-personal selectedType in Gemini settings"
     );
 
     let gemini_settings = home.join(".gemini").join("settings.json");
@@ -1627,13 +1622,13 @@ fn switch_gemini_merges_existing_settings_preserving_mcp_servers() {
     );
     assert_eq!(
         value.pointer("/ccSwitchTestKey").and_then(|v| v.as_str()),
-        Some("new"),
-        "switch should merge provider config into existing Gemini settings.json, got: {raw}"
+        None,
+        "switch must not replay user-owned settings from provider rows: {raw}"
     );
 }
 
 #[test]
-fn provider_service_switch_claude_overwrites_live_with_provider_config() {
+fn provider_service_switch_claude_preserves_live_globals() {
     let _guard = lock_test_mutex();
     reset_test_fs();
     let _home = ensure_test_home();
@@ -1692,9 +1687,7 @@ fn provider_service_switch_claude_overwrites_live_with_provider_config() {
     ProviderService::switch(&state, AppType::Claude, "new-provider")
         .expect("switch provider should succeed");
 
-    // Upstream parity (clean-write): settings.json is OVERWRITTEN with the new
-    // provider's effective config. Local-only fields that are neither in the
-    // provider nor the common-config snippet are NOT preserved.
+    // Only provider-owned fields are replaced. Live globals remain authoritative.
     let live_after: serde_json::Value =
         read_json_file(&settings_path).expect("read claude live settings");
     assert_eq!(
@@ -1709,19 +1702,19 @@ fn provider_service_switch_claude_overwrites_live_with_provider_config() {
         live_after
             .get("env")
             .and_then(|env| env.get("LOCAL_ONLY"))
-            .is_none(),
-        "clean overwrite should not retain local-only env keys"
+            .is_some(),
+        "switching preserves user-owned environment keys"
     );
     assert!(
-        live_after.get("workspace").is_none(),
-        "clean overwrite should not retain local-only nested objects"
+        live_after.get("workspace") == legacy_live.get("workspace"),
+        "switching preserves user-owned nested objects"
     );
     assert_eq!(
         live_after
             .pointer("/permissions/allow/0")
             .and_then(|value| value.as_str()),
-        Some("Bash(cargo test:*)"),
-        "live settings.json should add provider-only nested objects"
+        None,
+        "stale permissions from provider rows must not be replayed"
     );
 
     let guard = state
@@ -1738,13 +1731,14 @@ fn provider_service_switch_claude_overwrites_live_with_provider_config() {
         .get("old-provider")
         .expect("legacy provider still exists");
     assert_eq!(
-        legacy_provider.settings_config, legacy_live,
-        "previous provider should receive backfilled live config"
+        legacy_provider.settings_config,
+        json!({"env":{"ANTHROPIC_API_KEY":"stale-key"}}),
+        "switching must not backfill live settings into provider rows"
     );
 }
 
 #[test]
-fn provider_service_switch_claude_overwrites_live_discarding_unstored_edits() {
+fn provider_service_switch_claude_preserves_user_edits() {
     let _guard = lock_test_mutex();
     reset_test_fs();
     let _home = ensure_test_home();
@@ -1818,8 +1812,8 @@ fn provider_service_switch_claude_overwrites_live_discarding_unstored_edits() {
         live_after
             .pointer("/workspace/path")
             .and_then(|value| value.as_str()),
-        Some("/tmp/new-workspace"),
-        "incoming provider workspace should win on a clean write"
+        Some("/tmp/workspace"),
+        "the live workspace is user-owned"
     );
 
     let guard = state
@@ -4278,21 +4272,13 @@ fn provider_service_switch_codex_openai_official_preserves_oauth_auth_and_common
     ProviderService::switch(&state, AppType::Codex, "p1")
         .expect("switch to stripped OpenAI official provider should succeed");
 
-    // Upstream parity (clean-write): the official provider's stored OAuth auth
-    // snapshot is written to auth.json (Write branch). The auth.json is
-    // overwritten, so live-only fields are not retained.
     let auth_value: serde_json::Value =
         read_json_file(&auth_path).expect("read auth.json after switch");
     assert_eq!(
-        auth_value["access_token"],
-        json!("oauth-token"),
-        "official provider should restore the stored OAuth auth snapshot"
+        auth_value,
+        json!({"LOCAL_ONLY":"preserve-me"}),
+        "do not restore stale row metadata over the native auth file"
     );
-    assert!(
-        auth_value.get("LOCAL_ONLY").is_none(),
-        "clean overwrite should not retain local-only auth fields"
-    );
-
     let live_text =
         std::fs::read_to_string(cc_switch_lib::get_codex_config_path()).expect("read config.toml");
     assert!(

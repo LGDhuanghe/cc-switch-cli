@@ -96,6 +96,7 @@ mod tests {
             migration_error: None,
             accounts: vec![
                 crate::services::ManagedAuthAccount {
+                    reauth_required: false,
                     id: "acc-default".to_string(),
                     provider: "codex_oauth".to_string(),
                     login: "default@example.com".to_string(),
@@ -104,6 +105,7 @@ mod tests {
                     is_default: true,
                 },
                 crate::services::ManagedAuthAccount {
+                    reauth_required: false,
                     id: "acc-alt".to_string(),
                     provider: "codex_oauth".to_string(),
                     login: "alt@example.com".to_string(),
@@ -215,10 +217,18 @@ mod tests {
         }
     }
 
+    /// Applies the provider Add form's current template and leaves focus on
+    /// the fields. The template row is collapsed into a picker overlay, so
+    /// this takes two Enters: one to open the picker, one to apply.
+    fn apply_current_provider_template(app: &mut App, data: &UiData) {
+        app.on_key(key(KeyCode::Enter), data);
+        app.on_key(key(KeyCode::Enter), data);
+    }
+
     fn open_provider_fields_form(app_type: AppType) -> App {
         let mut app = App::new(Some(app_type));
         app.open_provider_add_form(&UiData::default());
-        app.on_key(key(KeyCode::Enter), &data());
+        apply_current_provider_template(&mut app, &data());
         app
     }
 
@@ -913,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn skills_apps_picker_from_openclaw_targets_hermes_last_visible_row() {
+    fn skills_apps_picker_from_openclaw_targets_pi_last_visible_row() {
         let mut app = App::new(Some(AppType::OpenClaw));
         app.route = Route::Skills;
         app.focus = Focus::Content;
@@ -927,7 +937,7 @@ mod tests {
         assert!(matches!(action, Action::None));
         assert!(matches!(
             &app.overlay,
-            Overlay::SkillsAppsPicker { selected, .. } if *selected == 4
+            Overlay::SkillsAppsPicker { selected, .. } if *selected == 5
         ));
 
         let action = app.on_key(key(KeyCode::Char(' ')), &data);
@@ -935,12 +945,45 @@ mod tests {
         assert!(matches!(
             &app.overlay,
             Overlay::SkillsAppsPicker { selected, apps, .. }
-                if *selected == 4
+                if *selected == 5
                     && !apps.claude
                     && !apps.codex
                     && !apps.gemini
                     && !apps.opencode
-                    && apps.hermes
+                    && !apps.hermes
+                    && apps.pi
+        ));
+    }
+
+    #[test]
+    #[serial(home_settings)]
+    fn visible_apps_picker_can_toggle_pi() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestEnvGuard::isolated(temp_home.path());
+        crate::settings::set_visible_apps_mode(crate::settings::VisibleAppsMode::Manual)
+            .expect("save visible apps mode");
+        let mut app = App::new(Some(AppType::Pi));
+        app.overlay = Overlay::VisibleAppsPicker {
+            selected: app_type_picker_index(&AppType::Pi),
+            apps: crate::settings::VisibleApps {
+                claude: true,
+                codex: false,
+                gemini: false,
+                opencode: false,
+                hermes: false,
+                openclaw: false,
+                pi: false,
+            },
+        };
+
+        assert!(matches!(
+            app.on_key(key(KeyCode::Char(' ')), &UiData::default()),
+            Action::None
+        ));
+        assert!(matches!(
+            &app.overlay,
+            Overlay::VisibleAppsPicker { selected, apps }
+                if *selected == 6 && apps.pi
         ));
     }
 
@@ -1124,6 +1167,7 @@ mod tests {
             opencode: true,
             hermes: false,
             openclaw: true,
+            pi: false,
         })
         .expect("save visible apps");
         let mut app = App::new(Some(AppType::Claude));
@@ -1149,6 +1193,7 @@ mod tests {
             opencode: true,
             hermes: false,
             openclaw: true,
+            pi: false,
         })
         .expect("save visible apps");
         let mut app = App::new(Some(AppType::Claude));
@@ -1182,6 +1227,7 @@ mod tests {
             opencode: true,
             hermes: false,
             openclaw: true,
+            pi: false,
         })
         .expect("save visible apps");
         let mut app = App::new(Some(AppType::Gemini));
@@ -1223,6 +1269,7 @@ mod tests {
             opencode: true,
             hermes: false,
             openclaw: true,
+            pi: false,
         })
         .expect("save visible apps");
 
@@ -1246,6 +1293,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         })
         .expect("save visible apps");
 
@@ -1273,6 +1321,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: true,
+            pi: false,
         })
         .expect("save visible apps");
 
@@ -1296,6 +1345,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         })
         .expect("save visible apps");
 
@@ -1642,7 +1692,7 @@ mod tests {
         app.route = Route::Providers;
         app.focus = Focus::Content;
         app.on_key(key(KeyCode::Char('a')), &data());
-        app.on_key(key(KeyCode::Enter), &data());
+        apply_current_provider_template(&mut app, &data());
 
         let name_idx = match app.form.as_ref() {
             Some(FormState::ProviderAdd(form)) => form
@@ -1939,12 +1989,42 @@ mod tests {
     }
 
     #[test]
+    fn claude_fallback_one_m_keyboard_toggle_and_cancel() {
+        let mut app = App::new(Some(AppType::Claude));
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        form.set_claude_fallback_model_from_config("deepseek-flash");
+        form.focus = FormFocus::Fields;
+        app.form = Some(FormState::ProviderAdd(form));
+        select_provider_field(&mut app, ProviderAddField::ClaudeFallbackOneM);
+        app.on_key(key(KeyCode::Enter), &data());
+        select_provider_field(&mut app, ProviderAddField::ClaudeFallbackModel);
+        app.on_key(key(KeyCode::Enter), &data());
+        app.on_key(ctrl(KeyCode::Char('a')), &data());
+        app.on_key(ctrl(KeyCode::Char('k')), &data());
+        app.on_key(key(KeyCode::Esc), &data());
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("form missing")
+        };
+        assert_eq!(form.claude_model.value, "deepseek-flash");
+        assert_eq!(
+            form.to_provider_json_value()["settingsConfig"]["env"]["ANTHROPIC_MODEL"],
+            "deepseek-flash[1M]"
+        );
+        select_provider_field(&mut app, ProviderAddField::ClaudeFallbackOneM);
+        app.on_key(key(KeyCode::Char(' ')), &data());
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("form missing")
+        };
+        assert!(!form.claude_fallback_one_m);
+    }
+
+    #[test]
     fn claude_fallback_model_edit_persists_anthropic_model() {
         let mut app = App::new(Some(AppType::Claude));
         app.route = Route::Providers;
         app.focus = Focus::Content;
         app.on_key(key(KeyCode::Char('a')), &data());
-        app.on_key(key(KeyCode::Enter), &data());
+        apply_current_provider_template(&mut app, &data());
 
         if let Some(FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.name.set("Provider One");
@@ -2295,6 +2375,8 @@ mod tests {
                 is_full_url: false,
                 api_key: Some(api_key),
                 custom_user_agent: Some(custom_user_agent),
+                api_protocol: None,
+                request_headers: None,
                 codex_oauth: false,
                 codex_oauth_account_id: None,
                 field: ProviderAddField::HermesModels,
@@ -4772,7 +4854,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
 
         app.on_key(key(KeyCode::Tab), &data); // fields -> auth preview
         let (focus, section) = match app.form.as_ref() {
@@ -4790,12 +4872,16 @@ mod tests {
         assert_eq!(focus, super::super::form::FormFocus::JsonPreview);
         assert_eq!(section, super::super::form::CodexPreviewSection::Config);
 
-        app.on_key(key(KeyCode::Tab), &data); // config preview -> templates
+        app.on_key(key(KeyCode::Tab), &data); // config preview -> fields
         let focus = match app.form.as_ref() {
             Some(FormState::ProviderAdd(form)) => form.focus,
             other => panic!("expected ProviderAdd form, got: {other:?}"),
         };
-        assert_eq!(focus, super::super::form::FormFocus::Templates);
+        assert_eq!(
+            focus,
+            super::super::form::FormFocus::Fields,
+            "the template is a field row now, so there is no Templates stop"
+        );
     }
 
     #[test]
@@ -4806,8 +4892,9 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         app.on_key(key(KeyCode::Tab), &data); // fields -> auth preview
+        assert!(matches!(app.overlay, Overlay::None));
 
         app.on_key(key(KeyCode::Right), &data);
         let section = match app.form.as_ref() {
@@ -4832,7 +4919,7 @@ mod tests {
 
         let data = data();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         select_provider_common_snippet_row(&mut app);
 
         let action = app.on_key(key(KeyCode::Enter), &data);
@@ -4857,7 +4944,7 @@ mod tests {
 
         let data = data();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         select_provider_common_snippet_row(&mut app);
         app.on_key(key(KeyCode::Enter), &data);
 
@@ -4910,7 +4997,7 @@ mod tests {
 
         let data = data();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         select_provider_common_snippet_row(&mut app);
 
         let action = app.on_key(key(KeyCode::Enter), &data);
@@ -4935,7 +5022,7 @@ mod tests {
 
         let data = data();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         select_provider_common_snippet_row(&mut app);
 
         let action = app.on_key(key(KeyCode::Enter), &data);
@@ -5171,7 +5258,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         app.on_key(key(KeyCode::Tab), &data); // fields -> preview
 
         let action = app.on_key(key(KeyCode::Enter), &data);
@@ -5190,7 +5277,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
 
         if let Some(FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -5223,7 +5310,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
 
         if let Some(FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -5303,6 +5390,165 @@ mod tests {
     }
 
     #[test]
+    fn provider_pi_models_fetch_uses_native_protocol_and_headers() {
+        let mut app = App::new(Some(AppType::Pi));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        let provider = Provider::with_id(
+            "pi-native".to_string(),
+            "Pi Native".to_string(),
+            json!({
+                "apiKey": "pi-secret",
+                "api": "anthropic-messages",
+                "headers": { "X-Custom": "custom-value" },
+                "models": [{
+                    "id": "existing",
+                    "baseUrl": "https://pi.example.test/v1"
+                }]
+            }),
+            None,
+        );
+        let mut form = ProviderAddFormState::from_provider(AppType::Pi, &provider);
+        form.focus = FormFocus::Fields;
+        form.field_idx = form
+            .fields()
+            .iter()
+            .position(|field| *field == ProviderAddField::OpenClawModels)
+            .expect("Pi models field");
+        app.form = Some(FormState::ProviderAdd(form));
+
+        let action = app.on_key(key(KeyCode::Char('f')), &data());
+        let Action::ProviderModelFetch {
+            base_url,
+            api_key,
+            api_protocol,
+            request_headers,
+            field,
+            ..
+        } = action
+        else {
+            panic!("expected Pi model fetch action");
+        };
+        assert_eq!(base_url, "https://pi.example.test/v1");
+        assert_eq!(api_key, None, "Anthropic auth is carried by x-api-key");
+        assert_eq!(api_protocol.as_deref(), Some("anthropic-messages"));
+        assert_eq!(field, ProviderAddField::OpenClawModels);
+        let headers = request_headers.expect("native request headers");
+        assert_eq!(
+            headers.get("X-Custom").map(String::as_str),
+            Some("custom-value")
+        );
+        assert_eq!(
+            headers.get("x-api-key").map(String::as_str),
+            Some("pi-secret")
+        );
+    }
+
+    #[test]
+    fn provider_pi_model_fetch_selection_adds_a_model_entry() {
+        let mut app = App::new(Some(AppType::Pi));
+        app.form = Some(FormState::ProviderAdd(ProviderAddFormState::new(
+            AppType::Pi,
+        )));
+        app.overlay = Overlay::ModelFetchPicker {
+            request_id: 1,
+            field: ProviderAddField::OpenClawModels,
+            claude_idx: None,
+            input: TextInput::new(""),
+            query: String::new(),
+            fetching: false,
+            models: vec!["fetched-model".to_string()],
+            filtered_indices: None,
+            filter_incomplete: false,
+            error: None,
+            selected_idx: 0,
+            selection_active: false,
+        };
+
+        assert!(matches!(
+            app.on_key(key(KeyCode::Enter), &data()),
+            Action::None
+        ));
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("expected provider form");
+        };
+        assert_eq!(form.openclaw_models, vec![json!({ "id": "fetched-model" })]);
+    }
+
+    #[test]
+    fn pi_system_prompt_edit_uses_the_loaded_native_revision() {
+        let mut app = App::new(Some(AppType::Pi));
+        let mut data = UiData::default();
+        data.pi_prompts.system_files.push((
+            crate::services::pi_prompt_files::PiPromptFileKind::SystemAppend,
+            crate::services::pi_prompt_files::PiPromptFileSnapshot {
+                exists: true,
+                revision: "rev-1".to_string(),
+                content: "Keep answers concise.".to_string(),
+            },
+        ));
+
+        assert!(matches!(
+            app.on_pi_system_prompts_key(key(KeyCode::Char('e')), &data),
+            Action::None
+        ));
+        assert!(matches!(
+            app.editor.as_ref(),
+            Some(EditorState {
+                initial_text,
+                submit: EditorSubmit::PiSystemPrompt {
+                    kind: crate::services::pi_prompt_files::PiPromptFileKind::SystemAppend,
+                    expected_revision,
+                },
+                ..
+            }) if initial_text == "Keep answers concise." && expected_revision == "rev-1"
+        ));
+    }
+
+    #[test]
+    fn pi_prompt_template_actions_follow_the_family_editor_flow() {
+        let mut app = App::new(Some(AppType::Pi));
+        let mut data = UiData::default();
+        data.pi_prompts
+            .templates
+            .push(crate::services::pi_prompt_files::PiPromptTemplate {
+                slug: "review".to_string(),
+                content: "Review this change.".to_string(),
+                revision: "rev-2".to_string(),
+            });
+
+        assert!(matches!(
+            app.on_pi_prompt_templates_key(key(KeyCode::Char('e')), &data),
+            Action::None
+        ));
+        assert!(matches!(
+            app.editor.as_ref(),
+            Some(EditorState {
+                initial_text,
+                submit: EditorSubmit::PiPromptTemplate {
+                    slug,
+                    original_slug: Some(original_slug),
+                    expected_revision,
+                },
+                ..
+            }) if initial_text == "Review this change."
+                && slug == "review"
+                && original_slug == "review"
+                && expected_revision == "rev-2"
+        ));
+
+        app.editor = None;
+        app.on_pi_prompt_templates_key(key(KeyCode::Char('a')), &data);
+        assert!(matches!(
+            app.overlay,
+            Overlay::TextInput(TextInputState {
+                submit: TextSubmit::PiPromptTemplateCreate,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn provider_add_form_codex_preview_tab_then_enter_opens_config_editor() {
         let mut app = App::new(Some(AppType::Codex));
         app.route = Route::Providers;
@@ -5311,7 +5557,7 @@ mod tests {
         let mut data = UiData::default();
         data.config.common_snippet = "[features]\ngoals = true\n".to_string();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         app.on_key(key(KeyCode::Tab), &data); // fields -> preview
         app.on_key(key(KeyCode::Tab), &data); // auth -> config
 
@@ -5339,7 +5585,7 @@ mod tests {
         data.config.common_snippet = "disable_response_storage = true".to_string();
 
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         app.on_key(key(KeyCode::Tab), &data); // fields -> preview
 
         let action = app.on_key(key(KeyCode::Char('c')), &data);
@@ -5356,7 +5602,8 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Right), &data); // select OpenAI Official
+        app.on_key(key(KeyCode::Enter), &data); // Template field -> picker
+        app.on_key(key(KeyCode::Down), &data); // select OpenAI Official
         app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
         app.on_key(key(KeyCode::Tab), &data); // fields -> preview
 
@@ -9979,6 +10226,153 @@ mod tests {
     }
 
     #[test]
+    fn outbound_proxy_empty_url_clears_configuration() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::SettingsOutboundProxy;
+        app.focus = Focus::Content;
+        app.overlay = Overlay::TextInput(TextInputState {
+            title: "Global Outbound Proxy".to_string(),
+            prompt: "Proxy URL".to_string(),
+            input: TextInput::new(""),
+            submit: TextSubmit::SettingsOutboundProxyUrl,
+        });
+
+        assert!(matches!(
+            app.on_key(key(KeyCode::Enter), &UiData::default()),
+            Action::SetGlobalOutboundProxy { config }
+                if config == crate::services::GlobalOutboundProxyConfig::default()
+        ));
+    }
+
+    #[test]
+    fn outbound_proxy_credentials_can_be_entered_before_url() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::SettingsOutboundProxy;
+        app.focus = Focus::Content;
+        app.global_outbound_proxy_draft = Some(crate::services::GlobalOutboundProxyConfig {
+            password: "secret".to_string(),
+            ..Default::default()
+        });
+        app.overlay = Overlay::TextInput(TextInputState {
+            title: "Global Outbound Proxy".to_string(),
+            prompt: "Proxy URL".to_string(),
+            input: TextInput::new("http://127.0.0.1:7890"),
+            submit: TextSubmit::SettingsOutboundProxyUrl,
+        });
+
+        let action = app.on_key(key(KeyCode::Enter), &UiData::default());
+        let expected = crate::services::GlobalOutboundProxyConfig {
+            url: "http://127.0.0.1:7890".to_string(),
+            username: String::new(),
+            password: "secret".to_string(),
+        };
+
+        assert!(
+            matches!(action, Action::SetGlobalOutboundProxy { config } if config == expected)
+                || matches!(
+                    app.overlay,
+                    Overlay::Confirm(ConfirmOverlay {
+                        action: ConfirmAction::SettingsSetGlobalOutboundProxy { ref config },
+                        ..
+                    }) if config == &expected
+                )
+        );
+    }
+
+    #[test]
+    fn outbound_proxy_url_embedded_credentials_replace_the_draft() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::SettingsOutboundProxy;
+        app.focus = Focus::Content;
+        app.global_outbound_proxy_draft = Some(crate::services::GlobalOutboundProxyConfig {
+            url: "http://proxy-a.example:7890".to_string(),
+            username: "alice".to_string(),
+            password: "old".to_string(),
+        });
+        app.overlay = Overlay::TextInput(TextInputState {
+            title: "Global Outbound Proxy".to_string(),
+            prompt: "Proxy URL".to_string(),
+            input: TextInput::new("http://bob:new@proxy-b.example:7890"),
+            submit: TextSubmit::SettingsOutboundProxyUrl,
+        });
+
+        let action = app.on_key(key(KeyCode::Enter), &UiData::default());
+        let expected = crate::services::GlobalOutboundProxyConfig {
+            url: "http://proxy-b.example:7890/".to_string(),
+            username: "bob".to_string(),
+            password: "new".to_string(),
+        };
+
+        assert!(
+            matches!(action, Action::SetGlobalOutboundProxy { config } if config == expected)
+                || matches!(
+                    app.overlay,
+                    Overlay::Confirm(ConfirmOverlay {
+                        action: ConfirmAction::SettingsSetGlobalOutboundProxy { ref config },
+                        ..
+                    }) if config == &expected
+                )
+        );
+    }
+
+    #[test]
+    fn outbound_proxy_invalid_url_reopens_editor_with_readable_error() {
+        let _lang = use_test_language(Language::English);
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::SettingsOutboundProxy;
+        app.focus = Focus::Content;
+        app.overlay = Overlay::TextInput(TextInputState {
+            title: "Global Outbound Proxy".to_string(),
+            prompt: "Proxy URL".to_string(),
+            input: TextInput::new("Extu^"),
+            submit: TextSubmit::SettingsOutboundProxyUrl,
+        });
+
+        assert!(matches!(
+            app.on_key(key(KeyCode::Enter), &UiData::default()),
+            Action::None
+        ));
+        assert!(matches!(
+            app.overlay,
+            Overlay::TextInput(TextInputState {
+                submit: TextSubmit::SettingsOutboundProxyUrl,
+                ..
+            })
+        ));
+        let toast = app.toast.as_ref().expect("validation error toast");
+        assert_eq!(toast.kind, ToastKind::Error);
+        assert!(toast.message.contains("Invalid proxy URL"));
+        assert!(!toast.message.contains("relative URL"));
+    }
+
+    #[test]
+    fn outbound_proxy_text_input_debug_redacts_credentials() {
+        let url = TextInputState {
+            title: "Global Outbound Proxy".to_string(),
+            prompt: "Proxy URL".to_string(),
+            input: TextInput::new("http://alice:secret@127.0.0.1:7890"),
+            submit: TextSubmit::SettingsOutboundProxyUrl,
+        };
+        let password = TextInputState {
+            title: "Global Outbound Proxy".to_string(),
+            prompt: "Password".to_string(),
+            input: TextInput::new("other-secret"),
+            submit: TextSubmit::SettingsOutboundProxyPassword,
+        };
+        let username = TextInputState {
+            title: "Global Outbound Proxy".to_string(),
+            prompt: "Username".to_string(),
+            input: TextInput::new("other-user"),
+            submit: TextSubmit::SettingsOutboundProxyUsername,
+        };
+
+        let debug = format!("{url:?} {username:?} {password:?}");
+        assert!(!debug.contains("alice"), "{debug}");
+        assert!(!debug.contains("secret"), "{debug}");
+        assert!(!debug.contains("other-user"), "{debug}");
+    }
+
+    #[test]
     fn settings_menu_exposes_visible_apps_item() {
         assert!(
             SettingsItem::ALL
@@ -10315,13 +10709,13 @@ mod tests {
         let action = app.on_key(key(KeyCode::Enter), &UiData::default());
         assert!(matches!(
             action,
-            Action::ManagedAuthStartLogin { auth_provider } if auth_provider == "codex_oauth"
+            Action::ManagedAuthStartLogin { auth_provider, .. } if auth_provider == "codex_oauth"
         ));
 
         let action = app.on_key(key(KeyCode::Char('a')), &UiData::default());
         assert!(matches!(
             action,
-            Action::ManagedAuthStartLogin { auth_provider } if auth_provider == "codex_oauth"
+            Action::ManagedAuthStartLogin { auth_provider, .. } if auth_provider == "codex_oauth"
         ));
 
         app.managed_auth_status = Some(managed_auth_status());
@@ -10349,6 +10743,22 @@ mod tests {
                 selected: 0,
             } if auth_provider == "codex_oauth" && account_id == "acc-alt"
         ));
+    }
+
+    #[test]
+    fn managed_account_menu_can_reauthenticate_selected_id() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.overlay = Overlay::ManagedAccountActionPicker {
+            auth_provider: "codex_oauth".into(),
+            account_id: "local-member".into(),
+            selected: 0,
+        };
+        app.on_key(key(KeyCode::Down), &UiData::default());
+        app.on_key(key(KeyCode::Down), &UiData::default());
+        let action = app.on_key(key(KeyCode::Enter), &UiData::default());
+        assert!(
+            matches!(action, Action::ManagedAuthStartLogin { account_id: Some(id), .. } if id == "local-member")
+        );
     }
 
     #[test]
@@ -10399,7 +10809,9 @@ mod tests {
         let action = app.on_key(key(KeyCode::Esc), &UiData::default());
         assert!(matches!(action, Action::None));
         let action = app.on_key(key(KeyCode::Enter), &UiData::default());
-        assert!(matches!(action, Action::None));
+        assert!(
+            matches!(action, Action::ManagedAuthCancelLogin { device_code } if device_code == managed_auth_device().device_code)
+        );
         assert!(app.managed_auth_login.is_none());
         assert!(matches!(app.overlay, Overlay::None));
         assert!(matches!(
@@ -10415,6 +10827,7 @@ mod tests {
                 auth_provider: "codex_oauth".to_string(),
                 device_code: "device-1".to_string(),
                 result: Ok(Some(crate::services::ManagedAuthAccount {
+                    reauth_required: false,
                     id: "acc-new".to_string(),
                     provider: "codex_oauth".to_string(),
                     login: "new@example.com".to_string(),
@@ -10737,6 +11150,122 @@ mod tests {
 
     #[test]
     #[serial(home_settings)]
+    fn settings_skills_storage_location_opens_picker_and_confirms_migration() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestEnvGuard::isolated(temp_home.path());
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Settings;
+        app.focus = Focus::Content;
+        app.settings_idx = SettingsItem::ALL
+            .iter()
+            .position(|item| matches!(item, SettingsItem::SkillsStorageLocation))
+            .expect("SkillsStorageLocation missing from SettingsItem::ALL");
+
+        assert!(matches!(
+            app.on_key(key(KeyCode::Enter), &UiData::default()),
+            Action::None
+        ));
+        assert!(matches!(
+            app.overlay,
+            Overlay::SkillsStorageLocationPicker { selected: 0 }
+        ));
+
+        assert!(matches!(
+            app.on_key(key(KeyCode::Enter), &UiData::default()),
+            Action::SkillsSetStorageLocation {
+                location: SkillStorageLocation::CcSwitch
+            }
+        ));
+        assert!(matches!(app.overlay, Overlay::None));
+
+        app.overlay = Overlay::SkillsStorageLocationPicker { selected: 1 };
+        let mut data = UiData::default();
+        data.skills
+            .installed
+            .push(installed_skill("managed", "Managed"));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Enter), &data),
+            Action::None
+        ));
+        assert!(matches!(
+            app.overlay,
+            Overlay::Confirm(ConfirmOverlay {
+                action: ConfirmAction::SkillsMigrateStorage {
+                    location: SkillStorageLocation::Unified
+                },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    #[serial(home_settings)]
+    fn settings_skills_sync_method_uses_the_upstream_two_choice_picker() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestEnvGuard::isolated(temp_home.path());
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Settings;
+        app.focus = Focus::Content;
+        app.settings_idx = SettingsItem::ALL
+            .iter()
+            .position(|item| matches!(item, SettingsItem::SkillsSyncMethod))
+            .expect("SkillsSyncMethod missing from SettingsItem::ALL");
+
+        let mut data = UiData::default();
+        data.skills.sync_method = crate::services::skill::SyncMethod::Auto;
+
+        {
+            let _lang = use_test_language(Language::Chinese);
+            let help = crate::cli::tui::help::context_help_for_app(&app, &data);
+            let body = help.lines.join("\n");
+            assert_eq!(help.title, "Skills 同步方式");
+            assert!(body.contains("选择 Skills 的文件同步策略"), "{body}");
+            assert!(body.contains("软连接节省磁盘空间并支持实时同步"), "{body}");
+        }
+
+        assert!(matches!(
+            app.on_key(key(KeyCode::Enter), &data),
+            Action::None
+        ));
+        assert!(matches!(
+            app.overlay,
+            Overlay::SkillsSyncMethodPicker { selected: 0 }
+        ));
+
+        assert!(matches!(
+            app.on_key(key(KeyCode::Enter), &data),
+            Action::SkillsSetSyncMethod {
+                method: crate::services::skill::SyncMethod::Symlink
+            }
+        ));
+        assert!(matches!(app.overlay, Overlay::None));
+
+        data.skills.sync_method = crate::services::skill::SyncMethod::Symlink;
+        app.overlay = Overlay::SkillsSyncMethodPicker { selected: 0 };
+        assert!(matches!(
+            app.on_key(key(KeyCode::Down), &data),
+            Action::None
+        ));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Down), &data),
+            Action::None
+        ));
+        assert!(matches!(
+            app.overlay,
+            Overlay::SkillsSyncMethodPicker { selected: 1 }
+        ));
+        assert!(matches!(
+            app.on_key(key(KeyCode::Enter), &data),
+            Action::SkillsSetSyncMethod {
+                method: crate::services::skill::SyncMethod::Copy
+            }
+        ));
+    }
+
+    #[test]
+    #[serial(home_settings)]
     fn visible_apps_picker_rejects_zero_selection_without_closing() {
         let temp_home = TempDir::new().expect("create temp home");
         let _env = TestEnvGuard::isolated(temp_home.path());
@@ -10747,6 +11276,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         })
         .expect("save visible apps");
         crate::settings::set_visible_apps_mode(crate::settings::VisibleAppsMode::Manual)
@@ -10797,6 +11327,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         })
         .expect("save visible apps");
 
@@ -10834,6 +11365,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         };
         settings.visible_apps_settings.mode = crate::settings::VisibleAppsMode::Auto;
         settings.visible_apps_settings.auto_prompt_decided = true;
@@ -10872,6 +11404,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         };
         settings.visible_apps_settings.mode = crate::settings::VisibleAppsMode::Auto;
         settings.visible_apps_settings.auto_prompt_decided = true;
@@ -10909,6 +11442,7 @@ mod tests {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         };
         let mut settings = crate::settings::get_settings();
         settings.visible_apps = initial.clone();
@@ -12461,6 +12995,28 @@ mod tests {
     }
 
     #[test]
+    fn provider_add_form_pi_requires_a_native_model_before_submit() {
+        let mut app = App::new(Some(AppType::Pi));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        let mut form = ProviderAddFormState::new(AppType::Pi);
+        form.focus = FormFocus::Fields;
+        form.id.set("pi-provider");
+        form.name.set("Pi Provider");
+        form.opencode_base_url.set("https://pi.example.test/v1");
+        app.form = Some(FormState::ProviderAdd(form));
+
+        let submit = app.on_key(ctrl(KeyCode::Char('s')), &UiData::default());
+        assert!(matches!(submit, Action::None));
+        assert!(matches!(
+            app.form,
+            Some(FormState::ProviderAdd(ref form))
+                if form.fields().get(form.field_idx) == Some(&ProviderAddField::OpenClawModels)
+                    && form.main_field_error(ProviderAddField::OpenClawModels).is_some()
+        ));
+    }
+
+    #[test]
     fn provider_add_form_codex_rejects_invalid_anthropic_max_output_tokens() {
         let mut app = App::new(Some(AppType::Codex));
         app.route = Route::Providers;
@@ -12537,59 +13093,568 @@ mod tests {
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
 
-        let focus = match app.form.as_ref() {
-            Some(super::super::form::FormState::ProviderAdd(form)) => form.focus,
-            other => panic!("expected ProviderAdd form, got: {other:?}"),
-        };
-        assert_eq!(focus, super::super::form::FormFocus::Templates);
+        // The form opens on the Fields pane with the Template row selected.
+        assert_eq!(provider_form_focus(&app), FormFocus::Fields);
+        assert_eq!(
+            provider_selected_field(&app),
+            Some(ProviderAddField::Template)
+        );
 
         app.on_key(key(KeyCode::Tab), &data);
-        let focus = match app.form.as_ref() {
+        assert_eq!(provider_form_focus(&app), FormFocus::JsonPreview);
+
+        // Add mode no longer has a Templates stop: preview cycles back to fields.
+        app.on_key(key(KeyCode::Tab), &data);
+        assert_eq!(provider_form_focus(&app), FormFocus::Fields);
+    }
+
+    fn provider_form_template_idx(app: &App) -> usize {
+        match app.form.as_ref() {
+            Some(super::super::form::FormState::ProviderAdd(form)) => form.template_idx,
+            other => panic!("expected ProviderAdd form, got: {other:?}"),
+        }
+    }
+
+    fn provider_form_focus(app: &App) -> FormFocus {
+        match app.form.as_ref() {
             Some(super::super::form::FormState::ProviderAdd(form)) => form.focus,
             other => panic!("expected ProviderAdd form, got: {other:?}"),
-        };
-        assert_eq!(focus, super::super::form::FormFocus::Fields);
+        }
     }
 
+    fn provider_selected_field(app: &App) -> Option<ProviderAddField> {
+        match app.form.as_ref() {
+            Some(super::super::form::FormState::ProviderAdd(form)) => {
+                form.fields().get(form.field_idx).copied()
+            }
+            other => panic!("expected ProviderAdd form, got: {other:?}"),
+        }
+    }
+
+    fn provider_template_picker_selection(app: &App) -> usize {
+        match app.overlay {
+            Overlay::ProviderTemplatePicker { selected } => selected,
+            ref other => panic!("expected ProviderTemplatePicker overlay, got: {other:?}"),
+        }
+    }
+
+    /// Flat index of the first sponsor preset. Labels no longer carry the
+    /// `"* "` chip marker, so sponsors are identified by their picker section.
+    fn first_sponsor_flat_idx(rows: &[super::super::form::ProviderTemplateRow]) -> Option<usize> {
+        rows.iter().find_map(|row| match row {
+            super::super::form::ProviderTemplateRow::Item {
+                flat_idx,
+                section: super::super::form::ProviderTemplateSection::Sponsors,
+                ..
+            } => Some(*flat_idx),
+            _ => None,
+        })
+    }
+
+    /// Enter on the Template field row opens the picker preseeded with the
+    /// current template, without applying anything yet.
     #[test]
-    fn provider_add_form_right_moves_template_selection() {
+    fn provider_add_form_template_field_enter_opens_picker_without_applying() {
         let mut app = App::new(Some(AppType::Claude));
         app.route = Route::Providers;
         app.focus = Focus::Content;
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
+        assert_eq!(provider_form_focus(&app), FormFocus::Fields);
+        assert_eq!(
+            provider_selected_field(&app),
+            Some(ProviderAddField::Template)
+        );
 
-        let idx = match app.form.as_ref() {
-            Some(super::super::form::FormState::ProviderAdd(form)) => form.template_idx,
-            other => panic!("expected ProviderAdd form, got: {other:?}"),
-        };
-        assert_eq!(idx, 0);
+        if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
+            form.template_idx = 2;
+        }
 
-        app.on_key(key(KeyCode::Right), &data);
-        let idx = match app.form.as_ref() {
-            Some(super::super::form::FormState::ProviderAdd(form)) => form.template_idx,
-            other => panic!("expected ProviderAdd form, got: {other:?}"),
-        };
-        assert_eq!(idx, 1);
-    }
-
-    #[test]
-    fn provider_add_form_enter_applies_template_and_focuses_fields() {
-        let mut app = App::new(Some(AppType::Claude));
-        app.route = Route::Providers;
-        app.focus = Focus::Content;
-
-        let data = UiData::default();
-        app.on_key(key(KeyCode::Char('a')), &data);
         let action = app.on_key(key(KeyCode::Enter), &data);
         assert!(matches!(action, Action::None));
         assert!(app.editor.is_none());
-        let focus = match app.form.as_ref() {
-            Some(super::super::form::FormState::ProviderAdd(form)) => form.focus,
-            other => panic!("expected ProviderAdd form, got: {other:?}"),
+        assert_eq!(provider_template_picker_selection(&app), 2);
+        // Opening the picker must not apply anything yet.
+        assert_eq!(provider_form_template_idx(&app), 2);
+        assert_eq!(provider_form_focus(&app), FormFocus::Fields);
+    }
+
+    /// Space and the arrows keep their field-level meanings in the Fields
+    /// pane, so only Enter may open the picker.
+    #[test]
+    fn provider_add_form_template_field_ignores_space_and_arrows() {
+        for inert_key in [KeyCode::Char(' '), KeyCode::Left, KeyCode::Right] {
+            let mut app = App::new(Some(AppType::Claude));
+            app.route = Route::Providers;
+            app.focus = Focus::Content;
+
+            let data = UiData::default();
+            app.on_key(key(KeyCode::Char('a')), &data);
+            app.on_key(key(inert_key), &data);
+
+            assert!(
+                matches!(app.overlay, Overlay::None),
+                "{inert_key:?} must not open the template picker"
+            );
+            assert_eq!(provider_form_template_idx(&app), 0);
+        }
+    }
+
+    #[test]
+    fn provider_template_picker_down_skips_section_headers() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.form = Some(FormState::ProviderAdd(ProviderAddFormState::new(
+            AppType::Claude,
+        )));
+
+        let rows = match app.form.as_ref() {
+            Some(FormState::ProviderAdd(form)) => form.template_picker_rows(),
+            _ => panic!("expected provider form"),
         };
-        assert_eq!(focus, super::super::form::FormFocus::Fields);
+        let builtin_count = rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row,
+                    super::super::form::ProviderTemplateRow::Item {
+                        section: super::super::form::ProviderTemplateSection::BuiltIn,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert!(builtin_count >= 3, "{rows:?}");
+        let last_builtin_flat = rows
+            .iter()
+            .filter_map(|row| match row {
+                super::super::form::ProviderTemplateRow::Item {
+                    flat_idx,
+                    section: super::super::form::ProviderTemplateSection::BuiltIn,
+                    ..
+                } => Some(*flat_idx),
+                _ => None,
+            })
+            .next_back()
+            .expect("at least one built-in template");
+        let first_sponsor_flat =
+            first_sponsor_flat_idx(&rows).expect("claude exposes sponsor presets");
+        assert!(rows.iter().any(|row| matches!(
+            row,
+            super::super::form::ProviderTemplateRow::Header(
+                super::super::form::ProviderTemplateSection::Sponsors
+            )
+        )));
+
+        // Walk from the last built-in row into the sponsor section: the
+        // Sponsors header sits between them and must never be selected.
+        app.overlay = Overlay::ProviderTemplatePicker {
+            selected: last_builtin_flat,
+        };
+        let data = UiData::default();
+        app.on_key(key(KeyCode::Down), &data);
+        let after_down = provider_template_picker_selection(&app);
+        assert_eq!(
+            after_down, first_sponsor_flat,
+            "Down must land on the first sponsor, not the header"
+        );
+
+        app.on_key(key(KeyCode::Up), &data);
+        assert_eq!(
+            provider_template_picker_selection(&app),
+            last_builtin_flat,
+            "Up must skip back over the header"
+        );
+
+        // Up at the very first row keeps the selection.
+        app.overlay = Overlay::ProviderTemplatePicker { selected: 0 };
+        app.on_key(key(KeyCode::Up), &data);
+        assert_eq!(provider_template_picker_selection(&app), 0);
+
+        // Down at the very last selectable row keeps the selection.
+        let last_flat = rows
+            .iter()
+            .rev()
+            .find_map(super::super::form::ProviderTemplateRow::flat_idx)
+            .expect("at least one selectable row");
+        app.overlay = Overlay::ProviderTemplatePicker {
+            selected: last_flat,
+        };
+        app.on_key(key(KeyCode::Down), &data);
+        assert_eq!(
+            provider_template_picker_selection(&app),
+            last_flat,
+            "Down at the last row must not move or wrap"
+        );
+    }
+
+    /// Codex's display order diverges from its flat order: migrated built-ins
+    /// have flat indices after the sponsors but render directly above
+    /// the Sponsors header. Navigation must follow display order, so a naive
+    /// flat-index ±1 stepping implementation cannot pass this.
+    #[test]
+    fn provider_template_picker_navigates_codex_in_display_order() {
+        let mut app = App::new(Some(AppType::Codex));
+        let form = ProviderAddFormState::new(AppType::Codex);
+        let rows = form.template_picker_rows();
+        let labels = form.template_labels();
+
+        let last_builtin_flat = rows
+            .iter()
+            .filter_map(|row| match row {
+                super::super::form::ProviderTemplateRow::Item {
+                    flat_idx,
+                    section: super::super::form::ProviderTemplateSection::BuiltIn,
+                    ..
+                } => Some(*flat_idx),
+                _ => None,
+            })
+            .next_back()
+            .expect("codex exposes built-in presets");
+        let first_sponsor_flat =
+            first_sponsor_flat_idx(&rows).expect("codex exposes sponsor presets");
+
+        // Precondition: flat order and display order really do disagree here.
+        assert_eq!(
+            last_builtin_flat,
+            labels.len() - 1,
+            "the last built-in should hold the last flat index"
+        );
+        assert!(
+            first_sponsor_flat < last_builtin_flat,
+            "sponsors precede migrated built-ins in flat order"
+        );
+
+        app.form = Some(FormState::ProviderAdd(form));
+        let data = UiData::default();
+
+        // Down from the last Built-in row crosses the Sponsors header.
+        app.overlay = Overlay::ProviderTemplatePicker {
+            selected: last_builtin_flat,
+        };
+        app.on_key(key(KeyCode::Down), &data);
+        assert_eq!(
+            provider_template_picker_selection(&app),
+            first_sponsor_flat,
+            "Down from the last built-in must reach the first sponsor, not flat+1"
+        );
+
+        // And Up returns to the last built-in rather than stepping to flat-1.
+        app.on_key(key(KeyCode::Up), &data);
+        assert_eq!(
+            provider_template_picker_selection(&app),
+            last_builtin_flat,
+            "Up from the first sponsor must return to the last built-in, not flat-1"
+        );
+
+        // Basic navigation inside the first Built-in rows stays unchanged.
+        app.overlay = Overlay::ProviderTemplatePicker { selected: 0 };
+        app.on_key(key(KeyCode::Down), &data);
+        assert_eq!(
+            provider_template_picker_selection(&app),
+            1,
+            "Custom -> OpenAI Official stays within the Built-in group"
+        );
+    }
+
+    /// Codex's DeepSeek is stored after the sponsor presets in the flat index
+    /// space but belongs to the Built-in group in the picker.
+    #[test]
+    fn provider_template_picker_groups_after_sponsor_defs_with_builtins() {
+        let form = ProviderAddFormState::new(AppType::Codex);
+        let rows = form.template_picker_rows();
+        let labels = form.template_labels();
+
+        let deepseek_flat = labels
+            .iter()
+            .position(|label| *label == "DeepSeek")
+            .expect("codex should expose a DeepSeek template");
+        let sponsor_flat = first_sponsor_flat_idx(&rows).expect("codex should expose sponsors");
+        assert!(
+            deepseek_flat > sponsor_flat,
+            "DeepSeek is expected to sit after sponsors in the flat order"
+        );
+
+        let deepseek_row = rows
+            .iter()
+            .find(|row| row.flat_idx() == Some(deepseek_flat))
+            .expect("DeepSeek row");
+        assert!(matches!(
+            deepseek_row,
+            super::super::form::ProviderTemplateRow::Item {
+                section: super::super::form::ProviderTemplateSection::BuiltIn,
+                label: "DeepSeek",
+                ..
+            }
+        ));
+
+        let deepseek_display = rows
+            .iter()
+            .position(|row| row.flat_idx() == Some(deepseek_flat))
+            .expect("DeepSeek display row");
+        let sponsors_header = rows
+            .iter()
+            .position(|row| {
+                matches!(
+                    row,
+                    super::super::form::ProviderTemplateRow::Header(
+                        super::super::form::ProviderTemplateSection::Sponsors
+                    )
+                )
+            })
+            .expect("sponsors header");
+        assert!(
+            deepseek_display < sponsors_header,
+            "DeepSeek must render above the Sponsors header"
+        );
+
+        // Sponsor rows drop the flat-row "* " marker.
+        assert!(rows.iter().all(|row| !matches!(
+            row,
+            super::super::form::ProviderTemplateRow::Item { label, .. } if label.starts_with("* ")
+        )));
+    }
+
+    #[test]
+    fn provider_template_picker_enter_applies_and_focuses_fields() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+
+        let data = UiData::default();
+        app.on_key(key(KeyCode::Char('a')), &data);
+        app.on_key(key(KeyCode::Enter), &data);
+        assert_eq!(provider_template_picker_selection(&app), 0);
+
+        // Move onto "Claude Official" and apply it.
+        app.on_key(key(KeyCode::Down), &data);
+        assert_eq!(provider_template_picker_selection(&app), 1);
+
+        let action = app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(provider_form_focus(&app), FormFocus::Fields);
+        assert_eq!(provider_form_template_idx(&app), 1);
+        // Applying advances past the template group so the user can type.
+        assert_eq!(
+            provider_selected_field(&app),
+            Some(ProviderAddField::Name),
+            "picker apply should land on the first real field"
+        );
+
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("expected provider form");
+        };
+        assert_eq!(form.name.value, "Claude Official");
+    }
+
+    #[test]
+    fn provider_template_picker_enter_applies_sponsor_by_flat_index() {
+        let mut app = App::new(Some(AppType::Claude));
+        let form = ProviderAddFormState::new(AppType::Claude);
+        let sponsor_flat = first_sponsor_flat_idx(&form.template_picker_rows())
+            .expect("claude should expose sponsor presets");
+        app.form = Some(FormState::ProviderAdd(form));
+        app.overlay = Overlay::ProviderTemplatePicker {
+            selected: sponsor_flat,
+        };
+
+        app.on_key(key(KeyCode::Enter), &UiData::default());
+        assert!(matches!(app.overlay, Overlay::None));
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("expected provider form");
+        };
+        assert_eq!(form.template_idx, sponsor_flat);
+        assert_eq!(form.focus, FormFocus::Fields);
+        assert!(
+            form.extra
+                .pointer("/meta/isPartner")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            "sponsor presets set the partner marker: {:?}",
+            form.extra
+        );
+    }
+
+    #[test]
+    fn provider_template_picker_esc_closes_without_applying() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+
+        let data = UiData::default();
+        app.on_key(key(KeyCode::Char('a')), &data);
+
+        // Fill real work into the form first: Esc must leave all of it alone.
+        if let Some(FormState::ProviderAdd(form)) = app.form.as_mut() {
+            form.claude_api_key.set("sk-typed-by-hand");
+            form.name.set("Typed Name");
+            form.usage_query_enabled = true;
+            form.usage_query_code = "return { balance: 1 }".to_string();
+            form.usage_query_access_token.set("token-typed-by-hand");
+            form.usage_query_base_url.set("https://usage.example.com");
+        }
+
+        app.on_key(key(KeyCode::Enter), &data);
+        app.on_key(key(KeyCode::Down), &data);
+        assert_eq!(provider_template_picker_selection(&app), 1);
+
+        let action = app.on_key(key(KeyCode::Esc), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(provider_form_template_idx(&app), 0);
+        // Esc leaves the selection exactly where it was: on the Template row.
+        assert_eq!(provider_form_focus(&app), FormFocus::Fields);
+        assert_eq!(
+            provider_selected_field(&app),
+            Some(ProviderAddField::Template)
+        );
+
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("expected provider form");
+        };
+        assert_eq!(
+            form.name.value, "Typed Name",
+            "Esc must not apply a template"
+        );
+        assert_eq!(
+            form.claude_api_key.value, "sk-typed-by-hand",
+            "a typed API key must survive Esc untouched"
+        );
+        assert!(form.usage_query_enabled);
+        assert_eq!(form.usage_query_code, "return { balance: 1 }");
+        assert_eq!(form.usage_query_access_token.value, "token-typed-by-hand");
+        assert_eq!(form.usage_query_base_url.value, "https://usage.example.com");
+    }
+
+    /// The picker's Enter arm must forward the real existing-id set into
+    /// `apply_template`, otherwise a template whose generated id already
+    /// exists would silently collide.
+    #[test]
+    fn provider_template_picker_enter_deconflicts_generated_id() {
+        // Establish the uncontested id this template would generate.
+        let mut baseline = App::new(Some(AppType::Claude));
+        baseline.route = Route::Providers;
+        baseline.focus = Focus::Content;
+        let empty = UiData::default();
+        baseline.on_key(key(KeyCode::Char('a')), &empty);
+        baseline.on_key(key(KeyCode::Enter), &empty);
+        baseline.on_key(key(KeyCode::Down), &empty); // Claude Official
+        baseline.on_key(key(KeyCode::Enter), &empty);
+        let Some(FormState::ProviderAdd(form)) = baseline.form.as_ref() else {
+            panic!("expected provider form");
+        };
+        let natural_id = form.id.value.clone();
+        assert!(!natural_id.is_empty(), "template should generate an id");
+
+        // Now do the same with that id already taken.
+        let mut data = UiData::default();
+        data.providers.rows.push(claude_provider_row(&natural_id));
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        app.on_key(key(KeyCode::Char('a')), &data);
+        app.on_key(key(KeyCode::Enter), &data);
+        app.on_key(key(KeyCode::Down), &data);
+        app.on_key(key(KeyCode::Enter), &data);
+
+        assert!(matches!(app.overlay, Overlay::None));
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("expected provider form");
+        };
+        assert_eq!(form.name.value, "Claude Official");
+        assert_ne!(
+            form.id.value, natural_id,
+            "the generated id must be de-conflicted against existing providers"
+        );
+        assert!(
+            form.id.value.starts_with(&natural_id),
+            "de-conflicted id should derive from the natural one, got: {}",
+            form.id.value
+        );
+    }
+
+    /// An out-of-range flat index must snap to the first selectable row so
+    /// Enter still applies something instead of silently doing nothing.
+    #[test]
+    fn provider_template_picker_recovers_from_a_stale_selection() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+
+        let data = UiData::default();
+        app.on_key(key(KeyCode::Char('a')), &data);
+        app.on_key(key(KeyCode::Enter), &data);
+        app.overlay = Overlay::ProviderTemplatePicker { selected: 999 };
+
+        // Any key runs the clamp; Down then moves off the recovered row.
+        app.on_key(key(KeyCode::Up), &data);
+        assert_eq!(
+            provider_template_picker_selection(&app),
+            0,
+            "a stale index must snap to the first selectable row"
+        );
+
+        app.overlay = Overlay::ProviderTemplatePicker { selected: 999 };
+        let action = app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(
+            provider_form_template_idx(&app),
+            0,
+            "Enter on a stale index applies the recovered row"
+        );
+        assert_eq!(provider_form_focus(&app), FormFocus::Fields);
+    }
+
+    /// The common-snippet refresh moved into the picker's Enter arm; its
+    /// failure path must still surface as a Warning toast.
+    #[test]
+    fn provider_template_picker_enter_warns_on_malformed_common_snippet() {
+        let mut form = ProviderAddFormState::new(AppType::Claude);
+        form.include_common_config = true;
+
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        app.form = Some(FormState::ProviderAdd(form));
+
+        let mut data = data();
+        data.config.common_snippet = r#"{"env": {"#.to_string();
+        app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(
+            app.overlay,
+            Overlay::ProviderTemplatePicker { .. }
+        ));
+
+        // Claude Official, so the apply path is a real template, not a reset.
+        app.on_key(key(KeyCode::Down), &data);
+        let action = app.on_key(key(KeyCode::Enter), &data);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(provider_form_focus(&app), FormFocus::Fields);
+        assert!(
+            matches!(
+                app.toast.as_ref(),
+                Some(Toast {
+                    kind: ToastKind::Warning,
+                    ..
+                })
+            ),
+            "expected a Warning toast, got: {:?}",
+            app.toast
+        );
+    }
+
+    #[test]
+    fn provider_template_picker_closes_when_form_is_gone() {
+        let mut app = App::new(Some(AppType::Claude));
+        app.overlay = Overlay::ProviderTemplatePicker { selected: 3 };
+
+        let action = app.on_key(key(KeyCode::Down), &UiData::default());
+        assert!(matches!(action, Action::None));
+        assert!(matches!(app.overlay, Overlay::None));
     }
 
     #[test]
@@ -12734,7 +13799,7 @@ mod tests {
         assert!(matches!(
             action,
             Action::EditorSubmit {
-                submit: EditorSubmit::ProviderEdit { id },
+                submit: EditorSubmit::ProviderEdit { id, .. },
                 content
             } if id == "p1" && content.contains("\"name\": \"Provider Renamed\"")
         ));
@@ -13196,7 +14261,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         app.on_key(key(KeyCode::Tab), &data); // fields -> json
 
         let action = app.on_key(key(KeyCode::Enter), &data);
@@ -13239,7 +14304,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         app.on_key(key(KeyCode::Tab), &data); // fields -> json
         app.on_key(key(KeyCode::Enter), &data); // json -> editor(edit mode)
 
@@ -13275,7 +14340,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
         app.on_key(key(KeyCode::Tab), &data); // fields -> json
         app.on_key(key(KeyCode::Enter), &data); // json -> editor
 
@@ -13342,7 +14407,7 @@ mod tests {
         data.config.common_snippet = r#"{"alwaysThinkingEnabled":false,"statusLine":{"type":"command","command":"~/.claude/statusline.sh","padding":0}}"#.to_string();
 
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.id.set("p1");
@@ -13382,7 +14447,7 @@ mod tests {
         data.config.common_snippet = "network_access = true".to_string();
 
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data); // apply template -> fields
+        apply_current_provider_template(&mut app, &data); // apply template -> fields
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.id.set("p1");
@@ -13412,7 +14477,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -13446,7 +14511,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -13483,7 +14548,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -13629,7 +14694,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -13685,7 +14750,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -13721,7 +14786,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -13766,7 +14831,7 @@ mod tests {
         data.proxy.codex_takeover = true;
 
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -13818,6 +14883,200 @@ mod tests {
         assert_eq!(mode(&app), PromptCacheRoutingMode::Auto);
     }
 
+    fn codex_reasoning_form(app: &App) -> &ProviderAddFormState {
+        let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
+            panic!("expected provider form");
+        };
+        form
+    }
+
+    fn codex_reasoning_app(inline: bool) -> App {
+        let provider = Provider::with_id(
+            "test".into(),
+            "Test".into(),
+            json!({
+                "auth": {"OPENAI_API_KEY": "fake-test-key"},
+                "config": "model_provider = \"test\"\nmodel = \"first\"\n[model_providers.test]\nname = \"Test\"\nbase_url = \"http://127.0.0.1:9/v1\"\nwire_api = \"responses\"\n",
+                "modelCatalog": {"models": [
+                    {"model": "first", "displayName": "First", "contextWindow": 128000,
+                     "supportsParallelToolCalls": true, "inputModalities": ["text", "image"],
+                     "baseInstructions": "Keep instructions.",
+                     "reasoningLevels": ["none", "high"], "defaultReasoningLevel": "high"},
+                    {"model": "second", "reasoningLevels": ["minimal", "ultra"], "defaultReasoningLevel": "ultra"}
+                ]}, "futureSetting": {"keep": true}
+            }),
+            None,
+        );
+        let mut form = ProviderAddFormState::from_provider(AppType::Codex, &provider);
+        if inline {
+            form.open_codex_local_routing_page();
+            form.codex_local_routing_field_idx = form
+                .codex_local_routing_fields()
+                .iter()
+                .position(|field| *field == CodexLocalRoutingField::ModelCatalog)
+                .unwrap();
+        } else {
+            form.open_codex_model_catalog_page();
+        }
+        form.codex_model_catalog_field = CodexModelCatalogField::ContextWindow;
+        let mut app = App::new(Some(AppType::Codex));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        app.form = Some(FormState::ProviderAdd(form));
+        app
+    }
+
+    #[test]
+    fn codex_model_catalog_reasoning_pickers_roundtrip_each_model_on_both_pages() {
+        let _lang = use_test_language(Language::English);
+        for inline in [false, true] {
+            let mut app = codex_reasoning_app(inline);
+            let data = UiData::default();
+            let original = codex_reasoning_form(&app).to_provider_json_value();
+            app.on_key(key(KeyCode::Right), &data);
+            app.on_key(key(KeyCode::Char('?')), &data);
+            assert!(help_text(&app).contains("reasoning levels supported by this model"));
+            app.on_key(key(KeyCode::Esc), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+            // Pick ultra before low: persistence must still follow canonical order.
+            for _ in 0..7 {
+                app.on_key(key(KeyCode::Down), &data);
+            }
+            app.on_key(key(KeyCode::Char(' ')), &data);
+            for _ in 0..5 {
+                app.on_key(key(KeyCode::Up), &data);
+            }
+            app.on_key(key(KeyCode::Char(' ')), &data);
+            app.on_key(key(KeyCode::Char('?')), &data);
+            assert!(help_text(&app).contains("Space toggles"));
+            app.on_key(key(KeyCode::Esc), &data);
+            assert!(matches!(
+                app.overlay,
+                Overlay::CodexReasoningLevelsPicker { selected: 2, .. }
+            ));
+            app.on_key(key(KeyCode::Enter), &data);
+            assert_eq!(
+                codex_reasoning_form(&app).codex_model_catalog[0].reasoning_levels,
+                ["none", "low", "high", "ultra"]
+            );
+            assert_eq!(
+                codex_reasoning_form(&app).codex_model_catalog[0].default_reasoning_level,
+                "high"
+            );
+
+            app.on_key(key(KeyCode::Right), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+            let Overlay::CodexDefaultReasoningPicker {
+                options, selected, ..
+            } = &app.overlay
+            else {
+                panic!("expected default picker");
+            };
+            assert_eq!(options, &["", "none", "low", "high", "ultra"]);
+            assert_eq!(*selected, 3);
+            app.on_key(key(KeyCode::Up), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+
+            let saved = codex_reasoning_form(&app).to_provider_json_value();
+            let mut expected = original;
+            expected["settingsConfig"]["modelCatalog"]["models"][0]["reasoningLevels"] =
+                json!(["none", "low", "high", "ultra"]);
+            expected["settingsConfig"]["modelCatalog"]["models"][0]["defaultReasoningLevel"] =
+                json!("low");
+            assert_eq!(
+                saved, expected,
+                "only this model's reasoning fields may change"
+            );
+            assert!(codex_reasoning_form(&app).has_unsaved_changes());
+            let provider: Provider = serde_json::from_value(saved).unwrap();
+            let reopened = ProviderAddFormState::from_provider(AppType::Codex, &provider);
+            assert_eq!(
+                reopened.codex_model_catalog,
+                codex_reasoning_form(&app).codex_model_catalog
+            );
+
+            app.on_key(key(KeyCode::Down), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+            assert!(
+                matches!(&app.overlay, Overlay::CodexDefaultReasoningPicker { row: 1, options, .. }
+                if options == &["", "minimal", "ultra"])
+            );
+        }
+    }
+
+    #[test]
+    fn codex_model_catalog_reasoning_pickers_cancel_clear_and_restore_auto() {
+        for inline in [false, true] {
+            let mut app = codex_reasoning_app(inline);
+            let data = UiData::default();
+            let original = codex_reasoning_form(&app).to_provider_json_value();
+            app.on_key(key(KeyCode::Right), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+            app.on_key(key(KeyCode::Char(' ')), &data);
+            app.on_key(key(KeyCode::Esc), &data);
+            assert_eq!(
+                codex_reasoning_form(&app).to_provider_json_value(),
+                original
+            );
+            app.on_key(key(KeyCode::Right), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+            app.on_key(key(KeyCode::Up), &data);
+            app.on_key(key(KeyCode::Esc), &data);
+            assert_eq!(
+                codex_reasoning_form(&app).to_provider_json_value(),
+                original
+            );
+
+            app.on_key(key(KeyCode::Enter), &data);
+            app.on_key(key(KeyCode::Up), &data);
+            app.on_key(key(KeyCode::Up), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+            assert!(
+                codex_reasoning_form(&app).to_provider_json_value()["settingsConfig"]
+                    ["modelCatalog"]["models"][0]
+                    .get("defaultReasoningLevel")
+                    .is_none()
+            );
+            // Restore high, then remove it from the supported levels.
+            app.on_key(key(KeyCode::Enter), &data);
+            for _ in 0..2 {
+                app.on_key(key(KeyCode::Down), &data);
+            }
+            app.on_key(key(KeyCode::Enter), &data);
+            app.on_key(key(KeyCode::Left), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+            for _ in 0..4 {
+                app.on_key(key(KeyCode::Down), &data);
+            }
+            app.on_key(key(KeyCode::Char(' ')), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+            assert_eq!(
+                codex_reasoning_form(&app).codex_model_catalog[0].reasoning_levels,
+                ["none"]
+            );
+            assert!(codex_reasoning_form(&app).codex_model_catalog[0]
+                .default_reasoning_level
+                .is_empty());
+            app.on_key(key(KeyCode::Enter), &data);
+            app.on_key(key(KeyCode::Char(' ')), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+            let saved = codex_reasoning_form(&app).to_provider_json_value();
+            let first = &saved["settingsConfig"]["modelCatalog"]["models"][0];
+            assert!(first.get("reasoningLevels").is_none());
+            assert!(first.get("defaultReasoningLevel").is_none());
+            assert_eq!(
+                saved["settingsConfig"]["modelCatalog"]["models"][1],
+                original["settingsConfig"]["modelCatalog"]["models"][1]
+            );
+            app.on_key(key(KeyCode::Right), &data);
+            app.on_key(key(KeyCode::Enter), &data);
+            assert!(
+                matches!(&app.overlay, Overlay::CodexDefaultReasoningPicker { selected: 0, options, .. }
+                if options == &[""])
+            );
+        }
+    }
+
     #[test]
     fn provider_codex_local_routing_model_catalog_edits_inline_and_adds_models() {
         let mut app = App::new(Some(AppType::Codex));
@@ -13829,7 +15088,7 @@ mod tests {
         data.proxy.codex_takeover = true;
 
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -14310,7 +15569,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -14352,7 +15611,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -14385,7 +15644,7 @@ mod tests {
         data.proxy.claude_takeover = true;
 
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(super::super::form::FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.focus = super::super::form::FormFocus::Fields;
@@ -14989,9 +16248,53 @@ mod tests {
         assert!(matches!(
             submit,
             Action::EditorSubmit {
-                submit: EditorSubmit::ProviderEdit { id },
+                submit: EditorSubmit::ProviderEdit { id, .. },
                 content,
             } if id == "p1" && content.contains("Provider One")
+        ));
+    }
+
+    #[test]
+    fn pi_provider_edit_submit_carries_the_opened_native_snapshot() {
+        let mut app = App::new(Some(AppType::Pi));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+        let settings = json!({
+            "name": "Pi Provider",
+            "api": "anthropic-messages",
+            "baseUrl": "https://example.com",
+            "models": [{ "id": "model-a" }],
+            "futureField": { "preserve": true }
+        });
+        let mut data = UiData::default();
+        data.providers.rows.push(super::super::data::ProviderRow {
+            id: "pi-provider".to_string(),
+            provider: crate::provider::Provider::with_id(
+                "pi-provider".to_string(),
+                "Pi Provider".to_string(),
+                settings.clone(),
+                None,
+            ),
+            api_url: Some("https://example.com".to_string()),
+            is_current: false,
+            is_in_config: true,
+            is_saved: true,
+            is_default_model: false,
+            primary_model_id: Some("model-a".to_string()),
+            default_model_id: None,
+        });
+
+        app.on_key(key(KeyCode::Char('e')), &data);
+        let submit = app.on_key(ctrl(KeyCode::Char('s')), &data);
+        assert!(matches!(
+            submit,
+            Action::EditorSubmit {
+                submit: EditorSubmit::ProviderEdit {
+                    id,
+                    expected_pi_settings_config: Some(expected),
+                },
+                ..
+            } if id == "pi-provider" && expected == settings
         ));
     }
 
@@ -14999,11 +16302,25 @@ mod tests {
     fn provider_form_jk_navigates_fields() {
         let mut app = open_provider_fields_form(AppType::Claude);
 
-        assert_eq!(provider_field_idx(&app), 0);
+        // Applying a template lands on the first field after the template row.
+        let first = provider_field_idx(&app);
+        assert_eq!(
+            provider_selected_field(&app),
+            Some(ProviderAddField::Name),
+            "expected to land on the first real field"
+        );
         app.on_key(key(KeyCode::Char('j')), &data());
-        assert_eq!(provider_field_idx(&app), 1);
+        assert_eq!(provider_field_idx(&app), first + 1);
         app.on_key(key(KeyCode::Char('k')), &data());
-        assert_eq!(provider_field_idx(&app), 0);
+        assert_eq!(provider_field_idx(&app), first);
+
+        // k at the first real field walks back over the divider to Template.
+        app.on_key(key(KeyCode::Char('k')), &data());
+        assert_eq!(
+            provider_selected_field(&app),
+            Some(ProviderAddField::Template),
+            "the divider must be skipped, not selected"
+        );
     }
 
     #[test]
@@ -15275,14 +16592,15 @@ mod tests {
             let mut data = data();
             data.config.common_snippet = common_snippet.to_string();
 
-            assert!(matches!(
-                app.on_key(key(KeyCode::Enter), &data),
-                Action::None
-            ));
+            // Go through the picker so the apply + common-snippet refresh path
+            // is genuinely exercised, not just the constructor's seed state.
+            apply_current_provider_template(&mut app, &data);
+            assert!(matches!(app.overlay, Overlay::None));
 
             let Some(FormState::ProviderAdd(form)) = app.form.as_ref() else {
                 panic!("expected provider form for {app_type:?}");
             };
+            assert_eq!(form.focus, FormFocus::Fields);
             assert!(form.include_common_config);
             match app_type {
                 AppType::Claude => assert!(form.claude_teammates),
@@ -15972,6 +17290,62 @@ mod tests {
         assert_eq!(help.scroll, 1);
     }
 
+    /// `?` on the Template field row must show the template help, not the
+    /// generic per-field help.
+    #[test]
+    fn context_help_provider_template_field_shows_template_help() {
+        let _lang = use_test_language(Language::English);
+        let mut app = App::new(Some(AppType::Claude));
+        app.route = Route::Providers;
+        app.focus = Focus::Content;
+
+        let data = UiData::default();
+        app.on_key(key(KeyCode::Char('a')), &data);
+        assert_eq!(
+            provider_selected_field(&app),
+            Some(ProviderAddField::Template)
+        );
+
+        app.on_key(key(KeyCode::Char('?')), &data);
+        let text = help_text(&app);
+        assert!(
+            text.contains("The Template field row shows only the current selection"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Applying a template rewrites the form for that template"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn context_help_provider_template_picker_restores_after_close() {
+        let _lang = use_test_language(Language::English);
+        let mut app = App::new(Some(AppType::Claude));
+        app.form = Some(FormState::ProviderAdd(ProviderAddFormState::new(
+            AppType::Claude,
+        )));
+        app.overlay = Overlay::ProviderTemplatePicker { selected: 1 };
+
+        app.on_key(key(KeyCode::Char('?')), &UiData::default());
+        let text = help_text(&app);
+        assert!(
+            text.contains("Applying a template rewrites the form for that template"),
+            "{text}"
+        );
+        assert!(matches!(
+            app.pending_overlay,
+            Some(Overlay::ProviderTemplatePicker { selected: 1 })
+        ));
+
+        app.on_key(key(KeyCode::Char('?')), &UiData::default());
+        assert!(matches!(
+            app.overlay,
+            Overlay::ProviderTemplatePicker { selected: 1 }
+        ));
+        assert!(app.pending_overlay.is_none());
+    }
+
     #[test]
     fn context_help_usage_query_template_picker_restores_after_close() {
         let _lang = use_test_language(Language::English);
@@ -16290,7 +17664,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
         select_provider_usage_query_row(&mut app);
 
         let action = app.on_key(key(KeyCode::Enter), &data);
@@ -16319,7 +17693,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
         select_provider_usage_query_row(&mut app);
 
         let action = app.on_key(key(KeyCode::Enter), &data);
@@ -16388,7 +17762,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(FormState::ProviderAdd(form)) = app.form.as_mut() {
             mark_claude_usage_query_provider_non_official(form);
@@ -16465,7 +17839,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(FormState::ProviderAdd(form)) = app.form.as_mut() {
             mark_claude_usage_query_provider_non_official(form);
@@ -16494,7 +17868,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(FormState::ProviderAdd(form)) = app.form.as_mut() {
             mark_claude_usage_query_provider_non_official(form);
@@ -16528,7 +17902,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(FormState::ProviderAdd(form)) = app.form.as_mut() {
             form.name.set("Provider One");
@@ -16690,7 +18064,7 @@ mod tests {
 
         let data = UiData::default();
         app.on_key(key(KeyCode::Char('a')), &data);
-        app.on_key(key(KeyCode::Enter), &data);
+        apply_current_provider_template(&mut app, &data);
 
         if let Some(FormState::ProviderAdd(form)) = app.form.as_mut() {
             mark_claude_usage_query_provider_non_official(form);

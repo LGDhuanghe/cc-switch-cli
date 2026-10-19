@@ -277,6 +277,9 @@ disable_response_storage = true
 
 #[test]
 fn capture_codex_temp_launch_snapshot_persists_auth_and_config() {
+    let catalog = json!({"models": [{"model": "gpt-5.4", "reasoningLevels": ["high"]}]});
+    let mut settings = codex_settings("model_reasoning_effort = \"medium\"\n");
+    settings["modelCatalog"] = catalog.clone();
     let mut config = MultiAppConfig::default();
     config.ensure_app(&AppType::Codex);
     {
@@ -289,7 +292,7 @@ fn capture_codex_temp_launch_snapshot_persists_auth_and_config() {
             Provider::with_id(
                 "official".to_string(),
                 "OpenAI Official".to_string(),
-                codex_settings("model_reasoning_effort = \"medium\"\n"),
+                settings,
                 None,
             ),
         );
@@ -312,6 +315,7 @@ fn capture_codex_temp_launch_snapshot_persists_auth_and_config() {
 
     let providers = ProviderService::list(&state, AppType::Codex).expect("list providers");
     let provider = providers.get("official").expect("provider should remain");
+    assert_eq!(provider.settings_config["modelCatalog"], catalog);
     assert_eq!(
         provider
             .settings_config
@@ -637,7 +641,7 @@ fn official_codex_live_write_strips_stale_unified_bucket_when_disabled() {
     );
     provider.category = Some("official".to_string());
 
-    ProviderService::write_codex_live_force(&provider, None, false)
+    ProviderService::write_codex_live_force(&provider, None, false, &[])
         .expect("write official live config");
 
     let live = std::fs::read_to_string(crate::codex_config::get_codex_config_path())
@@ -687,7 +691,86 @@ fn set_common_config_snippet_rejects_non_object_opencode_json() {
 
 #[test]
 #[serial]
-fn switch_codex_writes_auth_json_when_live_auth_file_is_missing() {
+fn switch_codex_preserves_all_model_catalogs_and_reasoning_levels() {
+    for wire_api in ["responses", "chat"] {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestEnvGuard::isolated(temp_home.path());
+        std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
+            .expect("initialize Codex");
+        let mut config = MultiAppConfig::default();
+        config.ensure_app(&AppType::Codex);
+        let manager = config.get_manager_mut(&AppType::Codex).unwrap();
+        let mut expected = Vec::new();
+        for id in ["a", "b", "c"] {
+            let mut settings = codex_settings(&format!(
+                "model_provider = \"custom\"\nmodel = \"model-{id}\"\n[model_providers.custom]\nname = \"{id}\"\nbase_url = \"https://{id}.example/v1\"\nwire_api = \"{wire_api}\"\n"
+            ));
+            let catalog = json!({"models": [{
+                "model": format!("model-{id}"), "displayName": id,
+                "contextWindow": 128000,
+                "reasoningLevels": ["low", "high"], "defaultReasoningLevel": "high"
+            }]});
+            settings["modelCatalog"] = catalog.clone();
+            expected.push((id, catalog));
+            manager.providers.insert(
+                id.into(),
+                Provider::with_id(id.into(), id.into(), settings, None),
+            );
+        }
+        manager.current = "a".into();
+        let initial_config = manager.providers["a"].settings_config["config"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let state = state_from_config(config);
+        // The outgoing live config has lost its catalog pointer, as can happen
+        // after a client rewrite. Stored mappings must still win on backfill.
+        std::fs::write(get_codex_config_path(), initial_config).unwrap();
+        for target in ["b", "c", "a"] {
+            ProviderService::switch(&state, AppType::Codex, target).expect("switch Codex provider");
+            for (id, catalog) in &expected {
+                let stored = state.db.get_provider_by_id(id, "codex").unwrap().unwrap();
+                assert_eq!(
+                    stored.settings_config.get("modelCatalog"),
+                    Some(catalog),
+                    "{wire_api}: {id} after switching to {target}"
+                );
+            }
+            state
+                .refresh_config_from_db()
+                .expect("reload saved snapshots");
+            let live: Value =
+                read_json_file(&crate::codex_config::get_codex_model_catalog_path()).unwrap();
+            assert_eq!(live["models"][0]["slug"], format!("model-{target}"));
+            assert_eq!(live["models"][0]["default_reasoning_level"], "high");
+            assert_eq!(
+                live["models"][0]["supported_reasoning_levels"][0]["effort"],
+                "low"
+            );
+            // A missing generated file must not erase the next outgoing catalog.
+            std::fs::remove_file(crate::codex_config::get_codex_model_catalog_path()).unwrap();
+        }
+
+        let mut cleared = state.db.get_provider_by_id("a", "codex").unwrap().unwrap();
+        cleared
+            .settings_config
+            .as_object_mut()
+            .unwrap()
+            .remove("modelCatalog");
+        ProviderService::update(&state, AppType::Codex, cleared).expect("explicitly clear mapping");
+        ProviderService::switch(&state, AppType::Codex, "b").unwrap();
+        ProviderService::switch(&state, AppType::Codex, "a").unwrap();
+        let stored = state.db.get_provider_by_id("a", "codex").unwrap().unwrap();
+        assert!(stored.settings_config.get("modelCatalog").is_none());
+        assert!(!std::fs::read_to_string(get_codex_config_path())
+            .unwrap()
+            .contains("model_catalog_json"));
+    }
+}
+
+#[test]
+#[serial]
+fn switch_codex_writes_scoped_key_when_live_auth_file_is_missing() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = TestEnvGuard::isolated(temp_home.path());
     std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
@@ -731,14 +814,7 @@ fn switch_codex_writes_auth_json_when_live_auth_file_is_missing() {
     ProviderService::switch(&state, AppType::Codex, "p1")
         .expect("switch should write auth.json from provider snapshot");
 
-    assert!(
-        get_codex_auth_path().exists(),
-        "auth.json should be created from provider auth"
-    );
-    let live_auth: Value =
-        crate::config::read_json_file(&get_codex_auth_path()).expect("read auth");
-    assert_eq!(live_auth["OPENAI_API_KEY"], json!("sk-keyring"));
-
+    assert!(!get_codex_auth_path().exists());
     let live_config_text =
         std::fs::read_to_string(get_codex_config_path()).expect("read live config.toml");
 
@@ -1063,8 +1139,8 @@ trust_level = "trusted"
         "provider snapshot should not duplicate runtime project trust once it is auto-extracted into common config"
     );
     assert!(
-        p1_stored.contains("base_url = \"https://api.one-live.example/v1\""),
-        "effective current provider should receive live provider settings"
+        p1_stored.contains("base_url = \"https://api.one.example/v1\""),
+        "switching must not rewrite the stored provider template"
     );
     assert!(
         cfg.common_config_snippets
@@ -1091,24 +1167,19 @@ trust_level = "trusted"
         "state.save should persist the de-duplicated provider snapshot"
     );
 
-    // Upstream parity (clean overwrite): switching to p2 OVERWRITES config.toml
-    // with p2's effective config. p2 is not opted into the common config, so the
-    // runtime project trust (auto-extracted from p1's live config) is not forced
-    // into p2's live file. It is preserved in the common snippet instead.
+    // Upstream only patches provider fields; runtime project trust stays live.
     let p2_live = std::fs::read_to_string(get_codex_config_path()).expect("read p2 live config");
     assert!(
-        !p2_live.contains("/tmp/codex-project-a"),
-        "clean overwrite should not inject p1's runtime project trust into p2's live config"
+        p2_live.contains("/tmp/codex-project-a"),
+        "switching must preserve runtime project trust"
     );
 
     ProviderService::switch(&state, AppType::Codex, "p1").expect("switch back to p1");
-    // Switching back to p1 reapplies its common-config opt-in (set during the
-    // backfill that auto-extracted the runtime projects), so the project trust
-    // returns to the live config via the common snippet.
+    // Upstream leaves runtime project trust in live config across both switches.
     let p1_live = std::fs::read_to_string(get_codex_config_path()).expect("read p1 live config");
     assert!(
         p1_live.contains("[projects.\"/tmp/codex-project-a\"]"),
-        "runtime project trust should survive switching away and back via the common snippet"
+        "runtime project trust should survive switching away and back"
     );
 }
 
@@ -1189,8 +1260,8 @@ fn codex_switch_backfill_migrates_existing_common_meta_for_current_provider() {
     ProviderService::switch(&state, AppType::Codex, "p1").expect("switch back to p1");
     let live_config = std::fs::read_to_string(get_codex_config_path()).expect("read live config");
     assert!(
-        live_config.contains("disable_response_storage = true"),
-        "strict runtime opt-in should reapply the common snippet after switching back"
+        !live_config.contains("disable_response_storage = true"),
+        "ordinary switches must project the stored provider fields without merging common snippets"
     );
 }
 
@@ -1276,9 +1347,8 @@ fn switch_claude_writes_target_when_live_matches_current_provider() {
 
 #[test]
 #[serial]
-fn switch_overwrites_claude_settings_discarding_unstored_live_edit() {
-    // Upstream clean-write: switching to p2 OVERWRITES settings.json with p2's
-    // effective values; any unstored manual edits to the live file are dropped.
+fn switch_claude_replaces_provider_owned_live_credentials() {
+    // Credentials belong to the selected provider, even if changed in live.
     let (_temp_home, _env, state) = setup_claude_switch_preview_state(json!({
         "env": {
             "ANTHROPIC_AUTH_TOKEN": "manual-token",
@@ -2143,6 +2213,19 @@ fn sync_current_to_live_prefers_effective_current_from_local_settings() {
 
     crate::settings::set_current_provider(&AppType::Claude, Some("p2"))
         .expect("set local effective current override");
+    futures::executor::block_on(
+        state.db.save_live_backup(
+            AppType::Claude.as_str(),
+            &json!({
+                "env": {
+                    "ANTHROPIC_AUTH_TOKEN": "token1",
+                    "ANTHROPIC_BASE_URL": "https://claude.one"
+                }
+            })
+            .to_string(),
+        ),
+    )
+    .expect("seed stale live backup");
 
     ProviderService::sync_current_to_live(&state)
         .expect("sync_current_to_live should use effective current provider");
@@ -2161,6 +2244,18 @@ fn sync_current_to_live_prefers_effective_current_from_local_settings() {
         env.get("ANTHROPIC_BASE_URL").and_then(Value::as_str),
         Some("https://claude.two"),
         "sync_current_to_live should not keep using stale config.current when local settings override it"
+    );
+    let backup = futures::executor::block_on(state.db.get_live_backup(AppType::Claude.as_str()))
+        .expect("read refreshed live backup")
+        .expect("stale live backup remains available");
+    let backup: Value =
+        serde_json::from_str(&backup.original_config).expect("parse refreshed backup");
+    assert_eq!(
+        backup
+            .pointer("/env/ANTHROPIC_AUTH_TOKEN")
+            .and_then(Value::as_str),
+        Some("token2"),
+        "sync_current_to_live should refresh a stale restore backup"
     );
 
     let cfg = state.config.read().expect("read config after sync");
@@ -2430,7 +2525,7 @@ fn updating_common_snippet_uses_db_current_when_config_snapshot_is_missing_curre
 
 #[test]
 #[serial]
-fn common_config_snippet_is_merged_into_claude_settings_on_write() {
+fn claude_switch_does_not_replay_saved_common_snippet() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = TestEnvGuard::isolated(temp_home.path());
     std::fs::create_dir_all(crate::config::get_claude_config_dir())
@@ -2464,8 +2559,8 @@ fn common_config_snippet_is_merged_into_claude_settings_on_write() {
 
     assert_eq!(
         live.get("includeCoAuthoredBy").and_then(Value::as_bool),
-        Some(false),
-        "common snippet should be merged into settings.json"
+        None,
+        "switching must not replay saved global settings"
     );
 
     let env = live
@@ -2476,8 +2571,8 @@ fn common_config_snippet_is_merged_into_claude_settings_on_write() {
     assert_eq!(
         env.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
             .and_then(Value::as_i64),
-        Some(1),
-        "common env key should be present in settings.env"
+        None,
+        "switching must not replay saved global environment"
     );
     assert_eq!(
         env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
@@ -3136,6 +3231,7 @@ fn provider_add_strips_common_snippet_before_claude_snapshot_persist() {
 }
 
 #[test]
+#[cfg(feature = "cli")]
 #[serial]
 fn tui_claude_quick_config_round_trip_crosses_storage_normalization() {
     let temp_home = TempDir::new().expect("create temp home");
@@ -3209,6 +3305,7 @@ fn tui_claude_quick_config_round_trip_crosses_storage_normalization() {
 }
 
 #[test]
+#[cfg(feature = "cli")]
 #[serial]
 fn tui_claude_quick_edit_persists_legacy_inferred_common_config() {
     let temp_home = TempDir::new().expect("create temp home");
@@ -3281,6 +3378,7 @@ fn tui_claude_quick_edit_persists_legacy_inferred_common_config() {
 }
 
 #[test]
+#[cfg(feature = "cli")]
 #[serial]
 fn tui_codex_conflicting_quick_edit_preserves_storage_only_settings() {
     let temp_home = TempDir::new().expect("create temp home");
@@ -3744,6 +3842,321 @@ fn provider_update_overwrites_claude_live_for_current_provider() {
 
 #[tokio::test]
 #[serial]
+async fn provider_update_writes_live_and_refreshes_stale_backup() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = TestEnvGuard::isolated(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let original = Provider::with_id(
+        "p1".to_string(),
+        "First".to_string(),
+        json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token-old",
+                "ANTHROPIC_BASE_URL": "https://claude.old"
+            }
+        }),
+        None,
+    );
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert("p1".to_string(), original.clone());
+    }
+
+    write_json_file(&get_claude_settings_path(), &original.settings_config)
+        .expect("seed live settings");
+    let state = state_from_config(config);
+    state
+        .db
+        .save_live_backup(
+            AppType::Claude.as_str(),
+            &serde_json::to_string(&original.settings_config).expect("serialize stale backup"),
+        )
+        .await
+        .expect("seed stale live backup");
+    assert!(!state.proxy_service.is_running().await);
+
+    let updated = Provider::with_id(
+        "p1".to_string(),
+        "First Updated".to_string(),
+        json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token-new",
+                "ANTHROPIC_BASE_URL": "https://claude.new"
+            }
+        }),
+        None,
+    );
+    ProviderService::update(&state, AppType::Claude, updated)
+        .expect("update should ignore stale backup ownership");
+
+    let live: Value = read_json_file(&get_claude_settings_path()).expect("read live settings");
+    assert_eq!(
+        live.pointer("/env/ANTHROPIC_BASE_URL")
+            .and_then(Value::as_str),
+        Some("https://claude.new")
+    );
+    let backup = state
+        .db
+        .get_live_backup(AppType::Claude.as_str())
+        .await
+        .expect("read refreshed backup")
+        .expect("stale backup should remain available for restore");
+    let backup: Value =
+        serde_json::from_str(&backup.original_config).expect("parse refreshed backup");
+    assert_eq!(
+        backup
+            .pointer("/env/ANTHROPIC_BASE_URL")
+            .and_then(Value::as_str),
+        Some("https://claude.new")
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn provider_update_ignores_enabled_flag_without_takeover_evidence() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = TestEnvGuard::isolated(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let original = Provider::with_id(
+        "p1".to_string(),
+        "First".to_string(),
+        json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token-old",
+                "ANTHROPIC_BASE_URL": "https://claude.old"
+            }
+        }),
+        None,
+    );
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert("p1".to_string(), original.clone());
+    }
+
+    write_json_file(&get_claude_settings_path(), &original.settings_config)
+        .expect("seed live settings");
+    let state = state_from_config(config);
+    let mut proxy_config = state
+        .db
+        .get_proxy_config_for_app(AppType::Claude.as_str())
+        .await
+        .expect("read proxy config");
+    proxy_config.enabled = true;
+    state
+        .db
+        .update_proxy_config_for_app(proxy_config)
+        .await
+        .expect("leave stale enabled flag");
+    assert!(!state.proxy_service.is_running().await);
+    assert!(state
+        .db
+        .get_live_backup(AppType::Claude.as_str())
+        .await
+        .expect("read live backup")
+        .is_none());
+
+    let updated = Provider::with_id(
+        "p1".to_string(),
+        "First Updated".to_string(),
+        json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token-new",
+                "ANTHROPIC_BASE_URL": "https://claude.new"
+            }
+        }),
+        None,
+    );
+    ProviderService::update(&state, AppType::Claude, updated)
+        .expect("update should ignore an uncorroborated enabled flag");
+
+    let live: Value = read_json_file(&get_claude_settings_path()).expect("read live settings");
+    assert_eq!(
+        live.pointer("/env/ANTHROPIC_BASE_URL")
+            .and_then(Value::as_str),
+        Some("https://claude.new")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial]
+async fn provider_update_waits_for_state_mutation_guard() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = TestEnvGuard::isolated(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let original = Provider::with_id(
+        "p1".to_string(),
+        "First".to_string(),
+        json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token-old",
+                "ANTHROPIC_BASE_URL": "https://claude.old"
+            }
+        }),
+        None,
+    );
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert("p1".to_string(), original.clone());
+    }
+    write_json_file(&get_claude_settings_path(), &original.settings_config)
+        .expect("seed live settings");
+    let state = std::sync::Arc::new(state_from_config(config));
+    let mutation_guard = crate::services::state_coordination::acquire_restore_mutation_guard()
+        .await
+        .expect("acquire simulated daemon mutation guard");
+
+    let updated = Provider::with_id(
+        "p1".to_string(),
+        "First Updated".to_string(),
+        json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token-new",
+                "ANTHROPIC_BASE_URL": "https://claude.new"
+            }
+        }),
+        None,
+    );
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    let update_state = state.clone();
+    let worker = std::thread::spawn(move || {
+        ready_tx.send(()).expect("signal update start");
+        let result = ProviderService::update(&update_state, AppType::Claude, updated);
+        result_tx.send(result).expect("send update result");
+    });
+    ready_rx.recv().expect("wait for update worker");
+    assert!(
+        matches!(
+            result_rx.recv_timeout(std::time::Duration::from_millis(200)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ),
+        "provider update must wait while daemon-style state mutation is active"
+    );
+
+    drop(mutation_guard);
+    result_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("update should resume after mutation guard release")
+        .expect("update should succeed");
+    worker.join().expect("join update worker");
+    let live: Value = read_json_file(&get_claude_settings_path()).expect("read updated live");
+    assert_eq!(
+        live.pointer("/env/ANTHROPIC_BASE_URL")
+            .and_then(Value::as_str),
+        Some("https://claude.new")
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn common_snippet_update_during_takeover_edits_live_globals() {
+    let temp_home = TempDir::new().expect("create temp home");
+    let _env = TestEnvGuard::isolated(temp_home.path());
+    std::fs::create_dir_all(crate::config::get_claude_config_dir())
+        .expect("create ~/.claude (initialized)");
+
+    let provider = with_common_enabled(Provider::with_id(
+        "p1".to_string(),
+        "First".to_string(),
+        json!({
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token",
+                "ANTHROPIC_BASE_URL": "https://claude.example"
+            }
+        }),
+        None,
+    ));
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Claude);
+    config.common_config_snippets.claude =
+        Some(r#"{"includeCoAuthoredBy":true,"env":{"OLD_COMMON":"remove-me"}}"#.to_string());
+    {
+        let manager = config
+            .get_manager_mut(&AppType::Claude)
+            .expect("claude manager");
+        manager.current = "p1".to_string();
+        manager.providers.insert("p1".to_string(), provider.clone());
+    }
+
+    let state = state_from_config(config);
+    let old_backup = ProviderService::build_live_backup_snapshot(
+        &AppType::Claude,
+        &provider,
+        Some(r#"{"includeCoAuthoredBy":true,"env":{"OLD_COMMON":"remove-me"}}"#),
+        true,
+    )
+    .expect("build old effective backup");
+    state
+        .db
+        .save_live_backup(
+            AppType::Claude.as_str(),
+            &serde_json::to_string(&old_backup).expect("serialize old backup"),
+        )
+        .await
+        .expect("seed takeover backup");
+    let takeover_live = json!({
+        "env": {
+            "ANTHROPIC_AUTH_TOKEN": "PROXY_MANAGED",
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:15721"
+        }
+    });
+    write_json_file(&get_claude_settings_path(), &takeover_live)
+        .expect("seed takeover-owned live settings");
+    assert!(!state.proxy_service.is_running().await);
+
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Claude,
+        Some(r#"{"includeCoAuthoredBy":false}"#.to_string()),
+    )
+    .expect("update common snippet during stopped takeover");
+
+    let backup = state
+        .db
+        .get_live_backup(AppType::Claude.as_str())
+        .await
+        .expect("read refreshed backup")
+        .expect("takeover backup should remain");
+    let backup: Value =
+        serde_json::from_str(&backup.original_config).expect("parse refreshed backup");
+    assert_eq!(
+        backup, old_backup,
+        "global edits do not replay or rewrite legacy backups"
+    );
+    let live: Value = read_json_file(&get_claude_settings_path()).expect("read takeover live");
+    assert_eq!(
+        live["env"], takeover_live["env"],
+        "proxy fields stay attached"
+    );
+    assert_eq!(
+        live["includeCoAuthoredBy"], false,
+        "explicit global edits apply immediately"
+    );
+}
+
+#[tokio::test]
+#[serial]
 async fn provider_update_keeps_running_claude_takeover_and_refreshes_restore_backup() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = TestEnvGuard::isolated(temp_home.path());
@@ -3854,8 +4267,8 @@ async fn provider_update_keeps_running_claude_takeover_and_refreshes_restore_bac
     assert!(live.pointer("/env/ANTHROPIC_REASONING_MODEL").is_none());
     assert_eq!(
         live.pointer("/permissions/allow/0").and_then(Value::as_str),
-        Some("Read"),
-        "non-routing provider settings should refresh while takeover stays active"
+        Some("Bash"),
+        "user permissions must survive provider updates while takeover stays active"
     );
 
     state
@@ -3881,7 +4294,7 @@ async fn provider_update_keeps_running_claude_takeover_and_refreshes_restore_bac
         restored
             .pointer("/permissions/allow/0")
             .and_then(Value::as_str),
-        Some("Read")
+        Some("Bash")
     );
 }
 
@@ -4062,6 +4475,8 @@ async fn provider_update_uses_live_marker_as_takeover_ownership_when_proxy_is_st
     );
     ProviderService::update(&state, AppType::Claude, updated)
         .expect("update takeover-owned provider while proxy is stopped");
+    ProviderService::sync_current_to_live(&state)
+        .expect("bulk live sync should preserve takeover ownership");
 
     let live: Value = read_json_file(&get_claude_settings_path()).expect("read unchanged live");
     assert_eq!(
@@ -4563,8 +4978,8 @@ fn updating_common_snippet_removes_stale_fields_from_other_claude_provider_snaps
         live_env
             .get("CLAUDE_CODE_USE_BEDROCK")
             .and_then(Value::as_i64),
-        Some(1),
-        "new common env key should be merged into current live settings"
+        None,
+        "global snippet edits must not switch provider-owned protocol selectors"
     );
     assert!(
         !live_env.contains_key("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
@@ -4954,8 +5369,8 @@ fn clearing_claude_common_snippet_tolerates_invalid_stored_snippet() {
         .and_then(Value::as_object)
         .expect("live env should be object");
     assert!(
-        !env.contains_key("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
-        "clearing should rewrite live settings from the provider snapshot even when the old snippet is invalid"
+        env.contains_key("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
+        "an unreadable old snippet cannot establish ownership of existing user settings"
     );
     assert_eq!(
         env.get("ANTHROPIC_AUTH_TOKEN").and_then(Value::as_str),
@@ -4966,7 +5381,7 @@ fn clearing_claude_common_snippet_tolerates_invalid_stored_snippet() {
 
 #[test]
 #[serial]
-fn common_config_snippet_is_merged_into_codex_config_on_write() {
+fn ordinary_codex_write_does_not_merge_saved_common_config() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = TestEnvGuard::isolated(temp_home.path());
     std::fs::create_dir_all(crate::codex_config::get_codex_config_dir())
@@ -4992,8 +5407,8 @@ fn common_config_snippet_is_merged_into_codex_config_on_write() {
 
     let live_text = std::fs::read_to_string(get_codex_config_path()).expect("read config.toml");
     assert!(
-        live_text.contains("disable_response_storage = true"),
-        "common snippet should be merged into config.toml"
+        !live_text.contains("disable_response_storage = true"),
+        "ordinary provider writes must not replay saved common snippets"
     );
 }
 
@@ -6338,7 +6753,7 @@ fn resolve_usage_script_credentials_does_not_require_provider_api_key_when_scrip
 
 #[test]
 #[serial]
-fn common_config_snippet_is_merged_into_gemini_env_on_write() {
+fn gemini_switch_does_not_replay_saved_common_snippet() {
     let temp_home = TempDir::new().expect("create temp home");
     let _env = TestEnvGuard::isolated(temp_home.path());
     std::fs::create_dir_all(crate::gemini_config::get_gemini_dir())
@@ -6366,8 +6781,8 @@ fn common_config_snippet_is_merged_into_gemini_env_on_write() {
     let env = crate::gemini_config::read_gemini_env().expect("read gemini env");
     assert_eq!(
         env.get("CC_SWITCH_GEMINI_COMMON").map(String::as_str),
-        Some("1"),
-        "common snippet env key should be present in ~/.gemini/.env"
+        None,
+        "switching must not replay saved global environment"
     );
     assert_eq!(
         env.get("GEMINI_API_KEY").map(String::as_str),
@@ -6682,24 +7097,20 @@ fn switching_google_official_gemini_clears_stale_api_key_env() {
         .expect("switch to Google official Gemini");
 
     let live_env = crate::gemini_config::read_gemini_env().expect("read gemini env");
-    for key in [
-        "GEMINI_API_KEY",
-        "GOOGLE_GEMINI_BASE_URL",
-        "GEMINI_BASE_URL",
-        "GEMINI_MODEL",
-    ] {
+    for key in ["GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GEMINI_MODEL"] {
         assert!(
             !live_env.contains_key(key),
             "Google official Gemini should clear stale {key} from .env"
         );
     }
-    // Upstream parity: write_gemini_env_atomic is a FULL overwrite of .env with
-    // the provider's env_map (no merge with the prior file). A Google-official
-    // provider with an empty env therefore writes an empty .env, clearing even
-    // unrelated keys — matching upstream write_gemini_live.
-    assert!(
-        !live_env.contains_key("USER_DEFINED_ENV"),
-        "Gemini .env is a full overwrite with the provider env (upstream parity); prior unrelated keys are not preserved"
+    assert_eq!(
+        live_env.get("USER_DEFINED_ENV").map(String::as_str),
+        Some("keep-me")
+    );
+    // GEMINI_BASE_URL is not a key field in the upstream floor definition.
+    assert_eq!(
+        live_env.get("GEMINI_BASE_URL").map(String::as_str),
+        Some("https://legacy.example.com")
     );
 
     let settings: Value = read_json_file(&crate::gemini_config::get_gemini_settings_path())
@@ -6714,7 +7125,7 @@ fn switching_google_official_gemini_clears_stale_api_key_env() {
 
 #[test]
 #[serial]
-fn switch_preserves_gemini_mcp_servers_after_clean_env_overwrite() {
+fn switch_preserves_gemini_user_environment_and_settings() {
     // Upstream parity: .env is a full overwrite, but settings.json is a shallow
     // merge that preserves user-managed mcpServers (and other unrelated keys).
     let temp_home = TempDir::new().expect("create temp home");
@@ -6766,18 +7177,18 @@ fn switch_preserves_gemini_mcp_servers_after_clean_env_overwrite() {
     let state = state_from_config(config);
     ProviderService::switch(&state, AppType::Gemini, "p2").expect("switch to p2");
 
-    // .env is a full overwrite: the stale unrelated key is gone, token updated.
+    // Only provider fields change; unrelated environment variables survive.
     let live_env = crate::gemini_config::read_gemini_env().expect("read gemini env");
     assert_eq!(
         live_env.get("GEMINI_API_KEY").map(String::as_str),
         Some("token2"),
     );
     assert!(
-        !live_env.contains_key("USER_DEFINED_ENV"),
-        ".env should be fully overwritten for API-key Gemini providers"
+        live_env.contains_key("USER_DEFINED_ENV"),
+        "switching must preserve non-provider environment variables"
     );
 
-    // settings.json is a shallow merge: mcpServers and unrelated keys survive.
+    // settings.json patches the auth and model paths; other keys survive.
     let settings: Value = read_json_file(&crate::gemini_config::get_gemini_settings_path())
         .expect("read gemini settings");
     assert_eq!(
@@ -7043,8 +7454,8 @@ fn replacing_gemini_common_snippet_tolerates_invalid_stored_snippet() {
         "replacing should write the new common snippet into the live Gemini env"
     );
     assert!(
-        !live_env.contains_key("CC_SWITCH_GEMINI_COMMON"),
-        "replacing should rewrite live Gemini env from the provider snapshot even when the old snippet is invalid"
+        live_env.contains_key("CC_SWITCH_GEMINI_COMMON"),
+        "an unreadable old snippet must not erase existing user environment"
     );
 }
 
@@ -7316,4 +7727,552 @@ fn delete_rejects_last_failover_queue_provider_while_active() {
         .get_provider_by_id("queued", "claude")
         .expect("read queued provider")
         .is_some());
+}
+
+#[test]
+#[serial]
+fn key_field_switch_preserves_claude_globals_without_backfilling_rows() {
+    let globals = json!({
+        "permissions": {"allow": ["Bash(git status)"]},
+        "hooks": {"Stop": []},
+        "enabledPlugins": {"local@test": true},
+        "env": {"API_TIMEOUT_MS": "123456", "USER_FLAG": "keep",
+            "ANTHROPIC_AUTH_TOKEN": "old", "AWS_ACCESS_KEY_ID": "old-aws"}
+    });
+    let (_home, _env, state) = setup_claude_switch_preview_state(globals.clone());
+    let before = state
+        .db
+        .get_provider_by_id("p1", "claude")
+        .unwrap()
+        .unwrap()
+        .settings_config;
+    // Legacy row globals must not overwrite newer user-owned live values.
+    let mut target = state
+        .db
+        .get_provider_by_id("p2", "claude")
+        .unwrap()
+        .unwrap();
+    target.settings_config["hooks"] = json!({"Stop": ["stale"]});
+    target.settings_config["env"]["API_TIMEOUT_MS"] = json!("1");
+    ProviderService::update(&state, AppType::Claude, target).unwrap();
+    ProviderService::switch(&state, AppType::Claude, "p2").unwrap();
+    let live: Value = read_json_file(&get_claude_settings_path()).unwrap();
+    for key in ["permissions", "hooks", "enabledPlugins"] {
+        assert_eq!(live[key], globals[key]);
+    }
+    assert_eq!(live["env"]["API_TIMEOUT_MS"], "123456");
+    assert_eq!(live["env"]["USER_FLAG"], "keep");
+    assert!(live["env"].get("AWS_ACCESS_KEY_ID").is_none());
+    assert_eq!(live["env"]["ANTHROPIC_AUTH_TOKEN"], "token2");
+    assert_eq!(
+        state
+            .db
+            .get_provider_by_id("p1", "claude")
+            .unwrap()
+            .unwrap()
+            .settings_config,
+        before
+    );
+    assert_eq!(
+        state.db.get_current_provider("claude").unwrap().as_deref(),
+        Some("p2")
+    );
+}
+
+#[test]
+#[serial]
+fn key_field_gemini_write_keeps_dotenv_layout_and_nested_settings() {
+    let home = TempDir::new().unwrap();
+    let _env = TestEnvGuard::isolated(home.path());
+    std::fs::create_dir_all(crate::gemini_config::get_gemini_dir()).unwrap();
+    let path = crate::gemini_config::get_gemini_env_path();
+    std::fs::write(&path, "# user comment\nUSER_SETTING=keep\n\nGEMINI_API_KEY=old\nGEMINI_API_KEY=duplicate\nGOOGLE_CLOUD_PROJECT=old-project\n").unwrap();
+    let settings = crate::gemini_config::get_gemini_settings_path();
+    write_json_file(
+        &settings,
+        &json!({
+            "security": {"auth": {"selectedType":"oauth-personal", "other":"keep"}, "flag":true},
+            "model": {"name":"old", "maxSessionTurns":10},
+            "mcpServers": {"user": {"command":"node"}}
+        }),
+    )
+    .unwrap();
+    let db = Database::memory().unwrap();
+    ProviderService::write_key_fields(
+        &db,
+        &AppType::Gemini,
+        &json!({
+            "env": {"GEMINI_API_KEY":"new", "USER_SETTING":"stale"},
+            "config": {"model":{"name":"new-model"}, "security":{"flag":false}}
+        }),
+        None,
+        false,
+    )
+    .unwrap();
+    let env = std::fs::read_to_string(&path).unwrap();
+    assert!(env.starts_with("# user comment\nUSER_SETTING=keep\n\n"));
+    assert_eq!(env.matches("GEMINI_API_KEY=").count(), 1);
+    assert!(!env.contains("GOOGLE_CLOUD_PROJECT"));
+    let live: Value = read_json_file(&settings).unwrap();
+    assert_eq!(live["security"]["auth"]["selectedType"], "gemini-api-key");
+    assert_eq!(live["security"]["auth"]["other"], "keep");
+    assert_eq!(live["security"]["flag"], true);
+    assert_eq!(live["model"]["name"], "new-model");
+    assert_eq!(live["model"]["maxSessionTurns"], 10);
+    assert_eq!(live["mcpServers"]["user"]["command"], "node");
+}
+
+#[test]
+#[serial]
+fn key_field_gemini_invalid_settings_does_not_publish_env_or_pointer() {
+    let home = TempDir::new().unwrap();
+    let _env = TestEnvGuard::isolated(home.path());
+    std::fs::create_dir_all(crate::gemini_config::get_gemini_dir()).unwrap();
+    let env_path = crate::gemini_config::get_gemini_env_path();
+    let settings_path = crate::gemini_config::get_gemini_settings_path();
+    std::fs::write(&env_path, "GEMINI_API_KEY=old\n").unwrap();
+    std::fs::write(&settings_path, "{invalid json").unwrap();
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Gemini);
+    let manager = config.get_manager_mut(&AppType::Gemini).unwrap();
+    for (id, key) in [("p1", "old"), ("p2", "new")] {
+        manager.providers.insert(
+            id.into(),
+            Provider::with_id(
+                id.into(),
+                id.into(),
+                json!({"env":{"GEMINI_API_KEY":key}}),
+                None,
+            ),
+        );
+    }
+    manager.current = "p1".into();
+    let state = state_from_config(config);
+    assert!(ProviderService::switch(&state, AppType::Gemini, "p2").is_err());
+    assert_eq!(
+        std::fs::read_to_string(&env_path).unwrap(),
+        "GEMINI_API_KEY=old\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&settings_path).unwrap(),
+        "{invalid json"
+    );
+    assert_eq!(
+        state.db.get_current_provider("gemini").unwrap().as_deref(),
+        Some("p1")
+    );
+}
+
+#[test]
+#[serial]
+fn key_field_common_edit_preserves_active_proxy_route() {
+    let (_home, _env, state) = setup_claude_switch_preview_state(json!({
+        "env": {"ANTHROPIC_AUTH_TOKEN":"PROXY_MANAGED", "ANTHROPIC_BASE_URL":"http://127.0.0.1:15721"},
+        "permissions": {"allow":["Read"]}
+    }));
+    {
+        let mut config = state.config.write().unwrap();
+        let current = config
+            .get_manager_mut(&AppType::Claude)
+            .unwrap()
+            .providers
+            .get_mut("p1")
+            .unwrap();
+        current.meta = Some(ProviderMeta {
+            apply_common_config: Some(true),
+            ..Default::default()
+        });
+    }
+    state.save().unwrap();
+    ProviderService::set_common_config_snippet(
+        &state,
+        AppType::Claude,
+        Some(r#"{"env":{"API_TIMEOUT_MS":"999"},"includeCoAuthoredBy":false}"#.into()),
+    )
+    .expect("edit global settings while proxy is attached");
+    let live: Value = read_json_file(&get_claude_settings_path()).unwrap();
+    assert_eq!(live["env"]["ANTHROPIC_AUTH_TOKEN"], "PROXY_MANAGED");
+    assert_eq!(live["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:15721");
+    assert_eq!(live["env"]["API_TIMEOUT_MS"], "999");
+    assert_eq!(live["includeCoAuthoredBy"], false);
+    assert_eq!(live["permissions"]["allow"], json!(["Read"]));
+    for env in [json!(null), json!("invalid"), json!([])] {
+        ProviderService::set_common_config_snippet(
+            &state,
+            AppType::Claude,
+            Some(json!({"env":env}).to_string()),
+        )
+        .unwrap();
+        let live: Value = read_json_file(&get_claude_settings_path()).unwrap();
+        assert_eq!(live["env"]["ANTHROPIC_AUTH_TOKEN"], "PROXY_MANAGED");
+        assert_eq!(live["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:15721");
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn key_field_proxy_update_cleans_removed_exclusive_fields() {
+    let (_home, _env, state) = setup_claude_switch_preview_state(json!({"env":{}}));
+    let mut provider = state
+        .db
+        .get_provider_by_id("p1", "claude")
+        .unwrap()
+        .unwrap();
+    provider.settings_config["env"]["CLAUDE_CODE_DISABLE_ARTIFACT"] = json!("1");
+    ProviderService::update(&state, AppType::Claude, provider.clone()).unwrap();
+    state.db.set_app_proxy_preferred_port("claude", 0).unwrap();
+    state
+        .proxy_service
+        .set_takeover_for_app("claude", true)
+        .await
+        .unwrap();
+    let before: Value = read_json_file(&get_claude_settings_path()).unwrap();
+    assert_eq!(before["env"]["CLAUDE_CODE_DISABLE_ARTIFACT"], "1");
+    provider.settings_config["env"]
+        .as_object_mut()
+        .unwrap()
+        .remove("CLAUDE_CODE_DISABLE_ARTIFACT");
+    ProviderService::update(&state, AppType::Claude, provider).unwrap();
+    let live: Value = read_json_file(&get_claude_settings_path()).unwrap();
+    assert!(live.pointer("/env/CLAUDE_CODE_DISABLE_ARTIFACT").is_none());
+    assert_eq!(live["env"]["ANTHROPIC_AUTH_TOKEN"], "PROXY_MANAGED");
+    state
+        .proxy_service
+        .set_takeover_for_app("claude", false)
+        .await
+        .unwrap();
+    let restored: Value = read_json_file(&get_claude_settings_path()).unwrap();
+    assert!(restored
+        .pointer("/env/CLAUDE_CODE_DISABLE_ARTIFACT")
+        .is_none());
+}
+
+#[tokio::test]
+#[serial]
+async fn key_field_proxy_gemini_update_refreshes_and_removes_model_fields() {
+    let home = TempDir::new().unwrap();
+    let _env = TestEnvGuard::isolated(home.path());
+    std::fs::create_dir_all(crate::gemini_config::get_gemini_dir()).unwrap();
+    let mut provider = Provider::with_id(
+        "p1".into(),
+        "Gemini".into(),
+        json!({
+            "env":{"GEMINI_API_KEY":"key", "GEMINI_MODEL":"old-env"},
+            "config":{"model":{"name":"old-settings"}}
+        }),
+        None,
+    );
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Gemini);
+    let manager = config.get_manager_mut(&AppType::Gemini).unwrap();
+    manager.current = "p1".into();
+    manager.providers.insert("p1".into(), provider.clone());
+    let state = state_from_config(config);
+    state.save().unwrap();
+    ProviderService::sync_current_to_live(&state).unwrap();
+    state.db.set_app_proxy_preferred_port("gemini", 0).unwrap();
+    state
+        .proxy_service
+        .set_takeover_for_app("gemini", true)
+        .await
+        .unwrap();
+    for model in [Some(("new-env", "new-settings")), None] {
+        if let Some((env, settings)) = model {
+            provider.settings_config["env"]["GEMINI_MODEL"] = json!(env);
+            provider.settings_config["config"]["model"]["name"] = json!(settings);
+        } else {
+            provider.settings_config["env"]
+                .as_object_mut()
+                .unwrap()
+                .remove("GEMINI_MODEL");
+            provider.settings_config["config"]["model"]
+                .as_object_mut()
+                .unwrap()
+                .remove("name");
+        }
+        ProviderService::update(&state, AppType::Gemini, provider.clone()).unwrap();
+        let env = crate::gemini_config::read_gemini_env().unwrap();
+        let settings: Value =
+            read_json_file(&crate::gemini_config::get_gemini_settings_path()).unwrap();
+        assert_eq!(
+            env.get("GEMINI_MODEL").map(String::as_str),
+            model.map(|(env, _)| env)
+        );
+        assert_eq!(
+            settings.pointer("/model/name").and_then(Value::as_str),
+            model.map(|(_, settings)| settings)
+        );
+        assert_eq!(
+            env.get("GEMINI_API_KEY").map(String::as_str),
+            Some("PROXY_MANAGED")
+        );
+        assert_eq!(
+            settings.pointer("/security/auth/selectedType"),
+            Some(&json!("gemini-api-key"))
+        );
+        // A cached failover snapshot must not resurrect the pre-edit model.
+        state
+            .proxy_service
+            .hot_switch_provider("gemini", "p1")
+            .await
+            .unwrap();
+        let env = crate::gemini_config::read_gemini_env().unwrap();
+        let settings: Value =
+            read_json_file(&crate::gemini_config::get_gemini_settings_path()).unwrap();
+        assert_eq!(
+            env.get("GEMINI_MODEL").map(String::as_str),
+            model.map(|(env, _)| env)
+        );
+        assert_eq!(
+            settings.pointer("/model/name").and_then(Value::as_str),
+            model.map(|(_, settings)| settings)
+        );
+    }
+    state
+        .proxy_service
+        .set_takeover_for_app("gemini", false)
+        .await
+        .unwrap();
+    let settings: Value =
+        read_json_file(&crate::gemini_config::get_gemini_settings_path()).unwrap();
+    assert!(settings.pointer("/model/name").is_none());
+}
+
+#[tokio::test]
+#[serial]
+async fn key_field_proxy_update_recovers_forward_without_restoring_old_files() {
+    use crate::mode::operation::{failpoint, settle, RecoveryOutcome};
+    let home = TempDir::new().unwrap();
+    let _env = TestEnvGuard::isolated(home.path());
+    std::fs::create_dir_all(crate::gemini_config::get_gemini_dir()).unwrap();
+    let mut provider = Provider::with_id(
+        "p1".into(),
+        "Gemini".into(),
+        json!({
+            "env":{"GEMINI_API_KEY":"key", "GEMINI_MODEL":"old-env"},
+            "config":{"model":{"name":"old-settings"}}
+        }),
+        None,
+    );
+    let mut config = MultiAppConfig::default();
+    config.ensure_app(&AppType::Gemini);
+    let manager = config.get_manager_mut(&AppType::Gemini).unwrap();
+    manager.current = "p1".into();
+    manager.providers.insert("p1".into(), provider.clone());
+    let state = state_from_config(config);
+    state.save().unwrap();
+    ProviderService::sync_current_to_live(&state).unwrap();
+    state.db.set_app_proxy_preferred_port("gemini", 0).unwrap();
+    state
+        .proxy_service
+        .set_takeover_for_app("gemini", true)
+        .await
+        .unwrap();
+    provider.settings_config["env"]["GEMINI_MODEL"] = json!("new-env");
+    provider.settings_config["config"]["model"]["name"] = json!("new-settings");
+    let mut edited = false;
+    failpoint::on_before_publish(Some(Box::new(move |index, path| {
+        if index == 0 && !edited {
+            edited = true;
+            let before = std::fs::read_to_string(path).unwrap();
+            std::fs::write(
+                path,
+                format!("# concurrent user edit\n{before}USER_SETTING=keep\n"),
+            )
+            .unwrap();
+        }
+    })));
+    failpoint::crash_at(Some("published:0"));
+    let result = ProviderService::update(&state, AppType::Gemini, provider);
+    failpoint::crash_at(None);
+    failpoint::on_before_publish(None);
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("injected crash at published:0"));
+    let env_path = crate::gemini_config::get_gemini_env_path();
+    let published_env = std::fs::read_to_string(&env_path).unwrap();
+    assert!(published_env.contains("# concurrent user edit"));
+    assert!(published_env.contains("GEMINI_MODEL=new-env"));
+    assert!(published_env.contains("USER_SETTING=keep"));
+    let saved = state
+        .db
+        .get_provider_by_id("p1", "gemini")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        saved.settings_config["config"]["model"]["name"],
+        "new-settings"
+    );
+    let backup = state.db.get_live_backup("gemini").await.unwrap().unwrap();
+    let backup: Value = serde_json::from_str(&backup.original_config).unwrap();
+    assert_eq!(backup["config"]["model"]["name"], "new-settings");
+    assert_eq!(
+        settle(&state.db, "gemini").unwrap(),
+        Some(RecoveryOutcome::RolledForward)
+    );
+    assert_eq!(std::fs::read_to_string(&env_path).unwrap(), published_env);
+    let live: Value = read_json_file(&crate::gemini_config::get_gemini_settings_path()).unwrap();
+    assert_eq!(live["model"]["name"], "new-settings");
+    state
+        .proxy_service
+        .set_takeover_for_app("gemini", false)
+        .await
+        .unwrap();
+    let live: Value = read_json_file(&crate::gemini_config::get_gemini_settings_path()).unwrap();
+    assert_eq!(live["model"]["name"], "new-settings");
+    assert!(std::fs::read_to_string(&env_path)
+        .unwrap()
+        .contains("USER_SETTING=keep"));
+}
+
+#[tokio::test]
+#[serial]
+async fn key_field_proxy_update_keeps_external_invalid_json_on_failure() {
+    use crate::mode::operation::failpoint;
+    let (_home, _env, state) = setup_claude_switch_preview_state(json!({"env":{}}));
+    state.db.set_app_proxy_preferred_port("claude", 0).unwrap();
+    state
+        .proxy_service
+        .set_takeover_for_app("claude", true)
+        .await
+        .unwrap();
+    let mut provider = state
+        .db
+        .get_provider_by_id("p1", "claude")
+        .unwrap()
+        .unwrap();
+    provider.settings_config["env"]["ANTHROPIC_DEFAULT_SONNET_MODEL"] = json!("changed-model");
+    failpoint::on_before_publish(Some(Box::new(|_, path| {
+        std::fs::write(path, "{ external edit in progress").unwrap();
+    })));
+    let result = ProviderService::update(&state, AppType::Claude, provider);
+    failpoint::on_before_publish(None);
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read_to_string(get_claude_settings_path()).unwrap(),
+        "{ external edit in progress"
+    );
+    // Restore a valid user document only after verifying the failed operation
+    // leaves the concurrent edit intact, so the test server can shut down.
+    write_json_file(&get_claude_settings_path(), &json!({"user":"keep"})).unwrap();
+    state
+        .proxy_service
+        .set_takeover_for_app("claude", false)
+        .await
+        .unwrap();
+}
+
+#[test]
+#[serial]
+fn key_field_switch_recovers_device_pointer_when_database_already_selects_target() {
+    use crate::mode::operation::{failpoint, settle, RecoveryOutcome};
+    for app in [AppType::Claude, AppType::Gemini] {
+        let home = TempDir::new().unwrap();
+        let _env = TestEnvGuard::isolated(home.path());
+        std::fs::create_dir_all(crate::config::get_claude_config_dir()).unwrap();
+        std::fs::create_dir_all(crate::gemini_config::get_gemini_dir()).unwrap();
+        let mut config = MultiAppConfig::default();
+        config.ensure_app(&app);
+        let manager = config.get_manager_mut(&app).unwrap();
+        manager.current = "p1".into();
+        for id in ["p1", "p2"] {
+            let settings = match app {
+                AppType::Claude => {
+                    json!({"env":{"ANTHROPIC_AUTH_TOKEN":id, "ANTHROPIC_BASE_URL":"https://example.com"}})
+                }
+                _ => json!({"env":{"GEMINI_API_KEY":id}}),
+            };
+            manager.providers.insert(
+                id.into(),
+                Provider::with_id(id.into(), id.into(), settings, None),
+            );
+        }
+        let state = state_from_config(config);
+        state.save().unwrap();
+        ProviderService::sync_current_to_live(&state).unwrap();
+        state.db.set_current_provider(app.as_str(), "p2").unwrap();
+        crate::settings::set_current_provider(&app, Some("p1")).unwrap();
+        failpoint::crash_at(Some("published:0"));
+        let result = ProviderService::switch(&state, app.clone(), "p2");
+        failpoint::crash_at(None);
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("injected crash at published:0"));
+        assert_eq!(
+            crate::settings::get_current_provider(&app).as_deref(),
+            Some("p1")
+        );
+        assert_eq!(
+            settle(&state.db, app.as_str()).unwrap(),
+            Some(RecoveryOutcome::RolledForward)
+        );
+        assert_eq!(
+            state
+                .db
+                .get_current_provider(app.as_str())
+                .unwrap()
+                .as_deref(),
+            Some("p2")
+        );
+        assert_eq!(
+            crate::settings::get_current_provider(&app).as_deref(),
+            Some("p2")
+        );
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn key_field_gemini_removing_entire_config_does_not_restore_old_model() {
+    for config_value in [None, Some(json!(null)), Some(json!({}))] {
+        let home = TempDir::new().unwrap();
+        let _env = TestEnvGuard::isolated(home.path());
+        std::fs::create_dir_all(crate::gemini_config::get_gemini_dir()).unwrap();
+        let mut provider = Provider::with_id(
+            "p1".into(),
+            "Gemini".into(),
+            json!({
+                "env":{"GEMINI_API_KEY":"key"},
+                "config":{"model":{"name":"old-model"}}
+            }),
+            None,
+        );
+        let mut config = MultiAppConfig::default();
+        config.ensure_app(&AppType::Gemini);
+        let manager = config.get_manager_mut(&AppType::Gemini).unwrap();
+        manager.current = "p1".into();
+        manager.providers.insert("p1".into(), provider.clone());
+        let state = state_from_config(config);
+        state.save().unwrap();
+        ProviderService::sync_current_to_live(&state).unwrap();
+        state.db.set_app_proxy_preferred_port("gemini", 0).unwrap();
+        state
+            .proxy_service
+            .set_takeover_for_app("gemini", true)
+            .await
+            .unwrap();
+        match config_value {
+            Some(value) => {
+                provider.settings_config["config"] = value;
+            }
+            None => {
+                provider
+                    .settings_config
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("config");
+            }
+        }
+        ProviderService::update(&state, AppType::Gemini, provider).unwrap();
+        state
+            .proxy_service
+            .set_takeover_for_app("gemini", false)
+            .await
+            .unwrap();
+        let settings: Value =
+            read_json_file(&crate::gemini_config::get_gemini_settings_path()).unwrap();
+        assert!(settings.pointer("/model/name").is_none());
+    }
 }

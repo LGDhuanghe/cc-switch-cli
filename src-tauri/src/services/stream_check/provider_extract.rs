@@ -60,6 +60,14 @@ impl StreamCheckService {
                 .and_then(|model| model.get("id").and_then(|value| value.as_str()))
                 .map(str::to_string)
                 .unwrap_or_else(|| config.codex_model.clone()),
+            AppType::Pi => provider
+                .settings_config
+                .get("models")
+                .and_then(|value| value.as_array())
+                .and_then(|models| models.first())
+                .and_then(|model| model.get("id").and_then(|value| value.as_str()))
+                .map(str::to_string)
+                .unwrap_or_else(|| config.codex_model.clone()),
         }
     }
 
@@ -207,6 +215,7 @@ impl StreamCheckService {
                 .unwrap_or_default()
                 .trim_end_matches('/')
                 .to_string()),
+            AppType::Pi => crate::pi_config::provider_base_url(&provider.settings_config),
         }
     }
 
@@ -294,6 +303,18 @@ impl StreamCheckService {
                 .ok_or_else(|| {
                     AppError::localized(
                         "provider.openclaw.api_key.missing",
+                        "缺少 API Key",
+                        "API key is missing",
+                    )
+                }),
+            AppType::Pi => provider
+                .settings_config
+                .get("apiKey")
+                .and_then(|value| value.as_str())
+                .map(|key| AuthInfo::new(key.to_string(), AuthStrategy::Bearer))
+                .ok_or_else(|| {
+                    AppError::localized(
+                        "provider.pi.api_key.missing",
                         "缺少 API Key",
                         "API key is missing",
                     )
@@ -444,6 +465,10 @@ impl StreamCheckService {
     }
 
     pub(crate) fn build_client_for_provider(provider: &Provider) -> Result<Client, AppError> {
+        if crate::proxy::http_client::is_proxy_enabled() {
+            return Ok(crate::proxy::http_client::get());
+        }
+
         let mut builder = Client::builder().redirect(reqwest::redirect::Policy::limited(5));
 
         if let Some(proxy_config) = provider

@@ -1,6 +1,7 @@
 use super::super::theme;
 use super::super::*;
 use super::frame::{overlay_frame, overlay_frame_at, OverlaySize};
+use crate::cli::tui::app::sync_method_picker_index;
 use crate::cli::tui::form;
 use crate::cli::tui::form::{ClaudeModelRole, HermesModelField, ProviderAddFormState};
 use crate::cli::tui::text_edit::TextInput;
@@ -11,6 +12,73 @@ const OPENCLAW_AGENTS_MODEL_PICKER_MAX_LABEL_WIDTH: usize = 512;
 const SESSION_PROJECT_PICKER_WIDTH: u16 = 86;
 const SESSION_PROJECT_PICKER_HEIGHT: u16 = 24;
 const SESSION_PROJECT_PICKER_WIDE_MIN_WIDTH: u16 = 64;
+
+pub(super) fn render_codex_reasoning_picker_overlay(
+    frame: &mut Frame<'_>,
+    content_area: Rect,
+    theme: &theme::Theme,
+    overlay: &Overlay,
+) {
+    let mut keys = vec![("↑↓", texts::tui_key_select())];
+    let (title, selected, items): (_, _, Vec<ListItem<'_>>) = match overlay {
+        Overlay::CodexReasoningLevelsPicker {
+            selected, checked, ..
+        } => {
+            keys.push(("Space", texts::tui_key_toggle()));
+            let items = form::CODEX_REASONING_LEVELS
+                .iter()
+                .zip(checked)
+                .map(|(level, enabled)| {
+                    let marker = if *enabled {
+                        texts::tui_marker_active()
+                    } else {
+                        texts::tui_marker_inactive()
+                    };
+                    ListItem::new(format!("{marker}  {level}"))
+                })
+                .collect();
+            (texts::tui_codex_reasoning_levels(), *selected, items)
+        }
+        Overlay::CodexDefaultReasoningPicker {
+            selected, options, ..
+        } => {
+            let items = options
+                .iter()
+                .map(|level| {
+                    ListItem::new(if level.is_empty() {
+                        texts::tui_codex_reasoning_auto()
+                    } else {
+                        level.as_str()
+                    })
+                })
+                .collect();
+            (texts::tui_codex_default_reasoning_level(), *selected, items)
+        }
+        _ => return,
+    };
+    keys.extend([
+        ("Enter", texts::tui_key_apply()),
+        ("Esc", texts::tui_key_cancel()),
+    ]);
+    let body_area = overlay_frame(
+        frame,
+        content_area,
+        theme,
+        title,
+        &keys,
+        OverlaySize::FitRows {
+            width: 58,
+            body_rows: items.len() as u16,
+        },
+        overlay_border_style(theme, false),
+    );
+    let mut state = ListState::default();
+    state.select(Some(selected.min(items.len().saturating_sub(1))));
+    let list = List::new(items)
+        .highlight_style(selection_style(theme))
+        .highlight_symbol(highlight_symbol(theme));
+    frame.render_stateful_widget(list, body_area, &mut state);
+}
 
 pub(super) fn render_claude_model_picker_overlay(
     frame: &mut Frame<'_>,
@@ -390,6 +458,97 @@ pub(super) fn render_usage_query_template_picker_overlay(
     frame.render_stateful_widget(list, body_area, &mut state);
 }
 
+const PROVIDER_TEMPLATE_PICKER_WIDTH: u16 = 40;
+
+pub(super) fn render_provider_template_picker_overlay(
+    frame: &mut Frame<'_>,
+    app: &App,
+    content_area: Rect,
+    theme: &theme::Theme,
+    selected: usize,
+) {
+    // Resolve everything before drawing: if the form is gone the handler will
+    // close this overlay on the next key, and painting an empty titled frame
+    // for that one tick just flashes chrome at the user.
+    let Some(FormState::ProviderAdd(provider)) = app.form.as_ref() else {
+        return;
+    };
+    let rows = provider.template_picker_rows();
+    if rows.is_empty() {
+        return;
+    }
+    let current = provider.template_idx;
+
+    let body_area = overlay_frame(
+        frame,
+        content_area,
+        theme,
+        texts::tui_provider_template_picker_title(),
+        &[
+            ("↑↓", texts::tui_key_select()),
+            ("Enter", texts::tui_key_apply()),
+            ("Esc", texts::tui_key_close()),
+        ],
+        OverlaySize::FitRows {
+            width: PROVIDER_TEMPLATE_PICKER_WIDTH,
+            body_rows: rows.len() as u16,
+        },
+        overlay_border_style(theme, false),
+    );
+
+    // A stale flat index must not park the highlight on a section header, so
+    // fall back to the first selectable row rather than display row 0.
+    let selected_row = form::provider_template_row_for_flat_idx(&rows, selected)
+        .or_else(|| rows.iter().position(|row| row.flat_idx().is_some()))
+        .unwrap_or(0);
+    let visible =
+        visible_selection_window(rows.len(), selected_row, body_area.height.max(1) as usize);
+    let visible_start = visible.start;
+    let items = visible
+        .filter_map(|idx| rows.get(idx))
+        .map(|row| match row {
+            form::ProviderTemplateRow::Header(section) => {
+                let title = match section {
+                    form::ProviderTemplateSection::BuiltIn => {
+                        texts::tui_provider_template_section_builtin()
+                    }
+                    form::ProviderTemplateSection::Sponsors => {
+                        texts::tui_provider_template_section_sponsors()
+                    }
+                };
+                ListItem::new(Line::styled(
+                    title.to_string(),
+                    Style::default().fg(theme.dim).add_modifier(Modifier::BOLD),
+                ))
+            }
+            form::ProviderTemplateRow::Item {
+                flat_idx,
+                label,
+                section,
+            } => {
+                let marker = if *flat_idx == current {
+                    texts::tui_marker_active()
+                } else {
+                    texts::tui_marker_inactive()
+                };
+                let style = match section {
+                    form::ProviderTemplateSection::Sponsors => Style::default().fg(theme.warn),
+                    form::ProviderTemplateSection::BuiltIn => Style::default(),
+                };
+                ListItem::new(Line::styled(format!("{marker}  {label}"), style))
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let list = List::new(items)
+        .highlight_style(selection_style(theme))
+        .highlight_symbol(highlight_symbol(theme));
+
+    let mut state = ListState::default();
+    state.select(Some(selected_row.saturating_sub(visible_start)));
+    frame.render_stateful_widget(list, body_area, &mut state);
+}
+
 pub(super) fn render_s3_preset_picker_overlay(
     frame: &mut Frame<'_>,
     app: &App,
@@ -702,6 +861,7 @@ pub(super) fn render_managed_account_action_picker_overlay(
     let actions = [
         texts::tui_key_set_default().to_string(),
         texts::tui_key_delete().to_string(),
+        texts::tui_managed_auth_reauthenticate().to_string(),
     ];
 
     let body = overlay_frame(
@@ -728,7 +888,7 @@ pub(super) fn render_managed_account_action_picker_overlay(
         .highlight_style(selection_style(theme))
         .highlight_symbol(highlight_symbol(theme));
     let mut state = ListState::default();
-    state.select(Some(selected.min(1)));
+    state.select(Some(selected.min(2)));
     frame.render_stateful_widget(list, body, &mut state);
 }
 
@@ -2253,6 +2413,7 @@ pub(super) fn render_visible_apps_picker_overlay(
             crate::app_config::AppType::OpenCode,
             crate::app_config::AppType::Hermes,
             crate::app_config::AppType::OpenClaw,
+            crate::app_config::AppType::Pi,
         ],
     );
 }
@@ -2279,6 +2440,7 @@ pub(super) fn render_skills_apps_picker_overlay(
             crate::app_config::AppType::Gemini,
             crate::app_config::AppType::OpenCode,
             crate::app_config::AppType::Hermes,
+            crate::app_config::AppType::Pi,
         ],
     );
 }
@@ -2373,7 +2535,6 @@ pub(super) fn render_skills_sync_method_picker_overlay(
     selected: usize,
 ) {
     let methods = [
-        crate::services::skill::SyncMethod::Auto,
         crate::services::skill::SyncMethod::Symlink,
         crate::services::skill::SyncMethod::Copy,
     ];
@@ -2384,7 +2545,7 @@ pub(super) fn render_skills_sync_method_picker_overlay(
         theme,
         texts::tui_skills_sync_method_title(),
         &[
-            ("←→", texts::tui_key_select()),
+            ("↑↓", texts::tui_key_select()),
             ("Enter", texts::tui_key_apply()),
             ("Esc", texts::tui_key_cancel()),
         ],
@@ -2395,10 +2556,10 @@ pub(super) fn render_skills_sync_method_picker_overlay(
         overlay_border_style(theme, false),
     );
 
-    let current = data.skills.sync_method;
+    let current = sync_method_picker_index(data.skills.sync_method);
 
-    let items = methods.into_iter().map(|method| {
-        let marker = if method == current {
+    let items = methods.into_iter().enumerate().map(|(index, method)| {
+        let marker = if index == current {
             texts::tui_marker_active()
         } else {
             texts::tui_marker_inactive()
@@ -2413,6 +2574,52 @@ pub(super) fn render_skills_sync_method_picker_overlay(
         .highlight_style(selection_style(theme))
         .highlight_symbol(highlight_symbol(theme));
 
+    let mut state = ListState::default();
+    state.select(Some(selected));
+    frame.render_stateful_widget(list, body_area, &mut state);
+}
+
+pub(super) fn render_skills_storage_location_picker_overlay(
+    frame: &mut Frame<'_>,
+    content_area: Rect,
+    theme: &theme::Theme,
+    selected: usize,
+) {
+    let locations = [
+        crate::services::skill::SkillStorageLocation::CcSwitch,
+        crate::services::skill::SkillStorageLocation::Unified,
+    ];
+    let body_area = overlay_frame(
+        frame,
+        content_area,
+        theme,
+        texts::tui_skills_storage_location_title(),
+        &[
+            ("↑↓", texts::tui_key_select()),
+            ("Enter", texts::tui_key_apply()),
+            ("Esc", texts::tui_key_cancel()),
+        ],
+        OverlaySize::FitRows {
+            width: OVERLAY_FIXED_LG.0,
+            body_rows: locations.len() as u16,
+        },
+        overlay_border_style(theme, false),
+    );
+    let current = crate::settings::get_skill_storage_location();
+    let items = locations.into_iter().map(|location| {
+        let marker = if location == current {
+            texts::tui_marker_active()
+        } else {
+            texts::tui_marker_inactive()
+        };
+        ListItem::new(Line::from(Span::raw(format!(
+            "{marker}  {}",
+            texts::tui_skills_storage_location_name(location)
+        ))))
+    });
+    let list = List::new(items)
+        .highlight_style(selection_style(theme))
+        .highlight_symbol(highlight_symbol(theme));
     let mut state = ListState::default();
     state.select(Some(selected));
     frame.render_stateful_widget(list, body_area, &mut state);

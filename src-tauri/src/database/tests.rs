@@ -261,6 +261,38 @@ fn index_exists(conn: &Connection, index: &str) -> bool {
 }
 
 #[test]
+fn deleted_default_skill_repo_is_not_restored() {
+    let db = Database::memory().expect("create memory db");
+
+    assert_eq!(db.init_default_skill_repos().expect("initialize repos"), 4);
+    for repo in db.get_skill_repos().expect("get initialized repos") {
+        db.delete_skill_repo(&repo.owner, &repo.name)
+            .expect("delete repo");
+    }
+    assert!(db.get_skill_repos().expect("get deleted repos").is_empty());
+
+    assert_eq!(
+        db.init_default_skill_repos().expect("reinitialize repos"),
+        0
+    );
+    assert!(db.get_skill_repos().expect("get repos").is_empty());
+}
+
+#[test]
+fn existing_skill_repo_selection_is_not_supplemented() {
+    let db = Database::memory().expect("create memory db");
+    let default_store = crate::services::skill::SkillStore::default();
+    db.save_skill_repo(&default_store.repos[0])
+        .expect("save existing repo");
+
+    assert_eq!(db.init_default_skill_repos().expect("initialize repos"), 0);
+    assert_eq!(db.get_skill_repos().expect("get repos").len(), 1);
+    assert!(db
+        .get_bool_flag("default_skill_repos_initialized")
+        .expect("get initialized flag"));
+}
+
+#[test]
 fn schema_migration_sets_user_version_when_missing() {
     let conn = Connection::open_in_memory().expect("open memory db");
 
@@ -278,6 +310,136 @@ fn schema_migration_sets_user_version_when_missing() {
     );
 }
 
+// Use upstream DDL independently of the CLI's fresh-table definitions.
+fn seed_upstream_mcp_skills(conn: &Connection, version: i32) {
+    conn.execute_batch("DROP TABLE IF EXISTS mcp_servers; DROP TABLE IF EXISTS skills;")
+        .expect("remove CLI tables");
+    conn.execute_batch(include_str!("fixtures/upstream_v20_mcp_skills.sql"))
+        .expect("create upstream tables");
+    if version < 20 {
+        conn.execute_batch("ALTER TABLE mcp_servers DROP COLUMN enabled_pi;")
+            .expect("restore v19 MCP schema");
+    }
+    if version < 19 {
+        conn.execute_batch(
+            "ALTER TABLE mcp_servers DROP COLUMN enabled_mcode;
+             ALTER TABLE skills DROP COLUMN enabled_mcode;",
+        )
+        .expect("restore v18 schema");
+    }
+    conn.execute_batch(
+        "INSERT INTO mcp_servers (id, name, server_config, enabled_codex)
+         VALUES ('upstream-mcp', 'Upstream MCP', '{}', 1);
+         INSERT INTO skills (id, name, directory, enabled_codex)
+         VALUES ('upstream-skill', 'Upstream Skill', 'upstream-skill', 1);",
+    )
+    .expect("seed upstream records");
+    if version >= 19 {
+        conn.execute_batch(
+            "UPDATE mcp_servers SET enabled_mcode = 1;
+             UPDATE skills SET enabled_mcode = 1;",
+        )
+        .expect("enable MCode");
+    }
+    if version >= 20 {
+        conn.execute_batch("UPDATE mcp_servers SET enabled_pi = 1;")
+            .expect("enable Pi");
+    }
+    Database::set_user_version(conn, version).expect("set upstream version");
+}
+
+fn assert_upstream_mcp_skills(conn: &Connection, original_version: i32) {
+    assert_eq!(Database::get_user_version(conn).unwrap(), SCHEMA_VERSION);
+    for (table, column) in [
+        ("mcp_servers", "enabled_mcode"),
+        ("skills", "enabled_mcode"),
+        ("mcp_servers", "enabled_pi"),
+    ] {
+        let info = get_column_info(conn, table, column);
+        assert_eq!(info.r#type, "BOOLEAN");
+        assert_eq!(info.notnull, 1);
+        assert_eq!(normalize_default(&info.default).as_deref(), Some("0"));
+        let flags: (i64, i64) = conn
+            .query_row(
+                &format!("SELECT enabled_codex, {column} FROM {table}"),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read upstream flags");
+        let introduced = if column == "enabled_pi" { 20 } else { 19 };
+        assert_eq!(flags, (1, i64::from(original_version >= introduced)));
+    }
+}
+
+#[test]
+fn schema_migration_upstream_v18_v19_v20_preserves_data_and_is_idempotent() {
+    for version in [18, 19, 20] {
+        let conn = Connection::open_in_memory().unwrap();
+        seed_upstream_mcp_skills(&conn, version);
+        Database::apply_schema_migrations_on_conn(&conn).expect("migrate upstream schema");
+        assert_upstream_mcp_skills(&conn, version);
+        Database::apply_schema_migrations_on_conn(&conn).expect("repeat migration");
+        assert_upstream_mcp_skills(&conn, version);
+    }
+    // Upstream tolerates absent tables and already-present columns.
+    let conn = Connection::open_in_memory().unwrap();
+    Database::set_user_version(&conn, 18).unwrap();
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate absent tables");
+    seed_upstream_mcp_skills(&conn, 20);
+    Database::set_user_version(&conn, 18).unwrap();
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate existing columns");
+    assert_upstream_mcp_skills(&conn, 20);
+}
+
+#[test]
+fn schema_create_tables_matches_upstream_v20_flags() {
+    let conn = Connection::open_in_memory().unwrap();
+    Database::create_tables_on_conn(&conn).unwrap();
+    for (table, column) in [
+        ("mcp_servers", "enabled_mcode"),
+        ("skills", "enabled_mcode"),
+        ("mcp_servers", "enabled_pi"),
+    ] {
+        let info = get_column_info(&conn, table, column);
+        assert_eq!(info.r#type, "BOOLEAN");
+        assert_eq!(info.notnull, 1);
+        assert_eq!(normalize_default(&info.default).as_deref(), Some("0"));
+    }
+    assert!(!Database::has_column(&conn, "skills", "enabled_pi").unwrap());
+}
+
+#[test]
+fn init_and_sync_import_accept_upstream_v18_v19_v20() {
+    let home = tempfile::tempdir().unwrap();
+    let _env = crate::test_support::TestEnvGuard::isolated(home.path());
+    let config_dir = home.path().join(".cc-switch");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    for version in [18, 19, 20] {
+        let conn = Connection::open(config_dir.join("cc-switch.db")).unwrap();
+        Database::create_tables_on_conn(&conn).unwrap();
+        seed_upstream_mcp_skills(&conn, version);
+        drop(conn);
+        let db = Database::init().expect("open upstream database");
+        assert_upstream_mcp_skills(&db.conn.lock().unwrap(), version);
+        drop(db);
+
+        let remote = Database::memory().unwrap();
+        seed_upstream_mcp_skills(&remote.conn.lock().unwrap(), version);
+        let sql = remote.export_sql_string_for_sync().unwrap();
+        let local = Database::memory().unwrap();
+        local
+            .import_sql_string_for_sync(&sql)
+            .expect("import upstream sync snapshot");
+        assert_upstream_mcp_skills(&local.conn.lock().unwrap(), version);
+        let exported = local.export_sql_string_for_sync().unwrap();
+        let restored = Database::memory().unwrap();
+        restored
+            .import_sql_string_for_sync(&exported)
+            .expect("roundtrip sync snapshot");
+        assert_upstream_mcp_skills(&restored.conn.lock().unwrap(), version);
+    }
+}
+
 #[test]
 fn schema_migration_rejects_future_version() {
     let conn = Connection::open_in_memory().expect("open memory db");
@@ -291,6 +453,7 @@ fn schema_migration_rejects_future_version() {
     assert!(message.contains(&format!("数据库版本: {}", SCHEMA_VERSION + 1)));
     assert!(message.contains(&format!("最高支持数据库版本: {SCHEMA_VERSION}")));
     assert!(message.contains("cc-switch update"));
+    assert!(message.contains("brew upgrade cc-switch-cli"));
 }
 
 #[test]
@@ -317,6 +480,29 @@ fn init_rejects_future_schema_before_creating_tables() {
     assert!(
         !Database::table_exists(&conn, "providers").expect("check providers table"),
         "future schema init should not create tables"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn compatible_global_proxy_read_allows_future_schema() {
+    let _lock = crate::test_support::lock_test_home_and_settings();
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let _guard = ConfigDirEnvGuard::set(temp.path());
+    let db_path = temp.path().join("cc-switch.db");
+    let conn = Connection::open(&db_path).expect("open db");
+    conn.execute_batch(
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         INSERT INTO settings (key, value)
+         VALUES ('global_proxy_url', 'http://127.0.0.1:7890');",
+    )
+    .expect("create compatible setting");
+    Database::set_user_version(&conn, SCHEMA_VERSION + 1).expect("set future version");
+    drop(conn);
+
+    assert_eq!(
+        Database::read_global_proxy_url_from_disk_compatible().expect("read compatible setting"),
+        Some("http://127.0.0.1:7890".to_string())
     );
 }
 
@@ -388,7 +574,7 @@ fn daemon_owned_pidfile_can_initialize_and_run_v16_migration_without_self_deadlo
     let conn = db.conn.lock().expect("lock migrated database");
     assert_eq!(
         Database::get_user_version(&conn).expect("schema version"),
-        16
+        SCHEMA_VERSION
     );
     let stale_rows: i64 = conn
         .query_row(
@@ -462,7 +648,7 @@ fn init_refuses_v16_migration_while_an_external_process_holds_the_database() {
     assert_eq!(
         Database::get_user_version(&migrated.conn.lock().expect("migrated database lock"))
             .expect("migrated schema version"),
-        16
+        SCHEMA_VERSION
     );
 }
 
@@ -907,6 +1093,23 @@ fn schema_create_tables_include_usage_daily_rollups() {
         normalize_default(&skill_enabled_hermes.default).as_deref(),
         Some("0")
     );
+}
+
+#[test]
+fn schema_create_tables_include_session_usage_dedup_ledger() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    Database::create_tables_on_conn(&conn).expect("create tables");
+
+    assert!(Database::table_exists(&conn, "session_usage_dedup").expect("check dedup table"));
+    assert!(index_exists(&conn, "idx_session_usage_dedup_semantic"));
+
+    conn.execute(
+        "INSERT INTO session_usage_dedup
+         (data_source, request_id, semantic_id, has_entry_id)
+         VALUES ('pi_session', 'request', 'semantic', 1)",
+        [],
+    )
+    .expect("insert dedup row");
 }
 
 #[test]
@@ -1967,6 +2170,61 @@ fn schema_migration_v15_resets_only_codex_session_usage() {
 }
 
 #[test]
+fn schema_migration_v16_adds_session_usage_dedup_ledger() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    Database::set_user_version(&conn, 16).expect("set user_version=16");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate v16 to current");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("read migrated version"),
+        SCHEMA_VERSION
+    );
+    assert!(Database::table_exists(&conn, "session_usage_dedup").expect("check dedup table"));
+    assert!(index_exists(&conn, "idx_session_usage_dedup_semantic"));
+}
+
+#[test]
+fn schema_migration_v17_adds_claude_byte_cursor_columns() {
+    let conn = Connection::open_in_memory().expect("open memory db");
+    conn.execute_batch(
+        "CREATE TABLE session_log_sync (
+            file_path TEXT PRIMARY KEY,
+            last_modified INTEGER NOT NULL,
+            last_line_offset INTEGER NOT NULL DEFAULT 0,
+            last_synced_at INTEGER NOT NULL
+         );
+         INSERT INTO session_log_sync VALUES ('/tmp/a.jsonl', 5, 3, 1);",
+    )
+    .expect("seed v17 cursor table");
+    Database::set_user_version(&conn, 17).expect("set user_version=17");
+
+    Database::apply_schema_migrations_on_conn(&conn).expect("migrate v17 to current");
+
+    assert_eq!(
+        Database::get_user_version(&conn).expect("read migrated version"),
+        SCHEMA_VERSION
+    );
+    assert!(
+        Database::has_column(&conn, "session_log_sync", "last_byte_offset")
+            .expect("check byte cursor")
+    );
+    assert!(
+        Database::has_column(&conn, "session_log_sync", "last_tail_fingerprint")
+            .expect("check tail fingerprint")
+    );
+    let cursors: (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT last_byte_offset, last_tail_fingerprint
+             FROM session_log_sync WHERE file_path = '/tmp/a.jsonl'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read migrated cursor");
+    assert_eq!(cursors, (None, None));
+}
+
+#[test]
 fn create_tables_migrates_legacy_global_profile_marker_once() {
     let conn = Connection::open_in_memory().expect("open memory db");
     conn.execute(
@@ -2051,7 +2309,7 @@ fn schema_migration_v9_adds_hermes_columns() {
 }
 
 #[test]
-fn mcp_dao_roundtrip_preserves_unknown_grokbuild_enablement() {
+fn mcp_dao_roundtrip_preserves_upstream_enablement() {
     let db = Database::memory().expect("create memory db");
 
     {
@@ -2060,8 +2318,8 @@ fn mcp_dao_roundtrip_preserves_unknown_grokbuild_enablement() {
             "INSERT INTO mcp_servers (
                 id, name, server_config, tags,
                 enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild,
-                enabled_opencode, enabled_hermes
-            ) VALUES (?1, ?2, ?3, ?4, 0, 0, 0, 1, 0, 1)",
+                enabled_opencode, enabled_hermes, enabled_mcode, enabled_pi
+            ) VALUES (?1, ?2, ?3, ?4, 0, 0, 0, 1, 0, 1, 1, 1)",
             params![
                 "remote-hermes",
                 "Remote Hermes",
@@ -2088,31 +2346,31 @@ fn mcp_dao_roundtrip_preserves_unknown_grokbuild_enablement() {
     server.description = Some("updated".to_string());
     db.save_mcp_server(&server).expect("save mcp server");
 
-    let hidden_enablement: (i64, i64) = {
+    let hidden_enablement: (i64, i64, i64, i64) = {
         let conn = db.conn.lock().expect("lock conn");
         conn.query_row(
-            "SELECT enabled_grokbuild, enabled_hermes FROM mcp_servers WHERE id = 'remote-hermes'",
+            "SELECT enabled_grokbuild, enabled_hermes, enabled_mcode, enabled_pi FROM mcp_servers WHERE id = 'remote-hermes'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .expect("read hidden enablement after save")
     };
     assert_eq!(
         hidden_enablement,
-        (1, 1),
+        (1, 1, 1, 1),
         "save should preserve hidden flags"
     );
 }
 
 #[test]
-fn skill_dao_save_preserves_unknown_grokbuild_enablement() {
+fn skill_dao_save_preserves_upstream_enablement() {
     let db = Database::memory().expect("create memory db");
     {
         let conn = db.conn.lock().expect("lock conn");
         conn.execute(
             "INSERT INTO skills (
-                id, name, directory, enabled_grokbuild, enabled_hermes, installed_at
-             ) VALUES ('remote-skill', 'Remote Skill', 'remote-skill', 1, 1, 42)",
+                id, name, directory, enabled_grokbuild, enabled_hermes, enabled_mcode, installed_at
+             ) VALUES ('remote-skill', 'Remote Skill', 'remote-skill', 1, 1, 1, 42)",
             [],
         )
         .expect("seed grokbuild-enabled Skill");
@@ -2125,18 +2383,18 @@ fn skill_dao_save_preserves_unknown_grokbuild_enablement() {
     skill.description = Some("updated".to_string());
     db.save_skill(&skill).expect("save Skill");
 
-    let hidden_enablement: (i64, i64) = {
+    let hidden_enablement: (i64, i64, i64) = {
         let conn = db.conn.lock().expect("lock conn");
         conn.query_row(
-            "SELECT enabled_grokbuild, enabled_hermes FROM skills WHERE id = 'remote-skill'",
+            "SELECT enabled_grokbuild, enabled_hermes, enabled_mcode FROM skills WHERE id = 'remote-skill'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("read hidden enablement after save")
     };
     assert_eq!(
         hidden_enablement,
-        (1, 1),
+        (1, 1, 1),
         "save should preserve hidden flags"
     );
 }
@@ -3127,14 +3385,77 @@ fn model_pricing_delete_survives_reseed_until_user_upserts() {
 }
 
 #[test]
+fn model_pricing_gpt_6_astra_reseed_preserves_user_changes() {
+    use crate::proxy::usage::calculator::lookup_model_pricing;
+
+    let db = Database::memory().expect("create memory db");
+    // Simulate an existing catalog that predates Astra, without a user deletion marker.
+    db.conn
+        .lock()
+        .unwrap()
+        .execute(
+            "DELETE FROM model_pricing WHERE model_id = 'gpt-6-astra'",
+            [],
+        )
+        .unwrap();
+    assert!(lookup_model_pricing(&db, "gpt-6-astra").is_none());
+    db.ensure_model_pricing_seeded().unwrap();
+    assert_eq!(
+        lookup_model_pricing(&db, "gpt-6-astra")
+            .unwrap()
+            .input_cost_per_million,
+        rust_decimal::Decimal::from(10)
+    );
+
+    let custom =
+        ModelPricingUpdate::new("gpt-6-astra", "Custom Astra", "2", "8", "0.2", "3").unwrap();
+    db.upsert_model_pricing(&custom).unwrap();
+    db.ensure_model_pricing_seeded().unwrap();
+    let row: (String, String, String, String, String) = db
+        .conn
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT display_name, input_cost_per_million, output_cost_per_million,
+                cache_read_cost_per_million, cache_creation_cost_per_million
+         FROM model_pricing WHERE model_id = 'gpt-6-astra'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            custom.display_name,
+            custom.input_cost_per_million,
+            custom.output_cost_per_million,
+            custom.cache_read_cost_per_million,
+            custom.cache_creation_cost_per_million
+        )
+    );
+
+    assert!(db.delete_model_pricing("gpt-6-astra").unwrap());
+    db.ensure_model_pricing_seeded().unwrap();
+    assert!(lookup_model_pricing(&db, "gpt-6-astra").is_none());
+}
+
+#[test]
 fn model_pricing_seeds_gpt_5_6_family_and_aliases() {
     let db = Database::memory().expect("create memory db");
     let conn = db.conn.lock().expect("lock conn");
 
     let expected = [
         ("gpt-5.6-sol", "5", "30", "0.50", "6.25"),
-        ("gpt-5.6-terra", "2.50", "15", "0.25", "3.125"),
-        ("gpt-5.6-luna", "1", "6", "0.10", "1.25"),
+        ("gpt-5.6-terra", "2", "12", "0.20", "2.50"),
+        ("gpt-5.6-luna", "0.20", "1.20", "0.02", "0.25"),
         ("gpt-5.6", "5", "30", "0.50", "6.25"),
         ("gpt-5.6-high", "5", "30", "0.50", "6.25"),
     ];
@@ -3168,17 +3489,32 @@ fn model_pricing_seeds_synced_upstream_catalog() {
     let conn = db.conn.lock().expect("lock conn");
 
     let expected = [
+        ("gpt-6-astra", "10", "50", "1", "12.5"),
         ("claude-fable-5", "10", "50", "1.00", "12.50"),
+        ("claude-opus-4-6", "5", "25", "0.50", "6.25"),
+        ("claude-sonnet-4-6", "3", "15", "0.30", "3.75"),
+        ("gpt-5.6-terra", "2", "12", "0.20", "2.50"),
+        ("gpt-5.6-luna", "0.20", "1.20", "0.02", "0.25"),
+        ("gpt-5.3-codex-spark", "1.75", "14", "0.175", "0"),
+        ("gemini-3.7-flash", "0.75", "3.75", "0.075", "0"),
         ("gemini-3.6-flash", "1.50", "7.50", "0.15", "0"),
+        ("gemini-3.5-flash-lite", "0.30", "2.50", "0.03", "0"),
         ("step-3.7-flash", "0.19", "1.13", "0.04", "0"),
         ("doubao-seed-2-1-pro", "0.84", "4.2", "0.17", "0"),
-        ("deepseek-v4-pro", "0.435", "0.87", "0.003625", "0"),
+        ("deepseek-v4-flash-0731", "0.44", "1.32", "0.014", "0"),
+        ("deepseek-v4-pro", "1.32", "3.96", "0.044", "0"),
+        ("kimi-k2.7-code-highspeed", "1.90", "8.00", "0.38", "0"),
         ("kimi-k3", "3.00", "15.00", "0.30", "0"),
         ("minimax-m3", "0.30", "1.20", "0.06", "0"),
         ("glm-5.2", "1.4", "4.4", "0.26", "0"),
+        ("glm-5-turbo", "1.2", "4", "0.24", "0"),
+        ("glm-5v-turbo", "1.2", "4", "0.24", "0"),
         ("mimo-v2.5-pro", "0.435", "0.87", "0.0036", "0"),
+        ("qwen3.8-max", "2", "6", "0.25", "2.50"),
         ("qwen3.7-plus", "0.40", "1.60", "0.08", "0"),
-        ("grok-4.5", "2", "6", "0.50", "0"),
+        ("qwen3.6-flash", "0.1875", "1.125", "0.0375", "0"),
+        ("grok-4.6", "2", "6", "0.50", "0"),
+        ("grok-4.5", "2", "6", "0.30", "0"),
         ("mistral-small-4", "0.10", "0.30", "0.01", "0"),
     ];
 
@@ -3235,6 +3571,27 @@ fn model_pricing_repairs_synced_values_without_overwriting_custom_prices() {
             [],
         )
         .expect("set custom Qwen pricing");
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '1.68',
+                 output_cost_per_million = '3.36',
+                 cache_read_cost_per_million = '0.14'
+             WHERE model_id = 'deepseek-v4-pro'",
+            [],
+        )
+        .expect("restore historical DeepSeek V4 Pro pricing");
+        conn.execute(
+            "UPDATE model_pricing SET cache_read_cost_per_million = '0.50'
+             WHERE model_id = 'grok-4.5'",
+            [],
+        )
+        .expect("restore old Grok 4.5 cached price");
+        conn.execute(
+            "UPDATE model_pricing SET input_cost_per_million = '9'
+             WHERE model_id = 'deepseek-v4-flash-0731'",
+            [],
+        )
+        .expect("set custom DeepSeek alias pricing");
     }
 
     db.ensure_model_pricing_seeded()
@@ -3278,6 +3635,43 @@ fn model_pricing_repairs_synced_values_without_overwriting_custom_prices() {
         ("9".to_string(), "0".to_string()),
         "custom pricing must not be replaced"
     );
+
+    let deepseek: (String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million
+             FROM model_pricing WHERE model_id = 'deepseek-v4-pro'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("query repaired DeepSeek pricing");
+    assert_eq!(
+        deepseek,
+        ("1.32".to_string(), "3.96".to_string(), "0.044".to_string())
+    );
+
+    let grok_cache_read: String = conn
+        .query_row(
+            "SELECT cache_read_cost_per_million FROM model_pricing
+             WHERE model_id = 'grok-4.5'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query repaired Grok 4.5 pricing");
+    assert_eq!(grok_cache_read, "0.30");
+
+    let custom_deepseek: String = conn
+        .query_row(
+            "SELECT input_cost_per_million FROM model_pricing
+             WHERE model_id = 'deepseek-v4-flash-0731'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query custom DeepSeek alias pricing");
+    assert_eq!(
+        custom_deepseek, "9",
+        "custom alias pricing must be preserved"
+    );
 }
 
 #[test]
@@ -3293,11 +3687,24 @@ fn model_pricing_repairs_only_untouched_upstream_gpt_5_6_seeds() {
         .expect("restore upstream zero cache-write seed");
         conn.execute(
             "UPDATE model_pricing
-             SET input_cost_per_million = '9', cache_creation_cost_per_million = '0'
+             SET input_cost_per_million = '2.50',
+                 output_cost_per_million = '15',
+                 cache_read_cost_per_million = '0.25',
+                 cache_creation_cost_per_million = '0'
              WHERE model_id = 'gpt-5.6-terra'",
             [],
         )
-        .expect("set custom Terra pricing");
+        .expect("restore pre-v3.20 Terra pricing");
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '1',
+                 output_cost_per_million = '6',
+                 cache_read_cost_per_million = '0.10',
+                 cache_creation_cost_per_million = '1.25'
+             WHERE model_id = 'gpt-5.6-luna'",
+            [],
+        )
+        .expect("restore pre-v3.20 Luna pricing");
     }
 
     db.ensure_model_pricing_seeded()
@@ -3314,6 +3721,59 @@ fn model_pricing_repairs_only_untouched_upstream_gpt_5_6_seeds() {
         .expect("query repaired Sol pricing");
     assert_eq!(sol_cache_write, "6.25");
 
+    let terra: (String, String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = 'gpt-5.6-terra'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query repaired Terra pricing");
+    assert_eq!(
+        terra,
+        (
+            "2".to_string(),
+            "12".to_string(),
+            "0.20".to_string(),
+            "2.50".to_string()
+        )
+    );
+    let luna: (String, String, String, String) = conn
+        .query_row(
+            "SELECT input_cost_per_million, output_cost_per_million,
+                    cache_read_cost_per_million, cache_creation_cost_per_million
+             FROM model_pricing WHERE model_id = 'gpt-5.6-luna'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("query repaired Luna pricing");
+    assert_eq!(
+        luna,
+        (
+            "0.20".to_string(),
+            "1.20".to_string(),
+            "0.02".to_string(),
+            "0.25".to_string()
+        )
+    );
+    drop(conn);
+
+    let custom_db = Database::memory().expect("create custom-price db");
+    {
+        let conn = custom_db.conn.lock().expect("lock custom conn");
+        conn.execute(
+            "UPDATE model_pricing
+             SET input_cost_per_million = '9', cache_creation_cost_per_million = '0'
+             WHERE model_id = 'gpt-5.6-terra'",
+            [],
+        )
+        .expect("set custom Terra pricing");
+    }
+    custom_db
+        .ensure_model_pricing_seeded()
+        .expect("repair catalog with custom Terra price");
+    let conn = custom_db.conn.lock().expect("lock custom conn");
     let terra_custom: (String, String) = conn
         .query_row(
             "SELECT input_cost_per_million, cache_creation_cost_per_million
@@ -3514,4 +3974,52 @@ fn bulk_import_guard_restores_prior_synchronous() {
 
     // Drop 后恢复到进入前的原值 OFF(0)，而非硬编码 FULL(2)。
     assert_eq!(read_sync(&db), 0, "Drop 后应恢复原值 OFF(0)");
+}
+
+#[test]
+#[cfg(unix)]
+fn init_and_backup_work_under_symlinked_home_parent() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let temp = tempfile::tempdir().unwrap();
+    let homes = temp.path().join("volume/homes");
+    let home = homes.join("user");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::set_permissions(&homes, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o750)).unwrap();
+    let alias = temp.path().join("homes");
+    symlink(&homes, &alias).unwrap();
+    let config = alias.join("user/.cc-switch");
+    let _env = crate::test_support::TestEnvGuard::isolated(&alias.join("user"));
+    std::env::remove_var("CC_SWITCH_CONFIG_DIR");
+    assert_eq!(crate::config::get_app_config_dir(), config);
+
+    let db = Database::init().expect("initialize through a NAS home alias");
+    db.set_setting("symlink_home_test", "preserved").unwrap();
+    crate::config::write_json_file(&config.join("settings.json"), &json!({"test": true})).unwrap();
+    let backup = db.backup_database_file().unwrap().expect("backup file");
+    assert!(backup.is_file());
+    assert!(home.join(".cc-switch/cc-switch.db").is_file());
+    assert_eq!(
+        crate::config::read_json_file::<serde_json::Value>(&config.join("settings.json")).unwrap(),
+        json!({"test": true})
+    );
+    drop(db);
+    let _config_override = ConfigDirEnvGuard::set(&config);
+    let reopened = Database::init().expect("reopen existing database through alias");
+    assert_eq!(
+        reopened
+            .get_setting("symlink_home_test")
+            .unwrap()
+            .as_deref(),
+        Some("preserved")
+    );
+    assert_eq!(
+        std::fs::metadata(&homes).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+    assert_eq!(
+        std::fs::metadata(&home).unwrap().permissions().mode() & 0o777,
+        0o750
+    );
 }

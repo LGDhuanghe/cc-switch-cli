@@ -46,6 +46,10 @@ pub(crate) use provider_state::resolve_provider_id_for_submit;
 pub(crate) use provider_state::{
     detect_balance_provider_for_usage_query, detect_coding_plan_provider_for_usage_query,
 };
+pub(crate) use provider_templates::{
+    provider_template_first_flat_idx, provider_template_row_for_flat_idx,
+    provider_template_step_flat_idx, ProviderTemplateRow, ProviderTemplateSection,
+};
 pub(crate) use s3::{S3Preset, S3SyncField, S3SyncFormState};
 pub(crate) use webdav::{WebDavSyncField, WebDavSyncFormState};
 
@@ -246,6 +250,10 @@ impl FormMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderAddField {
+    /// Add-mode only pseudo-field: Enter opens the provider template picker.
+    /// It leads the field list so the very first Enter still picks a template.
+    Template,
+    TemplateDivider,
     Id,
     Name,
     WebsiteUrl,
@@ -255,6 +263,7 @@ pub enum ProviderAddField {
     ClaudeApiKey,
     ClaudeModelConfig,
     ClaudeFallbackModel,
+    ClaudeFallbackOneM,
     ClaudeAdvancedDivider,
     ClaudeQuickConfig,
     ClaudeHideAttribution,
@@ -383,23 +392,41 @@ pub enum CodexModelCatalogField {
     Model,
     DisplayName,
     ContextWindow,
+    ReasoningLevels,
+    DefaultReasoningLevel,
 }
 
 impl CodexModelCatalogField {
-    pub const ALL: [Self; 3] = [Self::Model, Self::DisplayName, Self::ContextWindow];
+    pub const ALL: [Self; 5] = [
+        Self::Model,
+        Self::DisplayName,
+        Self::ContextWindow,
+        Self::ReasoningLevels,
+        Self::DefaultReasoningLevel,
+    ];
 
     pub fn index(self) -> usize {
         match self {
             Self::Model => 0,
             Self::DisplayName => 1,
             Self::ContextWindow => 2,
+            Self::ReasoningLevels => 3,
+            Self::DefaultReasoningLevel => 4,
         }
     }
 
     pub fn from_index(index: usize) -> Self {
-        Self::ALL.get(index).copied().unwrap_or(Self::ContextWindow)
+        Self::ALL
+            .get(index)
+            .copied()
+            .unwrap_or(Self::DefaultReasoningLevel)
     }
 }
+
+// Keep the picker order aligned with upstream CodexFormFields.tsx.
+pub const CODEX_REASONING_LEVELS: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexModelCatalogRow {
@@ -411,6 +438,8 @@ pub struct CodexModelCatalogRow {
     pub supports_parallel_tool_calls: Option<bool>,
     pub input_modalities: Vec<String>,
     pub base_instructions: String,
+    pub reasoning_levels: Vec<String>,
+    pub default_reasoning_level: String,
 }
 
 pub(crate) fn parse_codex_model_catalog_context_window(raw: &str) -> Option<u64> {
@@ -545,6 +574,7 @@ pub struct ProviderAddFormState {
     pub claude_base_url: TextInput,
     pub claude_api_format: ClaudeApiFormat,
     pub claude_model: TextInput,
+    pub claude_fallback_one_m: bool,
     pub claude_haiku_model: TextInput,
     pub claude_sonnet_model: TextInput,
     pub claude_opus_model: TextInput,
@@ -630,6 +660,7 @@ pub struct ProviderAddFormState {
     pub hermes_model_input: TextInput,
     pub hermes_rate_limit_delay: TextInput,
     initial_snapshot: Value,
+    initial_pi_settings_config: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::Value;
 
 fn model_fetch_model_index(
     models_len: usize,
@@ -77,6 +78,71 @@ fn session_project_option_index(
 }
 
 impl App {
+    fn handle_codex_reasoning_picker_key(&mut self, key: KeyEvent) -> Option<Action> {
+        let (selected, count) = match &mut self.overlay {
+            Overlay::CodexReasoningLevelsPicker {
+                selected, checked, ..
+            } => (selected, checked.len()),
+            Overlay::CodexDefaultReasoningPicker {
+                selected, options, ..
+            } => (selected, options.len()),
+            _ => return None,
+        };
+        match key.code {
+            KeyCode::Up => *selected = selected.saturating_sub(1),
+            KeyCode::Down => *selected = (*selected + 1).min(count.saturating_sub(1)),
+            KeyCode::Char(' ') => {
+                if let Overlay::CodexReasoningLevelsPicker {
+                    selected, checked, ..
+                } = &mut self.overlay
+                {
+                    if let Some(enabled) = checked.get_mut(*selected) {
+                        *enabled = !*enabled;
+                    }
+                }
+            }
+            KeyCode::Esc => self.overlay = Overlay::None,
+            KeyCode::Enter => {
+                if let Some(FormState::ProviderAdd(provider)) = self.form.as_mut() {
+                    match &self.overlay {
+                        Overlay::CodexReasoningLevelsPicker { row, checked, .. } => {
+                            if let Some(model) = provider.codex_model_catalog.get_mut(*row) {
+                                model.reasoning_levels = form::CODEX_REASONING_LEVELS
+                                    .iter()
+                                    .zip(checked)
+                                    .filter(|(_, enabled)| **enabled)
+                                    .map(|(level, _)| (*level).to_string())
+                                    .collect();
+                                if !model
+                                    .reasoning_levels
+                                    .contains(&model.default_reasoning_level)
+                                {
+                                    model.default_reasoning_level.clear();
+                                }
+                            }
+                        }
+                        Overlay::CodexDefaultReasoningPicker {
+                            row,
+                            selected,
+                            options,
+                        } => {
+                            if let (Some(model), Some(level)) = (
+                                provider.codex_model_catalog.get_mut(*row),
+                                options.get(*selected),
+                            ) {
+                                model.default_reasoning_level.clone_from(level);
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                self.overlay = Overlay::None;
+            }
+            _ => {}
+        }
+        Some(Action::None)
+    }
+
     pub(super) fn handle_picker_overlay_key(
         &mut self,
         key: KeyEvent,
@@ -85,7 +151,13 @@ impl App {
         if let Some(action) = self.handle_sync_method_picker_key(key, data) {
             return Some(action);
         }
+        if let Some(action) = self.handle_storage_location_picker_key(key, data) {
+            return Some(action);
+        }
         if let Some(action) = self.handle_claude_api_format_picker_key(key, data) {
+            return Some(action);
+        }
+        if let Some(action) = self.handle_codex_reasoning_picker_key(key) {
             return Some(action);
         }
         if let Some(action) = self.handle_user_agent_picker_key(key) {
@@ -95,6 +167,9 @@ impl App {
             return Some(action);
         }
         if let Some(action) = self.handle_usage_query_template_picker_key(key) {
+            return Some(action);
+        }
+        if let Some(action) = self.handle_provider_template_picker_key(key, data) {
             return Some(action);
         }
         if let Some(action) = self.handle_s3_preset_picker_key(key) {
@@ -265,7 +340,7 @@ impl App {
                 Action::None
             }
             KeyCode::Down => {
-                *selected = (*selected + 1).min(4);
+                *selected = (*selected + 1).min(1);
                 Action::None
             }
             KeyCode::Enter => {
@@ -276,6 +351,52 @@ impl App {
                     Action::None
                 } else {
                     Action::SkillsSetSyncMethod { method }
+                }
+            }
+            _ => Action::None,
+        })
+    }
+
+    fn handle_storage_location_picker_key(
+        &mut self,
+        key: KeyEvent,
+        data: &UiData,
+    ) -> Option<Action> {
+        let Overlay::SkillsStorageLocationPicker { selected } = &mut self.overlay else {
+            return None;
+        };
+
+        Some(match key.code {
+            KeyCode::Esc => {
+                self.close_overlay();
+                Action::None
+            }
+            KeyCode::Up => {
+                *selected = selected.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Down => {
+                *selected = (*selected + 1).min(1);
+                Action::None
+            }
+            KeyCode::Enter => {
+                let location = storage_location_for_picker_index(*selected);
+                if location == crate::settings::get_skill_storage_location() {
+                    self.overlay = Overlay::None;
+                    Action::SkillsSetStorageLocation { location }
+                } else if data.skills.installed.is_empty() {
+                    self.overlay = Overlay::None;
+                    Action::SkillsSetStorageLocation { location }
+                } else {
+                    self.overlay = Overlay::Confirm(ConfirmOverlay {
+                        title: texts::tui_confirm_title().to_string(),
+                        message: texts::tui_confirm_skills_storage_location(
+                            location,
+                            data.skills.installed.len(),
+                        ),
+                        action: ConfirmAction::SkillsMigrateStorage { location },
+                    });
+                    Action::None
                 }
             }
             _ => Action::None,
@@ -390,6 +511,74 @@ impl App {
                 provider.set_usage_query_template(template);
                 provider.touch_usage_query();
                 self.overlay = Overlay::None;
+                Action::None
+            }
+            _ => Action::None,
+        })
+    }
+
+    fn handle_provider_template_picker_key(
+        &mut self,
+        key: KeyEvent,
+        data: &UiData,
+    ) -> Option<Action> {
+        let Overlay::ProviderTemplatePicker { selected } = &mut self.overlay else {
+            return None;
+        };
+        let requested = *selected;
+
+        let Some(FormState::ProviderAdd(provider)) = self.form.as_mut() else {
+            self.overlay = Overlay::None;
+            return Some(Action::None);
+        };
+
+        let rows = provider.template_picker_rows();
+        // A stale selection (e.g. an index that no longer maps to a template)
+        // falls back to the first selectable row instead of applying nothing.
+        let current = match form::provider_template_row_for_flat_idx(&rows, requested) {
+            Some(_) => requested,
+            None => match form::provider_template_first_flat_idx(&rows) {
+                Some(first) => {
+                    *selected = first;
+                    first
+                }
+                None => {
+                    self.overlay = Overlay::None;
+                    return Some(Action::None);
+                }
+            },
+        };
+
+        Some(match key.code {
+            KeyCode::Esc => {
+                self.overlay = Overlay::None;
+                Action::None
+            }
+            KeyCode::Up => {
+                if let Some(next) = form::provider_template_step_flat_idx(&rows, current, false) {
+                    *selected = next;
+                }
+                Action::None
+            }
+            KeyCode::Down => {
+                if let Some(next) = form::provider_template_step_flat_idx(&rows, current, true) {
+                    *selected = next;
+                }
+                Action::None
+            }
+            KeyCode::Enter => {
+                let existing_ids = data.existing_provider_ids();
+                provider.apply_template(current, &existing_ids);
+                let refresh_result =
+                    provider.refresh_quick_config_from_common_snippet(&data.config.common_snippet);
+                // Land on the first real field so the user can start typing;
+                // the template row itself stays one Up away.
+                provider.focus = FormFocus::Fields;
+                provider.field_idx = provider.first_field_after_template();
+                self.overlay = Overlay::None;
+                if let Err(err) = refresh_result {
+                    self.push_toast(err, ToastKind::Warning);
+                }
                 Action::None
             }
             _ => Action::None,
@@ -627,7 +816,7 @@ impl App {
             return None;
         };
 
-        *selected = (*selected).min(1);
+        *selected = (*selected).min(2);
 
         Some(match key.code {
             KeyCode::Esc => {
@@ -639,7 +828,7 @@ impl App {
                 Action::None
             }
             KeyCode::Down => {
-                *selected = (*selected + 1).min(1);
+                *selected = (*selected + 1).min(2);
                 Action::None
             }
             KeyCode::Enter => {
@@ -650,9 +839,13 @@ impl App {
                         auth_provider,
                         account_id,
                     },
-                    _ => Action::ManagedAuthRemove {
+                    1 => Action::ManagedAuthRemove {
                         auth_provider,
                         account_id,
+                    },
+                    _ => Action::ManagedAuthStartLogin {
+                        auth_provider,
+                        account_id: Some(account_id),
                     },
                 };
                 self.overlay = Overlay::None;
@@ -880,6 +1073,8 @@ impl App {
                             .then(|| provider.claude_api_key.value.clone()),
                         custom_user_agent: (!provider.custom_user_agent.value.trim().is_empty())
                             .then(|| provider.custom_user_agent.value.clone()),
+                        api_protocol: None,
+                        request_headers: None,
                         codex_oauth,
                         codex_oauth_account_id,
                         field: ProviderAddField::ClaudeModelConfig,
@@ -1020,6 +1215,14 @@ impl App {
                         }
                     } else if field == ProviderAddField::HermesModels {
                         provider.set_selected_hermes_model_id_from_picker(&selected_model);
+                    } else if field == ProviderAddField::OpenClawModels {
+                        if !provider.openclaw_models.iter().any(|model| {
+                            model.get("id").and_then(Value::as_str) == Some(selected_model.as_str())
+                        }) {
+                            provider
+                                .openclaw_models
+                                .push(serde_json::json!({ "id": selected_model }));
+                        }
                     } else if field == ProviderAddField::CodexLocalRouting {
                         provider.upsert_codex_model_catalog_model(&selected_model);
                     } else if let Some(input_field) = provider.input_mut(field) {
@@ -1428,7 +1631,7 @@ impl App {
                 Action::None
             }
             KeyCode::Down => {
-                *selected = (*selected + 1).min(5);
+                *selected = (*selected + 1).min(6);
                 Action::None
             }
             KeyCode::Char(' ') => {
@@ -1497,11 +1700,11 @@ impl App {
                 Action::None
             }
             KeyCode::Down => {
-                *selected = (*selected + 1).min(4);
+                *selected = (*selected + 1).min(5);
                 Action::None
             }
             KeyCode::Char(' ') => {
-                let app_type = app_type_for_picker_index(*selected);
+                let app_type = skill_app_type_for_picker_index(*selected);
                 let enabled = apps.is_enabled_for(&app_type);
                 apps.set_enabled_for(&app_type, !enabled);
                 Action::None

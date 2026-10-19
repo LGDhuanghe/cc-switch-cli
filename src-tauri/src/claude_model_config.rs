@@ -64,16 +64,6 @@ impl ClaudeModelRole {
     pub(crate) const fn supports_one_m(self) -> bool {
         !matches!(self, Self::Haiku)
     }
-
-    pub(crate) const fn takeover_model(self) -> Option<&'static str> {
-        match self {
-            Self::Haiku => Some("claude-haiku-4-5"),
-            Self::Sonnet => Some("claude-sonnet-4-6"),
-            Self::Opus => Some("claude-opus-4-8"),
-            Self::Fable => Some("claude-fable-5"),
-            Self::Subagent => None,
-        }
-    }
 }
 
 pub(crate) const CLAUDE_DEFAULT_MODEL_ENV_KEY: &str = "ANTHROPIC_MODEL";

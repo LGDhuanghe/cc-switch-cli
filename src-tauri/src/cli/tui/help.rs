@@ -50,8 +50,13 @@ impl HelpContent {
 enum HelpTarget {
     Global,
     Sessions,
+    PiSystemPrompts,
+    PiPromptTemplates,
     FailoverQueue,
     PreferredEditor,
+    SkillStorageLocation,
+    SkillSyncMethod,
+    GlobalOutboundProxy,
     CodexOfficialAuthPreservation,
     CodexUnifiedSessionHistory,
     ProviderTemplate,
@@ -103,6 +108,13 @@ fn current_help_target(app: &App) -> HelpTarget {
             Overlay::UsageQueryTemplatePicker { .. } => {
                 provider_usage_query_overlay_target(app, UsageQueryField::Template)
             }
+            Overlay::ProviderTemplatePicker { .. } => HelpTarget::ProviderTemplate,
+            Overlay::CodexReasoningLevelsPicker { .. } => HelpTarget::CodexModelCatalogField {
+                field: CodexModelCatalogField::ReasoningLevels,
+            },
+            Overlay::CodexDefaultReasoningPicker { .. } => HelpTarget::CodexModelCatalogField {
+                field: CodexModelCatalogField::DefaultReasoningLevel,
+            },
             Overlay::ClaudeApiFormatPicker { .. } => {
                 provider_field_overlay_target(app, ProviderAddField::ClaudeApiFormat)
             }
@@ -110,6 +122,8 @@ fn current_help_target(app: &App) -> HelpTarget {
                 provider_local_proxy_overlay_target(app, LocalProxySettingsField::UserAgent)
             }
             Overlay::ExternalEditorPicker { .. } => HelpTarget::PreferredEditor,
+            Overlay::SkillsSyncMethodPicker { .. } => HelpTarget::SkillSyncMethod,
+            Overlay::SkillsStorageLocationPicker { .. } => HelpTarget::SkillStorageLocation,
             Overlay::ClaudeModelPicker { .. } => {
                 provider_field_overlay_target(app, ProviderAddField::ClaudeModelConfig)
             }
@@ -144,13 +158,23 @@ fn current_help_target(app: &App) -> HelpTarget {
         return HelpTarget::Empty;
     }
 
-    if matches!(app.route, super::route::Route::Sessions) {
-        return HelpTarget::Sessions;
+    match app.route {
+        super::route::Route::Sessions => return HelpTarget::Sessions,
+        super::route::Route::PiSystemPrompts => return HelpTarget::PiSystemPrompts,
+        super::route::Route::PiPromptTemplates => return HelpTarget::PiPromptTemplates,
+        _ => {}
+    }
+
+    if matches!(app.route, super::route::Route::SettingsOutboundProxy) {
+        return HelpTarget::GlobalOutboundProxy;
     }
 
     if matches!(app.route, super::route::Route::Settings) && matches!(app.focus, Focus::Content) {
         match SettingsItem::ALL.get(app.settings_idx) {
             Some(SettingsItem::PreferredEditor) => return HelpTarget::PreferredEditor,
+            Some(SettingsItem::SkillsStorageLocation) => return HelpTarget::SkillStorageLocation,
+            Some(SettingsItem::SkillsSyncMethod) => return HelpTarget::SkillSyncMethod,
+            Some(SettingsItem::OutboundProxy) => return HelpTarget::GlobalOutboundProxy,
             Some(SettingsItem::PreserveCodexOfficialAuth) => {
                 return HelpTarget::CodexOfficialAuthPreservation;
             }
@@ -216,11 +240,19 @@ fn current_help_target(app: &App) -> HelpTarget {
 
     if matches!(provider.page, ProviderFormPage::CodexLocalRouting) {
         return match provider.focus {
-            FormFocus::Fields => provider
-                .selected_codex_local_routing_field()
-                .map_or(HelpTarget::Empty, |field| {
-                    HelpTarget::CodexLocalRoutingField { field }
-                }),
+            FormFocus::Fields => {
+                provider
+                    .selected_codex_local_routing_field()
+                    .map_or(HelpTarget::Empty, |field| {
+                        if field == CodexLocalRoutingField::ModelCatalog {
+                            HelpTarget::CodexModelCatalogField {
+                                field: provider.codex_model_catalog_field,
+                            }
+                        } else {
+                            HelpTarget::CodexLocalRoutingField { field }
+                        }
+                    })
+            }
             _ => HelpTarget::Empty,
         };
     }
@@ -283,9 +315,14 @@ fn current_help_target(app: &App) -> HelpTarget {
                 .get(provider.field_idx.min(fields.len().saturating_sub(1)))
                 .copied()
                 .filter(|field| !provider_field_is_divider(*field))
-                .map_or(HelpTarget::Empty, |field| HelpTarget::ProviderField {
-                    app_type: provider.app_type.clone(),
-                    field,
+                .map_or(HelpTarget::Empty, |field| match field {
+                    // The template row is a field now, but it keeps its own
+                    // dedicated help instead of a per-field description.
+                    ProviderAddField::Template => HelpTarget::ProviderTemplate,
+                    field => HelpTarget::ProviderField {
+                        app_type: provider.app_type.clone(),
+                        field,
+                    },
                 })
         }
         FormFocus::JsonPreview => HelpTarget::ProviderPreview {
@@ -310,6 +347,20 @@ fn help_for_target(target: HelpTarget, app: &App, data: &UiData) -> HelpContent 
                 "Sessions always show the current app; results combine Project scope × / Search.\nUse ←/→ to switch between the list and details; h/l are aliases. Use ↑/↓ to move one item and PgUp/PgDn to move by a page. Press p to choose a project; Home/End jumps to either end of the active session list or message history, Shift+←/→ reveals the complete directory, and Shift+Home/End jumps to either path end.\nDetail messages are paged on demand across the complete logical history. To stay responsive, an unusually long individual body is shown as a bounded preview. In details, / filters the current message page only; PgUp/PgDn/Home/End still browse other history pages while the filter is retained.\nFor Claude, Codex, Gemini, and OpenCode, Cost and tokens come from locally available usage rows that remain in proxy_request_logs after effective deduplication and can be deterministically attributed to this session. Hermes uses estimates supplied by its state.db. Cost is a best-effort estimate based on these local records and model pricing; it is not a bill and does not represent every historical charge. \"-\" means there is no attributable usage, the identity is ambiguous, the query is unavailable, or at least one token-bearing row cannot be priced reliably. A Codex root session excludes costs from independent subagent threads.\nDeleted or archived logs, source write failures, malformed rows, unattributable proxy Generated IDs, live rows awaiting a requery, and floating-point summation can all make the estimate differ from actual charges.\nUnknown directory is last and contains only legacy sessions without a project directory; exact projects match the complete lexically normalized directory.",
             ),
         ),
+        HelpTarget::PiSystemPrompts => HelpContent::new(
+            texts::menu_pi_system_prompts(),
+            help_lines(
+                "这里直接管理 Pi agent 目录中的原生系统提示词文件。APPEND_SYSTEM.md 在 Pi 内置系统提示词后追加内容；SYSTEM.md 完全替换内置系统提示词。Enter 查看，e 编辑，d 删除。\n保存会校验打开编辑器时的文件版本；若 Pi 或其他编辑器已改动文件，本次保存会报冲突，不会覆盖外部修改。删除只影响当前选中的文件。",
+                "This page directly manages Pi's native system-prompt files in the agent directory. APPEND_SYSTEM.md appends to Pi's built-in system prompt; SYSTEM.md replaces it completely. Press Enter to view, e to edit, and d to delete.\nSaving checks the file revision captured when the editor opened. If Pi or another editor changed the file, the save reports a conflict instead of overwriting it. Delete affects only the selected file.",
+            ),
+        ),
+        HelpTarget::PiPromptTemplates => HelpContent::new(
+            texts::menu_pi_prompt_templates(),
+            help_lines(
+                "这里管理 Pi agent 目录 prompts/*.md 中的原生斜杠命令模板；文件名就是 /template 名称。a 新建，Enter 查看，e 编辑，r 重命名，d 删除。\n模板名只能使用安全的单个文件名，不能包含路径分隔符或路径穿越。保存和重命名会校验打开时的文件版本；检测到外部修改时会报冲突。",
+                "This page manages Pi's native slash-command templates under prompts/*.md; the filename is the /template name. Press a to create, Enter to view, e to edit, r to rename, and d to delete.\nTemplate names must be safe single filenames without path separators or traversal. Save and rename check the revision captured on open and report a conflict when an external edit is detected.",
+            ),
+        ),
         HelpTarget::FailoverQueue => HelpContent::new(
             crate::t!("Failover Queue", "故障转移队列"),
             help_lines(
@@ -324,6 +375,27 @@ fn help_for_target(target: HelpTarget, app: &App, data: &UiData) -> HelpContent 
                 "cc-switch detects executable common editors only when you open this setting; detection launches nothing and does not affect startup time. Results are choices only: nothing is saved until you explicitly press Enter, and no editor is selected automatically. Valid VISUAL and EDITOR commands also appear in the list.\nCustom commands are executed directly without a shell, with the temporary file path appended as the final argument. Quote paths or arguments that contain spaces; leave custom input empty to clear the selection.\nGUI editors need a wait flag, such as code --wait, or the temporary file could be removed when the launcher exits early. A configured command reports launch failures instead of silently switching editors.",
             ),
         ),
+        HelpTarget::SkillStorageLocation => HelpContent::new(
+            texts::tui_settings_skills_storage_location_label(),
+            help_lines(
+                "选择 CC Switch 管理目录或通用的 ~/.agents/skills 目录作为已管理技能的唯一主存储。切换时只迁移数据库中记录的技能，并刷新已启用应用的链接或副本；不会导入、认领或移动未管理目录。Unified 中存在未管理目录时，云同步会拒绝替换整个目录，请先显式导入或切回 CC Switch 存储。\n如果目标位置已有同名目录（即使内容相同），迁移也会停止并保留当前设置；只有带有本次迁移凭据的中断副本可以自动续跑。应用刷新失败时会保留旧副本；再次选择当前存储位置可重试修复。迁移期间请勿同时运行其他技能安装或更新命令。",
+                "Choose either CC Switch's managed directory or the shared ~/.agents/skills directory as the single source of truth for managed Skills. Switching moves only Skills recorded in the database and refreshes links or copies for enabled apps; unmanaged directories are not imported, claimed, or moved. If Unified contains unmanaged directories, cloud sync refuses to replace the root; import them explicitly or switch back to CC Switch storage first.\nMigration stops and keeps the current setting when the target already has a same-named directory, even with identical content; only an interrupted copy carrying this migration's receipt can resume automatically. If app refresh is partial, the old copy is retained; select the current location again to retry reconciliation. Do not run another Skill install or update command while migration is active.",
+            ),
+        ),
+        HelpTarget::SkillSyncMethod => HelpContent::new(
+            texts::tui_settings_skills_sync_method_label(),
+            help_lines(
+                "选择 Skills 的文件同步策略。软连接节省磁盘空间并支持实时同步；文件复制适用于不支持软连接的环境。Windows 使用软连接时可能需要管理员权限或开启开发者模式。\n此设置只影响之后的 Skills 部署或同步，不会迁移主存储位置，也不会立即重建现有应用目录。如需立即应用，请在 Skills 页面执行同步。",
+                "Choose how to sync Skills files. Symlinks save disk space and enable real-time sync; copying files supports environments where symlinks are unavailable. On Windows, symlinks may require administrator privileges or Developer Mode.\nThis setting affects future Skill deployments or syncs only. It does not move the managed storage location or immediately rebuild existing app directories. Run Sync from the Skills page to apply it now.",
+            ),
+        ),
+        HelpTarget::GlobalOutboundProxy => HelpContent::new(
+            crate::t!("Global Outbound Proxy", "全局出站代理"),
+            help_lines(
+                "为 CC Switch 自身访问外部 API、Skills 下载、WebDAV、更新等请求配置统一代理。开启本地路由时，应用经 CC Switch 转发的请求也使用它；未开启本地路由的外部应用请求不受影响。\n支持 http、https、socks5 和 socks5h。用户名与密码会明文显示，但不会写入日志、错误、daemon 状态或崩溃诊断。\n编辑字段后按 Enter 会校验并保存；代理 URL 留空会清除手动配置并重新使用环境变量。已保存的配置优先于 HTTP_PROXY、HTTPS_PROXY 和 ALL_PROXY。",
+                "Configures one proxy for CC Switch's own outbound requests, including external APIs, Skills downloads, WebDAV, and updates. With local routing enabled, app requests forwarded by CC Switch use it too; direct requests from external apps are unaffected.\nSupported schemes are http, https, socks5, and socks5h. Username and password are shown in plaintext, but are excluded from logs, errors, daemon status, and crash diagnostics.\nPress Enter after editing a field to validate and save it; leaving the proxy URL blank clears the manual configuration and falls back to environment variables. Saved configuration takes precedence over HTTP_PROXY, HTTPS_PROXY, and ALL_PROXY.",
+            ),
+        ),
         HelpTarget::CodexOfficialAuthPreservation => HelpContent::new(
             texts::codex_preserve_official_auth_label(),
             help_lines(
@@ -336,10 +408,10 @@ fn help_for_target(target: HelpTarget, app: &App, data: &UiData) -> HelpContent 
             vec![texts::codex_unified_session_history_description().to_string()],
         ),
         HelpTarget::ProviderTemplate => HelpContent::new(
-            tr("供应商模板", "Provider templates"),
+            texts::tui_provider_template_picker_title(),
             help_lines(
-                "选择一个预设模板后按 Enter 应用。模板会填入供应商常用的地址、模型和元数据。\n如果没有合适模板，保留自定义后直接填写字段。",
-                "Choose a preset and press Enter to apply it. Templates fill common provider URLs, models, and metadata.\nKeep Custom selected when no preset fits.",
+                "模板列表包含全部可选模板：↑/↓ 移动，Enter 应用，Esc 关闭且不改动表单。表单字段里的“模板”行只显示当前选择，在该行按 Enter 即可打开列表。\n列表分为“内置”和“赞助商”两组；赞助商条目由社区赞助，选择前请自行确认服务条款。Codex 的 DeepSeek 属于内置分组。\n应用模板会按模板改写表单，并按模板名称重新生成供应商 ID；选择 Custom 则恢复为空白默认值。手动填写的 ID 一律不保留。其余已填内容有的会被重置（如备注、本地代理设置），有的会被保留（如其他鉴权方式下填过的 API Key、用量查询设置）——切换模板后请逐项检查，不要指望靠它清除密钥。\n如果没有合适模板，保留 Custom 后直接填写字段。",
+                "The list holds every available template: ↑/↓ to move, Enter to apply, Esc to close without changing anything. The Template field row shows only the current selection; press Enter on that row to open this list.\nThe list is grouped into Built-in and Sponsors; sponsor entries are community-sponsored presets, so review their terms yourself. Codex's DeepSeek belongs to the Built-in group.\nApplying a template rewrites the form for that template and regenerates the provider ID from its name; Custom instead restores the blank defaults. An ID you typed by hand never survives. Of everything else you already entered, some is reset (e.g. notes, local proxy settings) and some is kept (e.g. an API key typed under a different auth type, usage-query settings) — recheck the fields after switching, and do not rely on it to clear a secret.\nKeep Custom selected when no preset fits.",
             ),
         ),
         HelpTarget::ProviderField { app_type, field } => provider_field_help(app_type, field),
@@ -682,8 +754,15 @@ fn provider_field_help(app_type: AppType, field: ProviderAddField) -> HelpConten
         ProviderAddField::ClaudeFallbackModel => HelpContent::new(
             texts::tui_label_claude_fallback_model(),
             help_lines(
-                "用于未明确落到具体角色模型（Haiku、Sonnet、Opus 等）的请求。使用第三方/中转端点时建议填写：否则这些请求（含 Haiku 后台子任务）会以原始 Claude 模型名透传给上游，可能因上游无此模型而报错。官方端点可留空。可在模型名末尾追加 [1M] 声明百万上下文支持；此标记不会验证上游能力。",
-                "A fallback for requests that don't clearly map to a specific role model (Haiku, Sonnet, Opus, etc.). Recommended for third-party/relay endpoints—otherwise such requests (including Haiku background subtasks) are forwarded under their original Claude model name and may fail if the upstream doesn't host it. Safe to leave blank for official endpoints. Append [1M] to declare million-token context support; this marker does not verify upstream capability.",
+                "直连时写入 ANTHROPIC_MODEL，是 Claude Code 启动时使用的主模型，会优先于角色模型。角色的 1M 开关不会自动作用于它；请使用下方的默认模型 1M 开关。后台任务另用 Haiku 档。经过本地路由时，它还用于未匹配到具体角色的请求。",
+                "Writes ANTHROPIC_MODEL: in direct mode this is Claude Code's startup model and takes precedence over role models. Role 1M toggles do not enable 1M for it; use Default model 1M below. Background tasks use Haiku separately. With local routing, it also handles requests that don't clearly map to a specific role model.",
+            ),
+        ),
+        ProviderAddField::ClaudeFallbackOneM => HelpContent::new(
+            texts::tui_label_claude_fallback_one_m(),
+            help_lines(
+                "按 Enter 切换默认模型的 1M 声明，将 [1M] 标记写入 ANTHROPIC_MODEL。请先填写模型；此开关独立于角色模型，不验证供应商是否支持百万上下文。修改模型名时保留声明，清空模型后关闭。",
+                "Press Enter to toggle the 1M declaration for ANTHROPIC_MODEL. Enter a model first. This adds [1M] independently of role models and does not verify provider capability. Renaming preserves the declaration; clearing the model disables it.",
             ),
         ),
         ProviderAddField::ClaudeQuickConfig => HelpContent::new(
@@ -824,8 +903,8 @@ fn provider_field_help(app_type: AppType, field: ProviderAddField) -> HelpConten
         ProviderAddField::OpenClawModels => HelpContent::new(
             texts::tui_label_openclaw_models(),
             help_lines(
-                "编辑 OpenClaw 模型列表。这里保存的是该供应商暴露给客户端选择的模型配置。",
-                "Edits OpenClaw model entries. These are the models exposed to the client for this provider.",
+                "编辑 OpenClaw/Pi 模型列表。Pi 表单中可按 f 从原生端点拉取模型。",
+                "Edits OpenClaw/Pi model entries. In a Pi form, press f to fetch from the native endpoint.",
             ),
         ),
         ProviderAddField::OpenCodeModelContextLimit => HelpContent::new(
@@ -870,7 +949,10 @@ fn provider_field_help(app_type: AppType, field: ProviderAddField) -> HelpConten
         | ProviderAddField::CodexAdvancedDivider
         | ProviderAddField::HermesAdvancedDivider
         | ProviderAddField::CommonConfigDivider
-        | ProviderAddField::UsageQueryDivider => HelpContent::empty(),
+        | ProviderAddField::UsageQueryDivider
+        // Routed to `HelpTarget::ProviderTemplate` before reaching here.
+        | ProviderAddField::Template
+        | ProviderAddField::TemplateDivider => HelpContent::empty(),
     }
 }
 
@@ -935,6 +1017,20 @@ fn local_proxy_settings_field_help(field: LocalProxySettingsField) -> HelpConten
 
 fn codex_model_catalog_field_help(field: CodexModelCatalogField) -> HelpContent {
     let mut content = match field {
+        CodexModelCatalogField::ReasoningLevels => HelpContent::new(
+            texts::tui_codex_reasoning_levels(),
+            help_lines(
+                "选择此模型支持的推理档位。Space 勾选，Enter 应用，Esc 取消。全部取消表示沿用目录模板；移除默认档位后，默认值恢复为自动。",
+                "Choose the reasoning levels supported by this model. Space toggles, Enter applies, Esc cancels. Clear all to inherit the catalog template; removing the default level resets the default to Auto.",
+            ),
+        ),
+        CodexModelCatalogField::DefaultReasoningLevel => HelpContent::new(
+            texts::tui_codex_default_reasoning_level(),
+            help_lines(
+                "默认值只能从此模型已选的推理档位中选择。自动表示优先沿用模板默认值；若不在已选档位中，则使用最高的已选档位。",
+                "Choose a default from this model's selected reasoning levels. Auto keeps the template default when supported, otherwise it uses the highest selected level.",
+            ),
+        ),
         CodexModelCatalogField::Model => HelpContent::new(
             tr("模型 ID", "Model ID"),
             help_lines(

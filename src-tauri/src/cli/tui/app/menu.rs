@@ -100,6 +100,8 @@ impl App {
             provider_idx: 0,
             mcp_idx: 0,
             prompt_idx: 0,
+            pi_system_prompt_idx: 0,
+            pi_prompt_template_idx: 0,
             skills_idx: 0,
             skills_discover_idx: 0,
             skills_repo_idx: 0,
@@ -129,6 +131,8 @@ impl App {
             language_idx: 0,
             settings_idx: 0,
             settings_proxy_idx: 0,
+            settings_outbound_proxy_idx: 0,
+            global_outbound_proxy_draft: None,
             settings_managed_accounts_idx: 0,
             managed_auth_status: None,
             managed_auth_loading: false,
@@ -184,6 +188,8 @@ impl App {
             Route::Sessions => NavItem::Sessions,
             Route::Mcp => NavItem::Mcp,
             Route::Prompts => NavItem::Prompts,
+            Route::PiSystemPrompts => NavItem::PiSystemPrompts,
+            Route::PiPromptTemplates => NavItem::PiPromptTemplates,
             Route::HermesMemory => NavItem::HermesMemory,
             Route::Config => NavItem::Config,
             Route::ConfigOpenClawWorkspace | Route::ConfigOpenClawDailyMemory => {
@@ -219,9 +225,10 @@ impl App {
             | Route::SkillsDiscover
             | Route::SkillsRepos
             | Route::SkillDetail { .. } => NavItem::Skills,
-            Route::Settings | Route::SettingsProxy | Route::SettingsManagedAccounts => {
-                NavItem::Settings
-            }
+            Route::Settings
+            | Route::SettingsProxy
+            | Route::SettingsOutboundProxy
+            | Route::SettingsManagedAccounts => NavItem::Settings,
         }
     }
 
@@ -1105,6 +1112,8 @@ impl App {
             Route::Sessions => self.on_sessions_key(key, data),
             Route::Mcp => self.on_mcp_key(key, data),
             Route::Prompts => self.on_prompts_key(key, data),
+            Route::PiSystemPrompts => self.on_pi_system_prompts_key(key, data),
+            Route::PiPromptTemplates => self.on_pi_prompt_templates_key(key, data),
             Route::HermesMemory => self.on_hermes_memory_key(key, data),
             Route::Config => self.on_config_key(key, data),
             Route::ConfigOpenClawWorkspace => self.on_config_openclaw_workspace_key(key, data),
@@ -1121,6 +1130,7 @@ impl App {
             Route::SkillDetail { directory } => self.on_skill_detail_key(key, data, &directory),
             Route::Settings => self.on_settings_key(key, data),
             Route::SettingsProxy => self.on_settings_proxy_key(key, data),
+            Route::SettingsOutboundProxy => self.on_settings_outbound_proxy_key(key, data),
             Route::SettingsManagedAccounts => self.on_settings_managed_accounts_key(key, data),
             Route::Main => match key.code {
                 KeyCode::Char('r') => Action::LocalEnvRefresh,

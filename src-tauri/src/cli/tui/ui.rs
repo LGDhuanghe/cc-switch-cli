@@ -169,6 +169,10 @@ fn render_content(
         Route::Sessions => render_sessions(frame, app, data, content_area, theme),
         Route::Mcp => render_mcp(frame, app, data, content_area, theme),
         Route::Prompts => render_prompts(frame, app, data, content_area, theme),
+        Route::PiSystemPrompts => render_pi_system_prompts(frame, app, data, content_area, theme),
+        Route::PiPromptTemplates => {
+            render_pi_prompt_templates(frame, app, data, content_area, theme)
+        }
         Route::HermesMemory => render_hermes_memory(frame, app, data, content_area, theme),
         Route::Config => render_config(frame, app, data, content_area, theme),
         Route::ConfigOpenClawWorkspace | Route::ConfigOpenClawDailyMemory => {
@@ -196,6 +200,9 @@ fn render_content(
         }
         Route::Settings => render_settings(frame, app, data, content_area, theme),
         Route::SettingsProxy => render_settings_proxy(frame, app, data, content_area, theme),
+        Route::SettingsOutboundProxy => {
+            render_settings_outbound_proxy(frame, app, data, content_area, theme)
+        }
         Route::SettingsManagedAccounts => {
             render_settings_managed_accounts(frame, app, data, content_area, theme)
         }

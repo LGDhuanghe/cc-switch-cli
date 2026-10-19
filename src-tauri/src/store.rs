@@ -13,6 +13,15 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Construct state from an existing database handle.
+    ///
+    /// This mirrors the upstream constructor used by isolated service tests.
+    pub fn new(db: Arc<Database>) -> Self {
+        let config = export_db_to_multi_app_config(&db)
+            .expect("failed to export application state from database");
+        Self::from_parts(db, config).expect("failed to construct application state")
+    }
+
     /// 创建新的应用状态
     pub fn try_new() -> Result<Self, AppError> {
         let app_config_dir = crate::config::get_app_config_dir();
@@ -22,6 +31,9 @@ impl AppState {
 
         if db_path.exists() {
             let db = Arc::new(Database::init()?);
+            // Initialize default repos once per database.
+            let _ = db.init_default_skill_repos();
+            crate::mode::operation::recover_on_startup(&db);
             let mut config = export_db_to_multi_app_config(&db)?;
             migrate_legacy_codex_configs(&db, &mut config);
             crate::services::provider::ProviderService::migrate_common_config_upstream_semantics_if_needed(
@@ -77,7 +89,7 @@ impl AppState {
             archive_legacy_file(&skills_path, "migrated")?;
         }
 
-        // Ensure default repos exist (insert-missing only).
+        // Initialize default repos once per database.
         let _ = db.init_default_skill_repos();
 
         let mut config = export_db_to_multi_app_config(&db)?;
@@ -248,6 +260,14 @@ impl AppState {
             }
             Ok(_) => log::debug!("○ No new OpenClaw providers to import"),
             Err(error) => log::warn!("✗ Failed to import OpenClaw providers: {error}"),
+        }
+
+        match crate::services::provider::ProviderService::import_pi_providers_from_live(self) {
+            Ok(count) if count > 0 => {
+                log::info!("✓ Synchronized {count} Pi provider(s) from models.json");
+            }
+            Ok(_) => log::debug!("○ No Pi providers to synchronize"),
+            Err(error) => log::warn!("✗ Failed to synchronize Pi providers: {error}"),
         }
 
         self.refresh_config_from_db()
@@ -421,6 +441,7 @@ impl AppState {
     }
 
     fn from_parts(db: Arc<Database>, config: MultiAppConfig) -> Result<Self, AppError> {
+        crate::services::global_proxy::initialize_http_client(&db);
         let proxy_service = ProxyService::new(db.clone());
 
         Ok(Self {
@@ -512,6 +533,7 @@ fn export_db_to_multi_app_config(db: &Database) -> Result<MultiAppConfig, AppErr
         AppType::OpenCode,
         AppType::Hermes,
         AppType::OpenClaw,
+        AppType::Pi,
     ] {
         let app_key = app.as_str();
         let providers = db.get_all_providers(app_key)?;
@@ -528,6 +550,7 @@ fn export_db_to_multi_app_config(db: &Database) -> Result<MultiAppConfig, AppErr
             AppType::OpenCode => config.prompts.opencode.prompts = prompts.into_iter().collect(),
             AppType::Hermes => config.prompts.hermes.prompts = prompts.into_iter().collect(),
             AppType::OpenClaw => config.prompts.openclaw.prompts = prompts.into_iter().collect(),
+            AppType::Pi => config.prompts.pi.prompts = prompts.into_iter().collect(),
         }
 
         // common snippet
@@ -739,7 +762,9 @@ fn migrate_legacy_codex_configs(db: &Database, config: &mut MultiAppConfig) {
 #[cfg(test)]
 mod tests {
     use super::AppState;
+    use crate::database::Database;
     use crate::provider::Provider;
+    use crate::services::skill::{SkillService, SkillStore};
     use crate::test_support::TestEnvGuard;
     use serde_json::json;
     use serial_test::serial;
@@ -762,6 +787,32 @@ mod tests {
             serde_json::to_string_pretty(&value).expect("serialize json"),
         )
         .expect("write json file");
+    }
+
+    #[test]
+    #[serial(home_settings)]
+    fn existing_database_records_default_repo_initialization_before_user_deletes_repos() {
+        let temp_home = TempDir::new().expect("create temp home");
+        let _env = TestEnvGuard::isolated(temp_home.path());
+        let repo = SkillStore::default().repos[0].clone();
+
+        {
+            let db = Database::init().expect("create existing database");
+            db.save_skill_repo(&repo).expect("seed existing repo");
+            assert!(!db
+                .get_bool_flag("default_skill_repos_initialized")
+                .expect("read initialization flag"));
+        }
+
+        let state = AppState::try_new().expect("open existing database");
+        assert!(state
+            .db
+            .get_bool_flag("default_skill_repos_initialized")
+            .expect("read initialization flag"));
+        drop(state);
+
+        SkillService::remove_repo(&repo.owner, &repo.name).expect("delete final repo");
+        assert!(SkillService::list_repos().expect("reload repos").is_empty());
     }
 
     #[test]

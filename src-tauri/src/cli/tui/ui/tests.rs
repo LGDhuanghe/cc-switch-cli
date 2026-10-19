@@ -2828,6 +2828,79 @@ fn provider_passive_fields_bound_million_byte_classifiers_and_validation() {
 }
 
 #[test]
+fn codex_model_catalog_reasoning_fields_and_pickers_render_in_both_languages() {
+    let _lock = lock_env();
+    let _no_color = EnvGuard::remove("NO_COLOR");
+    for language in [Language::English, Language::Chinese] {
+        let _lang = use_test_language(language);
+        for inline in [false, true] {
+            let mut form = crate::cli::tui::form::ProviderAddFormState::new(AppType::Codex);
+            form.codex_local_routing_enabled = true;
+            form.upsert_codex_model_catalog_model("test-model");
+            form.codex_model_catalog[0].reasoning_levels = vec!["none".into(), "high".into()];
+            form.codex_model_catalog[0].default_reasoning_level = "high".into();
+            if inline {
+                form.open_codex_local_routing_page();
+            } else {
+                form.open_codex_model_catalog_page();
+            }
+            let mut app = App::new(Some(AppType::Codex));
+            app.route = Route::Providers;
+            app.focus = Focus::Content;
+            app.form = Some(FormState::ProviderAdd(form));
+            let data = minimal_data(&AppType::Codex);
+            for width in [80, 120] {
+                let all = all_text(&render_with_size(&app, &data, width, 30));
+                for label in [
+                    texts::tui_codex_reasoning_levels_header(),
+                    texts::tui_codex_default_reasoning_header(),
+                    "high",
+                ] {
+                    assert!(
+                        all.replace(' ', "").contains(&label.replace(' ', "")),
+                        "missing {label} at {width}: {all}"
+                    );
+                }
+            }
+            app.overlay = Overlay::CodexReasoningLevelsPicker {
+                row: 0,
+                selected: 4,
+                checked: [true, false, false, false, true, false, false, false],
+            };
+            let all = all_text(&render_with_size(&app, &data, 80, 30));
+            for label in [
+                texts::tui_codex_reasoning_levels(),
+                "Space",
+                "none",
+                "minimal",
+                "ultra",
+            ] {
+                assert!(
+                    all.replace(' ', "").contains(&label.replace(' ', "")),
+                    "missing {label}: {all}"
+                );
+            }
+            app.overlay = Overlay::CodexDefaultReasoningPicker {
+                row: 0,
+                selected: 2,
+                options: vec![String::new(), "none".into(), "high".into()],
+            };
+            let all = all_text(&render_with_size(&app, &data, 80, 30));
+            for label in [
+                texts::tui_codex_default_reasoning_level(),
+                texts::tui_codex_reasoning_auto(),
+                "high",
+            ] {
+                assert!(
+                    all.replace(' ', "").contains(&label.replace(' ', "")),
+                    "missing {label}: {all}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn codex_model_catalog_renders_only_the_selected_large_collection_window() {
     let _lock = lock_env();
     let _lang = use_test_language(Language::English);
@@ -2843,6 +2916,8 @@ fn codex_model_catalog_renders_only_the_selected_large_collection_window() {
             supports_parallel_tool_calls: None,
             input_modalities: Vec::new(),
             base_instructions: String::new(),
+            reasoning_levels: Vec::new(),
+            default_reasoning_level: String::new(),
         })
         .collect();
     form.codex_model_catalog[selected].model = format!("SELECTED-CODEX-{}", "X".repeat(1_000_000));
@@ -3561,6 +3636,78 @@ fn settings_local_proxy_row_shows_address_without_enabled_badge() {
 }
 
 #[test]
+fn settings_outbound_proxy_page_shows_plaintext_credentials() {
+    let _lock = lock_env();
+    let _no_color = EnvGuard::remove("NO_COLOR");
+
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::SettingsOutboundProxy;
+    app.focus = Focus::Content;
+    app.global_outbound_proxy_draft = Some(crate::services::GlobalOutboundProxyConfig {
+        url: "http://127.0.0.1:7890".to_string(),
+        username: "alice".to_string(),
+        password: "secret".to_string(),
+    });
+
+    let all = all_text(&render(&app, &minimal_data(&app.app_type)));
+
+    assert!(all.contains("http://127.0.0.1:7890"), "{all}");
+    assert!(all.contains("alice"), "{all}");
+    assert!(all.contains("secret"), "{all}");
+    assert!(!all.contains("t test"), "{all}");
+    assert!(!all.contains("Ctrl+S"), "{all}");
+    assert!(!all.contains(" save"), "{all}");
+    assert!(!all.contains("Test current fields"), "{all}");
+    assert!(!all.contains("Clear fields"), "{all}");
+    assert!(!all.contains("Apply configuration"), "{all}");
+}
+
+#[test]
+fn settings_outbound_proxy_url_editor_places_environment_fallback_on_next_line() {
+    let _lock = lock_env();
+    let _no_color = EnvGuard::remove("NO_COLOR");
+    let _lang = use_test_language(Language::English);
+
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::SettingsOutboundProxy;
+    app.focus = Focus::Content;
+    let data = minimal_data(&app.app_type);
+    assert!(matches!(
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &data),
+        Action::None
+    ));
+
+    let buf = render(&app, &data);
+    let protocol_row = (0..buf.area.height)
+        .find(|&y| line_at(&buf, y).contains("Proxy URL (http, https, socks5, or socks5h)"))
+        .expect("proxy scheme prompt should render");
+    let fallback_row = (0..buf.area.height)
+        .find(|&y| line_at(&buf, y).contains("Leave blank to use environment variables."))
+        .expect("environment fallback hint should render");
+
+    assert_eq!(fallback_row, protocol_row + 1);
+}
+
+#[test]
+fn settings_outbound_proxy_summary_describes_environment_default() {
+    let _lock = lock_env();
+    let _no_color = EnvGuard::remove("NO_COLOR");
+
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::Settings;
+    app.focus = Focus::Content;
+    let mut data = minimal_data(&app.app_type);
+    data.config.global_outbound_proxy = None;
+
+    let all = all_text(&render(&app, &data));
+
+    assert!(
+        all.contains("Uses environment variables by default"),
+        "{all}"
+    );
+}
+
+#[test]
 fn settings_proxy_route_hides_edit_key_when_proxy_is_running() {
     let _lock = lock_env();
     let _no_color = EnvGuard::remove("NO_COLOR");
@@ -3903,10 +4050,12 @@ pub(super) fn minimal_data(_app_type: &AppType) -> UiData {
                 primary_model_id: Some("claude-sonnet-4".to_string()),
                 default_model_id: None,
             }],
+            pi_membership_unknown: false,
             loading: false,
         },
         mcp: McpSnapshot::default(),
         prompts: PromptsSnapshot::default(),
+        pi_prompts: Default::default(),
         config: ConfigSnapshot::default(),
         skills: SkillsSnapshot::default(),
         proxy: ProxySnapshot::default(),
@@ -3925,6 +4074,7 @@ fn managed_auth_status() -> crate::services::ManagedAuthStatus {
         migration_error: None,
         accounts: vec![
             crate::services::ManagedAuthAccount {
+                reauth_required: false,
                 id: "acc-default".to_string(),
                 provider: "codex_oauth".to_string(),
                 login: "default@example.com".to_string(),
@@ -3933,6 +4083,7 @@ fn managed_auth_status() -> crate::services::ManagedAuthStatus {
                 is_default: true,
             },
             crate::services::ManagedAuthAccount {
+                reauth_required: false,
                 id: "acc-alt".to_string(),
                 provider: "codex_oauth".to_string(),
                 login: "alt@example.com".to_string(),
@@ -4005,6 +4156,7 @@ fn installed_skill(directory: &str, name: &str) -> InstalledSkill {
             gemini: false,
             opencode: false,
             hermes: false,
+            pi: false,
         },
         installed_at: 1,
         content_hash: None,
@@ -4012,10 +4164,14 @@ fn installed_skill(directory: &str, name: &str) -> InstalledSkill {
     }
 }
 
+/// The template is a field row inside the Fields table now: it shows only the
+/// current selection (the full list used to overflow the terminal width and
+/// clip silently) and defers the list to the picker overlay.
 #[test]
-fn add_form_template_chips_are_single_row() {
+fn add_form_template_row_shows_only_the_current_selection() {
     let _lock = lock_env();
     let _no_color = EnvGuard::remove("NO_COLOR");
+    let _lang = use_test_language(Language::English);
 
     let mut app = App::new(Some(AppType::Claude));
     app.route = Route::Providers;
@@ -4023,24 +4179,221 @@ fn add_form_template_chips_are_single_row() {
     app.form = Some(crate::cli::tui::form::FormState::ProviderAdd(
         crate::cli::tui::form::ProviderAddFormState::new(AppType::Claude),
     ));
+    let total = match app.form.as_ref() {
+        Some(FormState::ProviderAdd(form)) => form.template_labels().len(),
+        _ => panic!("expected provider form"),
+    };
 
     let data = minimal_data(&app.app_type);
     let buf = render(&app, &data);
 
-    let mut chips_y = None;
-    for y in 0..buf.area.height {
-        let line = line_at(&buf, y);
-        if line.contains("Custom") && line.contains("Claude Official") {
-            chips_y = Some(y);
-            break;
-        }
-    }
-
-    let chips_y = chips_y.expect("template chips row missing from add form");
-    let next = line_at(&buf, chips_y + 1);
+    let row = (0..buf.area.height)
+        .map(|y| line_at(&buf, y))
+        .find(|line| line.contains("Custom"))
+        .expect("template field row missing from add form");
     assert!(
-        next.contains('└'),
-        "expected template block border after chips, got: {next}"
+        row.contains(texts::tui_label_provider_template()),
+        "the row must carry the singular Template label, got: {row}"
+    );
+    assert!(
+        !row.contains(texts::tui_form_templates_title()),
+        "the field row is singular; the plural title belongs to the MCP chips box: {row}"
+    );
+    assert!(row.contains('▾'), "expected picker indicator, got: {row}");
+    assert!(
+        row.contains(&format!("({total})")),
+        "expected total template count, got: {row}"
+    );
+    assert!(
+        !row.contains("Claude Official") && !row.contains("PackyCode"),
+        "non-selected templates must not be rendered inline, got: {row}"
+    );
+
+    // With a sponsor selected the row must agree with the picker and drop the
+    // chip marker rather than showing "* PackyCode".
+    let mut form = crate::cli::tui::form::ProviderAddFormState::new(AppType::Claude);
+    let sponsor_idx = form
+        .template_labels()
+        .iter()
+        .position(|label| *label == "PackyCode")
+        .expect("PackyCode sponsor template");
+    form.template_idx = sponsor_idx;
+    app.form = Some(crate::cli::tui::form::FormState::ProviderAdd(form));
+
+    let buf = render(&app, &data);
+    let row = (0..buf.area.height)
+        .map(|y| line_at(&buf, y))
+        .find(|line| line.contains("PackyCode"))
+        .expect("template row should show the selected sponsor");
+    assert!(
+        !row.contains("* PackyCode"),
+        "the template row must strip the sponsor chip marker, got: {row}"
+    );
+}
+
+/// Edit mode has no template row: templates only make sense when creating.
+#[test]
+fn edit_form_has_no_template_field_row() {
+    let _lock = lock_env();
+    let _no_color = EnvGuard::remove("NO_COLOR");
+    let _lang = use_test_language(Language::English);
+
+    let provider = crate::provider::Provider::with_id(
+        "p1".to_string(),
+        "Provider One".to_string(),
+        json!({}),
+        None,
+    );
+    let form =
+        crate::cli::tui::form::ProviderAddFormState::from_provider(AppType::Claude, &provider);
+    assert!(
+        !form
+            .fields()
+            .contains(&crate::cli::tui::form::ProviderAddField::Template),
+        "edit mode must not expose the template field"
+    );
+
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::Providers;
+    app.focus = Focus::Content;
+    app.form = Some(crate::cli::tui::form::FormState::ProviderAdd(form));
+
+    let data = minimal_data(&app.app_type);
+    let buf = render(&app, &data);
+    let screen = (0..buf.area.height)
+        .map(|y| line_at(&buf, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !screen.contains('▾'),
+        "edit mode must not render the template picker indicator: {screen}"
+    );
+}
+
+#[test]
+fn provider_template_picker_overlay_groups_builtins_and_sponsors() {
+    let _lock = lock_env();
+    let _no_color = EnvGuard::remove("NO_COLOR");
+    let _lang = use_test_language(Language::English);
+
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::Providers;
+    app.focus = Focus::Content;
+    app.form = Some(crate::cli::tui::form::FormState::ProviderAdd(
+        crate::cli::tui::form::ProviderAddFormState::new(AppType::Claude),
+    ));
+    app.overlay = Overlay::ProviderTemplatePicker { selected: 0 };
+
+    let data = minimal_data(&app.app_type);
+    let buf = render(&app, &data);
+    let screen = (0..buf.area.height)
+        .map(|y| line_at(&buf, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(screen.contains("Built-in"), "{screen}");
+    assert!(screen.contains("Sponsors"), "{screen}");
+    assert!(screen.contains("Claude Official"), "{screen}");
+    assert!(screen.contains("PackyCode"), "{screen}");
+    assert!(
+        !screen.contains("* PackyCode"),
+        "sponsor rows drop the chip marker under the Sponsors header: {screen}"
+    );
+}
+
+/// In a short terminal the picker cannot show every row, so the scroll window
+/// must follow the selection instead of pinning row 0.
+#[test]
+fn provider_template_picker_overlay_scrolls_selection_into_view() {
+    let _lock = lock_env();
+    let _no_color = EnvGuard::remove("NO_COLOR");
+    let _lang = use_test_language(Language::English);
+
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::Providers;
+    app.focus = Focus::Content;
+    let form = crate::cli::tui::form::ProviderAddFormState::new(AppType::Claude);
+    let labels = form.template_labels();
+    let last_flat = labels.len() - 1;
+    let last_label = labels[last_flat].to_string();
+    app.form = Some(crate::cli::tui::form::FormState::ProviderAdd(form));
+    app.overlay = Overlay::ProviderTemplatePicker {
+        selected: last_flat,
+    };
+
+    let data = minimal_data(&app.app_type);
+    let buf = render_with_size(&app, &data, 100, 13);
+    let screen = (0..buf.area.height)
+        .map(|y| line_at(&buf, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(
+        screen.contains(&last_label),
+        "last sponsor ({last_label}) must scroll into view in a short terminal: {screen}"
+    );
+    // Proof the viewport is actually constrained: the first row scrolled off.
+    assert!(
+        !screen.contains("Built-in"),
+        "expected the top of the list to scroll away: {screen}"
+    );
+}
+
+/// Narrow widths must keep the label readable: the count hint is dropped
+/// first, then the ▾ indicator, and only then is the label truncated.
+#[test]
+fn add_form_template_row_prefers_the_label_over_decorations_when_narrow() {
+    let _lock = lock_env();
+    let _no_color = EnvGuard::remove("NO_COLOR");
+
+    // 12 labels, so the hint is "  (12)" (6 cols) and the indicator " ▾" (2).
+    let labels = crate::cli::tui::form::ProviderAddFormState::new(AppType::Claude)
+        .template_labels()
+        .len();
+    let hint = format!("({labels})");
+    let label = "Claude Official"; // 15 columns
+    let all_labels = vec![label; labels];
+    let theme = theme_for(&AppType::Claude);
+
+    // `width` is the value column's width.
+    let row_at = |width: u16| -> String {
+        super::template_field_value_spans(&all_labels, 0, true, width, &theme)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    };
+
+    // Everything fits: label + indicator + count.
+    let roomy = row_at(2 + 15 + 2 + 6);
+    assert!(roomy.contains(label), "{roomy}");
+    assert!(roomy.contains('▾'), "{roomy}");
+    assert!(roomy.contains(&hint), "{roomy}");
+
+    // One column short of the count hint: drop the hint, keep label + ▾.
+    let no_count = row_at(2 + 15 + 2 + 5);
+    assert!(
+        no_count.contains(label),
+        "the full label must survive before decorations: {no_count}"
+    );
+    assert!(no_count.contains('▾'), "{no_count}");
+    assert!(!no_count.contains(&hint), "{no_count}");
+
+    // One column short of the indicator: drop it too, keep the full label.
+    let label_only = row_at(2 + 15 + 1);
+    assert!(
+        label_only.contains(label),
+        "the full label must survive before decorations: {label_only}"
+    );
+    assert!(!label_only.contains('▾'), "{label_only}");
+    assert!(!label_only.contains(&hint), "{label_only}");
+
+    // Genuinely too narrow: the label truncates, but with the decorations
+    // already gone it still shows a meaningful prefix rather than 1-3 columns.
+    let tight = row_at(2 + 10);
+    assert!(!tight.contains('▾'), "{tight}");
+    assert!(
+        tight.contains("Claude"),
+        "a meaningful label prefix must remain: {tight}"
     );
 }
 
@@ -4302,6 +4655,7 @@ fn header_only_renders_selected_visible_apps() {
         opencode: false,
         hermes: false,
         openclaw: true,
+        pi: false,
     })
     .expect("save visible apps");
 
@@ -4331,6 +4685,7 @@ fn header_keeps_all_app_tabs_visible_with_proxy_chip() {
         opencode: true,
         hermes: false,
         openclaw: true,
+        pi: false,
     })
     .expect("save visible apps");
 
@@ -4360,6 +4715,7 @@ fn settings_page_shows_visible_apps_row_value() {
         opencode: false,
         hermes: false,
         openclaw: true,
+        pi: false,
     })
     .expect("save visible apps");
 
@@ -4689,6 +5045,11 @@ fn settings_page_groups_items_with_unlabeled_dividers() {
     let managed_accounts = line_index(&content, texts::tui_settings_managed_accounts_title());
     let editor = line_index(&content, texts::tui_settings_preferred_editor_label());
     let visible_apps = line_index(&content, texts::tui_settings_visible_apps_mode_label());
+    let skill_storage = line_index(
+        &content,
+        texts::tui_settings_skills_storage_location_label(),
+    );
+    let skill_sync = line_index(&content, texts::tui_settings_skills_sync_method_label());
     let openclaw_dir = line_index(&content, texts::tui_settings_openclaw_config_dir_label());
     let claude_integration = line_index(&content, texts::enable_claude_plugin_integration_label());
     let codex_login = line_index(&content, texts::codex_preserve_official_auth_label());
@@ -4701,7 +5062,11 @@ fn settings_page_groups_items_with_unlabeled_dividers() {
         "{content}"
     );
     assert!(
-        dividers[0] < visible_apps && openclaw_dir < dividers[1],
+        dividers[0] < visible_apps
+            && visible_apps < skill_storage
+            && skill_storage < skill_sync
+            && skill_sync < openclaw_dir
+            && openclaw_dir < dividers[1],
         "{content}"
     );
     assert!(
@@ -4722,6 +5087,30 @@ fn settings_page_groups_items_with_unlabeled_dividers() {
     for label in ["General", "Applications", "Integrations", "System"] {
         assert!(!content.contains(label), "unexpected {label}:\n{content}");
     }
+}
+
+#[test]
+fn settings_skill_sync_method_matches_upstream_labels_and_choices() {
+    let _lock = lock_env();
+    let _lang = use_test_language(Language::English);
+    let _no_color = EnvGuard::remove("NO_COLOR");
+
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::Settings;
+    app.focus = Focus::Content;
+
+    let mut data = minimal_data(&app.app_type);
+    data.skills.sync_method = SyncMethod::Auto;
+    let buf = render_with_size(&app, &data, 100, 32);
+    let content = content_text(&app, &buf);
+    assert!(content.contains("Skill Sync Method"), "{content}");
+    assert!(content.contains("Symlink"), "{content}");
+
+    app.overlay = Overlay::SkillsSyncMethodPicker { selected: 0 };
+    let overlay = all_text(&render_with_size(&app, &data, 100, 32));
+    assert!(overlay.contains("Symlink"), "{overlay}");
+    assert!(overlay.contains("Copy Files"), "{overlay}");
+    assert!(!overlay.contains("Automatic"), "{overlay}");
 }
 
 #[test]
@@ -5000,6 +5389,7 @@ fn zero_selection_warning_toast_renders_after_picker_rejection() {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         },
     };
     app.push_toast(
@@ -5015,6 +5405,7 @@ fn zero_selection_warning_toast_renders_after_picker_rejection() {
     );
     assert!(all.contains(AppType::Hermes.as_str()), "{all}");
     assert!(all.contains(AppType::OpenClaw.as_str()), "{all}");
+    assert!(all.contains(AppType::Pi.as_str()), "{all}");
     assert!(
         all.contains(texts::tui_toast_visible_apps_zero_selection_warning()),
         "{all}"
@@ -5038,6 +5429,7 @@ fn visible_apps_picker_uses_space_toggle_key() {
             opencode: false,
             hermes: false,
             openclaw: false,
+            pi: false,
         },
     };
 
@@ -5069,6 +5461,7 @@ fn visible_apps_picker_auto_mode_does_not_append_auto_suffix_to_apps() {
             opencode: true,
             hermes: true,
             openclaw: true,
+            pi: false,
         },
     };
 
@@ -5226,6 +5619,7 @@ fn header_centers_tabs_when_room_allows() {
         opencode: true,
         hermes: true,
         openclaw: true,
+        pi: false,
     })
     .expect("save visible apps");
 
@@ -5271,6 +5665,7 @@ fn header_keeps_title_and_right_badges_visible_without_large_gap_in_chinese() {
         opencode: true,
         hermes: true,
         openclaw: true,
+        pi: false,
     })
     .expect("save visible apps");
 
@@ -5789,6 +6184,7 @@ fn home_connection_card_labels_mcp_and_skills_with_active_counts() {
                 gemini: false,
                 opencode: false,
                 hermes: false,
+                pi: false,
             },
             installed_at: 0,
             content_hash: None,
@@ -6709,13 +7105,14 @@ fn skills_page_renders_sync_method_and_installed_rows() {
     let buf = render(&app, &data);
     let all = all_text(&buf);
 
-    assert!(all.contains(&texts::tui_skills_installed_counts(1, 0, 0, 0, 0)));
+    assert!(all.contains(&texts::tui_skills_installed_counts(1, 0, 0, 0, 0, 0)));
     assert!(!all.contains(texts::tui_header_directory()));
     assert!(all.contains(AppType::Claude.as_str()));
     assert!(all.contains(AppType::Codex.as_str()));
     assert!(all.contains(AppType::Gemini.as_str()));
     assert!(all.contains(AppType::OpenCode.as_str()));
     assert!(all.contains(AppType::Hermes.as_str()));
+    assert!(all.contains(AppType::Pi.as_str()));
     assert!(!all.contains("hello-skill"));
     assert!(all.contains("Hello Skill"));
 }
@@ -6768,7 +7165,7 @@ fn skills_page_empty_state_keeps_summary_and_shows_guidance() {
 
     // The summary bar stays; the blank table body is replaced with the
     // shared empty-state guidance (same style as MCP/Prompts/Providers).
-    assert!(all.contains(&texts::tui_skills_installed_counts(0, 0, 0, 0, 0)));
+    assert!(all.contains(&texts::tui_skills_installed_counts(0, 0, 0, 0, 0, 0)));
     assert!(all.contains(texts::tui_skills_empty_title()));
     assert!(all.contains(texts::tui_skills_empty_subtitle()));
 }
@@ -6828,6 +7225,7 @@ fn skills_page_shows_opencode_summary() {
         gemini: false,
         opencode: true,
         hermes: false,
+        pi: false,
     };
     data.skills.installed = vec![skill];
 
@@ -6854,6 +7252,7 @@ fn skills_page_shows_hermes_column_and_summary() {
         gemini: false,
         opencode: false,
         hermes: true,
+        pi: false,
     };
     data.skills.installed = vec![skill];
 
@@ -6883,6 +7282,7 @@ fn skill_detail_page_shows_opencode_enabled_state() {
         gemini: false,
         opencode: true,
         hermes: false,
+        pi: false,
     };
     data.skills.installed = vec![skill];
 
@@ -6913,6 +7313,7 @@ fn skill_detail_page_shows_hermes_enabled_state() {
         gemini: false,
         opencode: false,
         hermes: true,
+        pi: false,
     };
     data.skills.installed = vec![skill];
 
@@ -12370,6 +12771,20 @@ fn provider_form_model_field_hints_enter_edit_and_f_fetch() {
 }
 
 #[test]
+fn provider_template_field_key_bar_advertises_select() {
+    let _lang = use_test_language(Language::English);
+    let keys =
+        super::add_form_key_items(FormFocus::Fields, false, Some(ProviderAddField::Template));
+    assert_eq!(
+        keys.iter()
+            .find(|(key, _label)| *key == "Enter")
+            .map(|(_key, label)| *label),
+        Some(texts::tui_key_select()),
+        "{keys:?}"
+    );
+}
+
+#[test]
 fn provider_base_url_key_bar_advertises_full_url_shortcut() {
     for field in [
         ProviderAddField::ClaudeBaseUrl,
@@ -12794,6 +13209,28 @@ fn opencode_provider_list_marks_rows_in_config_without_current_marker() {
     let mut data = minimal_data(&app.app_type);
     data.providers.rows[0].is_in_config = true;
     data.providers.rows[0].is_current = false;
+
+    let buf = render(&app, &data);
+    let provider_line = (0..buf.area.height)
+        .map(|y| line_at(&buf, y))
+        .find(|line| line.contains("Demo Provider"))
+        .expect("provider row rendered");
+
+    assert!(provider_line.contains("+"), "{provider_line}");
+    assert!(!provider_line.contains("*"), "{provider_line}");
+}
+
+#[test]
+fn pi_provider_list_shows_membership_without_exposing_global_default() {
+    let _lock = lock_env();
+    let _no_color = EnvGuard::remove("NO_COLOR");
+
+    let mut app = App::new(Some(AppType::Pi));
+    app.route = Route::Providers;
+    app.focus = Focus::Content;
+    let mut data = minimal_data(&app.app_type);
+    data.providers.rows[0].is_in_config = true;
+    data.providers.rows[0].is_default_model = true;
 
     let buf = render(&app, &data);
     let provider_line = (0..buf.area.height)
@@ -14539,4 +14976,47 @@ fn home_usage_card_rail_falls_back_to_the_glyph_when_the_label_will_not_fit() {
     let wide_row = row_of(&wide, &usage_card_title()).expect("usage card title row");
     let wide_rail = line_at(&wide, wide_row);
     assert!(wide_rail.contains("⠸ Refreshing"), "{wide_rail}");
+}
+
+#[test]
+fn claude_fallback_one_m_uses_standard_toggle_row_and_key_hint() {
+    let _lock = lock_env();
+    let _lang = use_test_language(Language::English);
+    let _no_color = EnvGuard::remove("NO_COLOR");
+    let mut app = App::new(Some(AppType::Claude));
+    app.route = Route::Providers;
+    app.focus = Focus::Content;
+    let mut form = crate::cli::tui::form::ProviderAddFormState::new(AppType::Claude);
+    form.set_claude_fallback_model_from_config("deepseek-flash[1m]");
+    form.focus = FormFocus::Fields;
+    form.field_idx = form
+        .fields()
+        .iter()
+        .position(|field| *field == ProviderAddField::ClaudeFallbackOneM)
+        .unwrap();
+    let (label, value) =
+        super::forms::provider_field_label_and_value(&form, ProviderAddField::ClaudeFallbackOneM);
+    assert_eq!(label, "Default model 1M");
+    let keys = super::forms::add_form_key_items(
+        FormFocus::Fields,
+        false,
+        Some(ProviderAddField::ClaudeFallbackOneM),
+    );
+    assert!(keys.contains(&("Enter", texts::tui_key_toggle())));
+    assert_eq!(value, format!("[{}]", texts::tui_marker_active()));
+    app.form = Some(FormState::ProviderAdd(form));
+    for (width, height) in [(80, 24), (120, 32)] {
+        let rendered = all_text(&render_with_size(
+            &app,
+            &minimal_data(&app.app_type),
+            width,
+            height,
+        ));
+        assert!(rendered.contains("Default model 1M"), "{rendered}");
+
+        assert!(
+            !rendered.contains("takes precedence"),
+            "help belongs in the contextual overlay"
+        );
+    }
 }

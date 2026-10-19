@@ -9,10 +9,8 @@ use crate::claude_model_config::{
 use crate::cli::i18n::texts;
 use crate::cli::ui::info;
 use crate::error::AppError;
-use crate::provider::{
-    AuthBinding, AuthBindingSource, ClaudeApiKeyField, CodexChatReasoningConfig, Provider,
-    ProviderMeta,
-};
+use crate::provider::{AuthBinding, AuthBindingSource, ClaudeApiKeyField, Provider, ProviderMeta};
+use crate::provider_preset_builtin::{builtin_provider_preset_value, BuiltinProviderPresetId};
 use crate::provider_preset_models::{
     codex_oauth_claude_env, sponsor_hermes_models, sponsor_model_family, sponsor_openclaw_models,
     sponsor_opencode_settings, SponsorModelFamily, CODEX_DEFAULT_MODEL, GEMINI_DEFAULT_MODEL,
@@ -35,13 +33,17 @@ pub enum ProviderAddTemplate {
     CodexOauth,
     OpenaiOfficial,
     GoogleOauth,
-    Claudeapi,
-    Packycode,
-    Runapi,
-    Aicodemirror,
+    #[value(name = "88api")]
+    Api88,
+    Apimart,
+    Patewayai,
     Cubence,
     Openmodel,
+    Packycode,
     Dds,
+    Runapi,
+    Aicodemirror,
+    Claudeapi,
     Qiniu,
     Fenno,
     Deepseek,
@@ -59,6 +61,9 @@ impl ProviderAddTemplate {
             Self::Packycode => "packycode",
             Self::Runapi => "runapi",
             Self::Aicodemirror => "aicodemirror",
+            Self::Patewayai => "patewayai",
+            Self::Apimart => "apimart",
+            Self::Api88 => "88api",
             Self::Cubence => "cubence",
             Self::Openmodel => "openmodel",
             Self::Dds => "dds",
@@ -79,6 +84,9 @@ impl ProviderAddTemplate {
                 | Self::Packycode
                 | Self::Runapi
                 | Self::Aicodemirror
+                | Self::Api88
+                | Self::Apimart
+                | Self::Patewayai
                 | Self::Cubence
                 | Self::Openmodel
                 | Self::Dds
@@ -88,17 +96,6 @@ impl ProviderAddTemplate {
         )
     }
 }
-
-const DEEPSEEK_CODEX_CONFIG: &str = r#"model_provider = "custom"
-model = "deepseek-v4-flash"
-model_reasoning_effort = "high"
-disable_response_storage = true
-
-[model_providers.custom]
-name = "deepseek"
-base_url = "https://api.deepseek.com"
-wire_api = "responses"
-requires_openai_auth = true"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderAddTemplateChoice {
@@ -154,7 +151,7 @@ pub fn common_snippet_has_effective_config(
             .ok()
             .and_then(|value| value.as_object().cloned())
             .is_some_and(|obj| !obj.is_empty()),
-        AppType::OpenCode | AppType::Hermes | AppType::OpenClaw => false,
+        AppType::OpenCode | AppType::Hermes | AppType::OpenClaw | AppType::Pi => false,
     }
 }
 
@@ -219,7 +216,7 @@ pub fn provider_add_template_choices(app_type: &AppType) -> Vec<ProviderAddTempl
                 label: "Google OAuth",
             },
         ],
-        AppType::OpenCode | AppType::Hermes | AppType::OpenClaw => {
+        AppType::OpenCode | AppType::Hermes | AppType::OpenClaw | AppType::Pi => {
             vec![ProviderAddTemplateChoice {
                 template: ProviderAddTemplate::Custom,
                 label: "Custom",
@@ -251,6 +248,9 @@ fn sponsor_template_from_id(id: &str) -> ProviderAddTemplate {
         "packycode" => ProviderAddTemplate::Packycode,
         "runapi" => ProviderAddTemplate::Runapi,
         "aicodemirror" => ProviderAddTemplate::Aicodemirror,
+        "apimart" => ProviderAddTemplate::Apimart,
+        "patewayai" => ProviderAddTemplate::Patewayai,
+        "88api" => ProviderAddTemplate::Api88,
         "cubence" => ProviderAddTemplate::Cubence,
         "openmodel" => ProviderAddTemplate::Openmodel,
         "dds" => ProviderAddTemplate::Dds,
@@ -358,6 +358,9 @@ fn template_default_name(template: ProviderAddTemplate) -> Result<&'static str, 
         | ProviderAddTemplate::Packycode
         | ProviderAddTemplate::Runapi
         | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Api88
+        | ProviderAddTemplate::Apimart
+        | ProviderAddTemplate::Patewayai
         | ProviderAddTemplate::Cubence
         | ProviderAddTemplate::Openmodel
         | ProviderAddTemplate::Dds
@@ -380,6 +383,9 @@ fn template_default_website_url(template: ProviderAddTemplate) -> Option<&'stati
         | ProviderAddTemplate::Packycode
         | ProviderAddTemplate::Runapi
         | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Api88
+        | ProviderAddTemplate::Apimart
+        | ProviderAddTemplate::Patewayai
         | ProviderAddTemplate::Cubence
         | ProviderAddTemplate::Openmodel
         | ProviderAddTemplate::Dds
@@ -391,6 +397,7 @@ fn template_default_website_url(template: ProviderAddTemplate) -> Option<&'stati
 
 fn template_default_category(template: ProviderAddTemplate) -> Option<&'static str> {
     match template {
+        ProviderAddTemplate::Api88 => Some("aggregator"),
         ProviderAddTemplate::ClaudeOfficial
         | ProviderAddTemplate::OpenaiOfficial
         | ProviderAddTemplate::GoogleOauth => Some("official"),
@@ -404,6 +411,8 @@ fn template_default_category(template: ProviderAddTemplate) -> Option<&'static s
         | ProviderAddTemplate::Claudeapi
         | ProviderAddTemplate::Packycode
         | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Apimart
+        | ProviderAddTemplate::Patewayai
         | ProviderAddTemplate::Cubence
         | ProviderAddTemplate::Dds => None,
     }
@@ -430,15 +439,7 @@ fn template_default_meta(
             ..Default::default()
         }),
         ProviderAddTemplate::Deepseek => Some(ProviderMeta {
-            api_format: Some("openai_chat".to_string()),
-            codex_chat_reasoning: Some(CodexChatReasoningConfig {
-                supports_thinking: Some(true),
-                supports_effort: Some(true),
-                thinking_param: Some("thinking".to_string()),
-                effort_param: Some("reasoning_effort".to_string()),
-                effort_value_mode: Some("deepseek".to_string()),
-                output_format: Some("reasoning_content".to_string()),
-            }),
+            api_format: Some("openai_responses".to_string()),
             ..Default::default()
         }),
         ProviderAddTemplate::GoogleOauth => Some(ProviderMeta {
@@ -449,6 +450,9 @@ fn template_default_meta(
         | ProviderAddTemplate::Packycode
         | ProviderAddTemplate::Runapi
         | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Api88
+        | ProviderAddTemplate::Apimart
+        | ProviderAddTemplate::Patewayai
         | ProviderAddTemplate::Cubence
         | ProviderAddTemplate::Openmodel
         | ProviderAddTemplate::Dds
@@ -459,6 +463,11 @@ fn template_default_meta(
                 partner_promotion_key: Some(preset.partner_promotion_key.to_string()),
                 ..Default::default()
             };
+            if matches!(app_type, AppType::Claude)
+                && preset.claude_api_key_field == ClaudeApiKeyField::ApiKey
+            {
+                meta.api_key_field = Some(preset.claude_api_key_field.as_env_key().to_string());
+            }
             if matches!(app_type, AppType::Codex) {
                 meta.api_format = Some("openai_responses".to_string());
             }
@@ -470,6 +479,7 @@ fn template_default_meta(
 
 fn template_default_icon(template: ProviderAddTemplate) -> Option<&'static str> {
     match template {
+        ProviderAddTemplate::Api88 => Some("88api"),
         ProviderAddTemplate::Deepseek => Some("deepseek"),
         ProviderAddTemplate::Runapi => Some("runapi"),
         ProviderAddTemplate::Qiniu => Some("qiniu"),
@@ -482,6 +492,8 @@ fn template_default_icon(template: ProviderAddTemplate) -> Option<&'static str> 
         | ProviderAddTemplate::Claudeapi
         | ProviderAddTemplate::Packycode
         | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Apimart
+        | ProviderAddTemplate::Patewayai
         | ProviderAddTemplate::Cubence
         | ProviderAddTemplate::Openmodel
         | ProviderAddTemplate::Dds => None,
@@ -500,6 +512,9 @@ fn template_default_icon_color(template: ProviderAddTemplate) -> Option<&'static
         | ProviderAddTemplate::Packycode
         | ProviderAddTemplate::Runapi
         | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Api88
+        | ProviderAddTemplate::Apimart
+        | ProviderAddTemplate::Patewayai
         | ProviderAddTemplate::Cubence
         | ProviderAddTemplate::Openmodel
         | ProviderAddTemplate::Dds
@@ -528,6 +543,9 @@ fn build_provider_template_settings_config(
         | ProviderAddTemplate::Packycode
         | ProviderAddTemplate::Runapi
         | ProviderAddTemplate::Aicodemirror
+        | ProviderAddTemplate::Api88
+        | ProviderAddTemplate::Apimart
+        | ProviderAddTemplate::Patewayai
         | ProviderAddTemplate::Cubence
         | ProviderAddTemplate::Openmodel
         | ProviderAddTemplate::Dds
@@ -541,42 +559,38 @@ fn build_provider_template_settings_config(
 }
 
 fn build_codex_deepseek_settings_config() -> Value {
-    json!({
-        "config": DEEPSEEK_CODEX_CONFIG,
-        "modelCatalog": {
-            "models": [
-                {
-                    "model": "deepseek-v4-flash",
-                    "displayName": "DeepSeek V4 Flash",
-                    "contextWindow": 1000000,
-                },
-                {
-                    "model": "deepseek-v4-pro",
-                    "displayName": "DeepSeek V4 Pro",
-                    "contextWindow": 1000000,
-                },
-            ],
-        },
-    })
+    builtin_provider_preset_value(&AppType::Codex, BuiltinProviderPresetId::DeepSeek)
+        .and_then(|provider| provider.get("settingsConfig").cloned())
+        .unwrap_or_else(|| json!({}))
 }
 
 fn build_sponsor_template_settings_config(
     app_type: &AppType,
     preset: SponsorProviderPreset,
 ) -> Result<Value, AppError> {
+    if preset.id == "88api" && !matches!(app_type, AppType::Codex) {
+        return Ok(crate::provider_preset_sponsors::api88_settings(app_type));
+    }
     match app_type {
         AppType::Claude => Ok(json!({
             "env": {
                 "ANTHROPIC_BASE_URL": preset.claude_base_url,
             }
         })),
-        AppType::Codex => Ok(build_codex_settings_config(
-            None,
-            preset.codex_base_url,
-            CODEX_DEFAULT_MODEL,
-            "responses",
-            preset.provider_name,
-        )),
+        AppType::Codex => {
+            let provider_name = if matches!(preset.id, "patewayai" | "88api") {
+                preset.id
+            } else {
+                preset.provider_name
+            };
+            Ok(build_codex_settings_config(
+                None,
+                preset.codex_base_url,
+                CODEX_DEFAULT_MODEL,
+                "responses",
+                provider_name,
+            ))
+        }
         AppType::Gemini => Ok(json!({
             "env": {
                 "GOOGLE_GEMINI_BASE_URL": preset.gemini_base_url,
@@ -669,6 +683,7 @@ fn build_sponsor_template_settings_config(
                 })
             }
         }
+        AppType::Pi => Err(unsupported_template_error(ProviderAddTemplate::Custom)),
     }
 }
 
@@ -723,6 +738,22 @@ pub fn apply_additive_template_field_overrides(
                 defaults.user_agent_enabled,
                 models_with_primary_override(current, model),
             )
+        }
+        AppType::Pi => {
+            let mut updated = current.clone();
+            let object = updated.as_object_mut().ok_or_else(|| {
+                AppError::InvalidInput("Pi provider configuration must be an object".to_string())
+            })?;
+            if let Some(api_key) = api_key {
+                object.insert("apiKey".to_string(), Value::String(api_key.to_string()));
+            }
+            if let Some(base_url) = base_url {
+                object.insert("baseUrl".to_string(), Value::String(base_url.to_string()));
+            }
+            if let Some(model) = model {
+                object.insert("models".to_string(), json!([{ "id": model }]));
+            }
+            Ok(updated)
         }
         AppType::Claude | AppType::Codex | AppType::Gemini => Err(AppError::InvalidInput(format!(
             "{} does not use additive provider settings",
@@ -1161,15 +1192,18 @@ requires_openai_auth = true
                 "Custom",
                 "Claude Official",
                 "Codex",
-                "* AICodeMirror",
-                "* ClaudeAPI",
+                "* 88API",
+                "* APIMart",
                 "* Cubence",
                 "* OpenModel",
-                "* RunAPI",
-                "* Qiniu",
-                "* FennoAI",
                 "* PackyCode",
                 "* DDS",
+                "* RunAPI",
+                "* AICodeMirror",
+                "* ClaudeAPI",
+                "* Qiniu",
+                "* PatewayAI",
+                "* FennoAI",
             ]
         );
         assert_eq!(
@@ -1177,14 +1211,17 @@ requires_openai_auth = true
             vec![
                 "Custom",
                 "OpenAI Official",
-                "* AICodeMirror",
+                "* 88API",
+                "* APIMart",
                 "* Cubence",
                 "* OpenModel",
-                "* RunAPI",
-                "* Qiniu",
-                "* FennoAI",
                 "* PackyCode",
                 "* DDS",
+                "* RunAPI",
+                "* AICodeMirror",
+                "* Qiniu",
+                "* PatewayAI",
+                "* FennoAI",
                 "DeepSeek",
             ]
         );
@@ -1193,50 +1230,58 @@ requires_openai_auth = true
             vec![
                 "Custom",
                 "Google OAuth",
-                "* AICodeMirror",
+                "* 88API",
+                "* APIMart",
                 "* Cubence",
                 "* OpenModel",
-                "* Qiniu",
                 "* PackyCode",
+                "* AICodeMirror",
+                "* Qiniu",
             ]
         );
         assert_eq!(
             labels(AppType::OpenCode),
             vec![
                 "Custom",
-                "* AICodeMirror",
+                "* 88API",
+                "* APIMart",
                 "* Cubence",
                 "* OpenModel",
+                "* PackyCode",
                 "* RunAPI",
+                "* AICodeMirror",
                 "* Qiniu",
                 "* FennoAI",
-                "* PackyCode"
             ]
         );
         assert_eq!(
             labels(AppType::Hermes),
             vec![
                 "Custom",
-                "* AICodeMirror",
+                "* 88API",
+                "* APIMart",
                 "* Cubence",
                 "* OpenModel",
+                "* PackyCode",
                 "* RunAPI",
+                "* AICodeMirror",
                 "* Qiniu",
                 "* FennoAI",
-                "* PackyCode"
             ]
         );
         assert_eq!(
             labels(AppType::OpenClaw),
             vec![
                 "Custom",
-                "* AICodeMirror",
+                "* 88API",
+                "* APIMart",
                 "* Cubence",
                 "* OpenModel",
+                "* PackyCode",
                 "* RunAPI",
+                "* AICodeMirror",
                 "* Qiniu",
                 "* FennoAI",
-                "* PackyCode"
             ]
         );
     }
@@ -1249,6 +1294,22 @@ requires_openai_auth = true
         assert!(
             validate_provider_add_template(&AppType::Gemini, ProviderAddTemplate::Dds).is_err()
         );
+        for app_type in [AppType::Claude, AppType::Codex] {
+            validate_provider_add_template(&app_type, ProviderAddTemplate::Patewayai)
+                .expect("PatewayAI should support Claude and Codex");
+        }
+        for app_type in [
+            AppType::Gemini,
+            AppType::OpenCode,
+            AppType::Hermes,
+            AppType::OpenClaw,
+            AppType::Pi,
+        ] {
+            assert!(
+                validate_provider_add_template(&app_type, ProviderAddTemplate::Patewayai).is_err(),
+                "PatewayAI should not be exposed for {app_type:?}"
+            );
+        }
         for app_type in [AppType::OpenCode, AppType::Hermes, AppType::OpenClaw] {
             validate_provider_add_template(&app_type, ProviderAddTemplate::Packycode)
                 .expect("PackyCode should match the upstream additive-app support matrix");
@@ -1389,6 +1450,43 @@ requires_openai_auth = true
         assert_eq!(
             provider.meta.as_ref().and_then(|meta| meta.is_partner),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn patewayai_template_matches_upstream_claude_and_codex_settings() {
+        let claude =
+            build_provider_template_seed(&AppType::Claude, ProviderAddTemplate::Patewayai, &[])
+                .expect("build PatewayAI Claude seed");
+        assert_eq!(claude.id, "patewayai");
+        assert_eq!(claude.name, "PatewayAI");
+        assert_eq!(claude.website_url.as_deref(), Some("https://pateway.ai"));
+        assert_eq!(
+            claude.settings_config["env"]["ANTHROPIC_BASE_URL"],
+            "https://api.pateway.ai"
+        );
+        assert_eq!(
+            claude
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.api_key_field.as_deref()),
+            Some("ANTHROPIC_API_KEY")
+        );
+
+        let codex =
+            build_provider_template_seed(&AppType::Codex, ProviderAddTemplate::Patewayai, &[])
+                .expect("build PatewayAI Codex seed");
+        let config = codex.settings_config["config"]
+            .as_str()
+            .expect("PatewayAI Codex config should be TOML");
+        assert!(config.contains("model = \"gpt-5.6-sol\""));
+        assert!(config.contains("base_url = \"https://api.pateway.ai/v1\""));
+        assert!(config.contains("name = \"patewayai\""));
+        assert!(config.contains("wire_api = \"responses\""));
+        assert!(config.contains("requires_openai_auth = true"));
+        assert_eq!(
+            codex.meta.and_then(|meta| meta.api_format),
+            Some("openai_responses".to_string())
         );
     }
 
@@ -1799,31 +1897,22 @@ requires_openai_auth = true
                     {
                         "model": "deepseek-v4-flash",
                         "displayName": "DeepSeek V4 Flash",
-                        "contextWindow": 1000000,
+                        "contextWindow": 1048576,
+                        "reasoningLevels": ["low", "high", "max"],
                     },
                     {
                         "model": "deepseek-v4-pro",
                         "displayName": "DeepSeek V4 Pro",
-                        "contextWindow": 1000000,
+                        "contextWindow": 1048576,
+                        "reasoningLevels": ["low", "high", "max"],
                     },
                 ],
             })
         );
 
         let meta = provider.meta.expect("DeepSeek metadata should be present");
-        assert_eq!(meta.api_format.as_deref(), Some("openai_chat"));
-        let reasoning = meta
-            .codex_chat_reasoning
-            .expect("DeepSeek reasoning metadata should be present");
-        assert_eq!(reasoning.supports_thinking, Some(true));
-        assert_eq!(reasoning.supports_effort, Some(true));
-        assert_eq!(reasoning.thinking_param.as_deref(), Some("thinking"));
-        assert_eq!(reasoning.effort_param.as_deref(), Some("reasoning_effort"));
-        assert_eq!(reasoning.effort_value_mode.as_deref(), Some("deepseek"));
-        assert_eq!(
-            reasoning.output_format.as_deref(),
-            Some("reasoning_content")
-        );
+        assert_eq!(meta.api_format.as_deref(), Some("openai_responses"));
+        assert!(meta.codex_chat_reasoning.is_none());
     }
 
     #[test]
@@ -2465,6 +2554,29 @@ requires_openai_auth = true
         assert_eq!(defaults.base_url, "https://api.existing.example/v1");
         assert!(defaults.user_agent_enabled);
         assert!(defaults.models_json.contains("existing-model"));
+    }
+
+    #[test]
+    fn pi_prompt_url_validation_allows_only_unchanged_legacy_values() {
+        let invalid = json!({
+            "baseUrl": "not-a-url",
+            "models": [{ "id": "model" }]
+        });
+        let changed_invalid = json!({
+            "baseUrl": "still-not-a-url",
+            "models": [{ "id": "model" }]
+        });
+        let valid_model_url = json!({
+            "models": [{
+                "id": "model",
+                "baseUrl": "https://pi.example/v1"
+            }]
+        });
+
+        assert!(validate_pi_prompt_request_url(None, &invalid).is_err());
+        assert!(validate_pi_prompt_request_url(Some(&invalid), &invalid).is_ok());
+        assert!(validate_pi_prompt_request_url(Some(&invalid), &changed_invalid).is_err());
+        assert!(validate_pi_prompt_request_url(None, &valid_model_url).is_ok());
     }
 }
 
@@ -3700,6 +3812,108 @@ pub fn prompt_basic_fields(
     Ok((name, website_url))
 }
 
+fn prompt_pi_config(current: Option<&Value>) -> Result<Value, AppError> {
+    let mut config = current.cloned().unwrap_or_else(|| json!({}));
+    let object = config.as_object_mut().ok_or_else(|| {
+        AppError::InvalidInput("Pi provider configuration must be an object".to_string())
+    })?;
+
+    let current_base_url = object
+        .get("baseUrl")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let base_url = Text::new("Base URL:")
+        .with_initial_value(current_base_url)
+        .prompt()
+        .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
+    if base_url.trim().is_empty() {
+        object.remove("baseUrl");
+    } else {
+        object.insert(
+            "baseUrl".to_string(),
+            Value::String(base_url.trim().to_string()),
+        );
+    }
+
+    let current_api_key = object
+        .get("apiKey")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let api_key = Text::new("API Key:")
+        .with_initial_value(current_api_key)
+        .prompt()
+        .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
+    if api_key.trim().is_empty() {
+        object.remove("apiKey");
+    } else {
+        object.insert(
+            "apiKey".to_string(),
+            Value::String(api_key.trim().to_string()),
+        );
+    }
+
+    let current_api = object
+        .get("api")
+        .and_then(Value::as_str)
+        .unwrap_or(if current.is_none() {
+            "openai-completions"
+        } else {
+            ""
+        });
+    let api = Text::new("API protocol:")
+        .with_initial_value(current_api)
+        .with_help_message("For example: openai-completions or anthropic-messages")
+        .prompt()
+        .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
+    if current.is_none() && !crate::openclaw_config::OPENCLAW_API_PROTOCOLS.contains(&api.trim()) {
+        return Err(AppError::InvalidInput(format!(
+            "Unsupported Pi API protocol: {}",
+            api.trim()
+        )));
+    }
+    if api.trim().is_empty() {
+        object.remove("api");
+    } else {
+        object.insert("api".to_string(), Value::String(api.trim().to_string()));
+    }
+
+    if current.is_none() {
+        let model = Text::new("Model ID:")
+            .prompt()
+            .map_err(|e| AppError::Message(texts::input_failed_error(&e.to_string())))?;
+        if model.trim().is_empty() {
+            return Err(AppError::InvalidInput(
+                "A custom Pi provider requires at least one model ID".to_string(),
+            ));
+        }
+        object.insert("models".to_string(), json!([{ "id": model.trim() }]));
+    }
+
+    validate_pi_prompt_request_url(current, &config)?;
+
+    Ok(config)
+}
+
+fn validate_pi_prompt_request_url(current: Option<&Value>, edited: &Value) -> Result<(), AppError> {
+    let request_url = |config: &Value| {
+        crate::pi_config::provider_base_url(config)
+            .ok()
+            .map(|url| url.trim().to_string())
+    };
+    let original_request_url = current.and_then(request_url);
+    let edited_request_url = request_url(edited);
+    if (current.is_none() || edited_request_url != original_request_url)
+        && edited_request_url
+            .as_deref()
+            .is_none_or(|url| !crate::pi_config::is_valid_request_url(url))
+    {
+        return Err(AppError::InvalidInput(
+            "Pi Base URL must be an absolute HTTP(S) URL".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// 根据应用类型收集 settings_config
 pub fn prompt_settings_config(
     app_type: &AppType,
@@ -3741,6 +3955,13 @@ pub fn prompt_settings_config(
         AppType::OpenCode => prompt_opencode_config(current).map(SettingsConfigPromptResult::new),
         AppType::Hermes => prompt_hermes_config(current).map(SettingsConfigPromptResult::new),
         AppType::OpenClaw => prompt_openclaw_config(current).map(SettingsConfigPromptResult::new),
+        AppType::Pi => {
+            let mut config = prompt_pi_config(current)?;
+            if current.is_none() {
+                config["name"] = Value::String(provider_name.trim().to_string());
+            }
+            Ok(SettingsConfigPromptResult::new(config))
+        }
     }
 }
 
@@ -4471,6 +4692,29 @@ pub fn display_provider_summary(provider: &Provider, app_type: &AppType) {
                 .settings_config
                 .get("models")
                 .and_then(|v| v.as_array())
+            {
+                println!("  {}: {}", texts::model_label(), models.len());
+            }
+        }
+        AppType::Pi => {
+            if provider.configured_api_key(app_type).is_some() {
+                println!(
+                    "  {}: {}",
+                    texts::api_key_display_label(),
+                    crate::t!("configured", "已配置")
+                );
+            }
+            if let Some(base_url) = provider
+                .settings_config
+                .get("baseUrl")
+                .and_then(Value::as_str)
+            {
+                println!("  {}: {}", texts::base_url_display_label(), base_url);
+            }
+            if let Some(models) = provider
+                .settings_config
+                .get("models")
+                .and_then(Value::as_array)
             {
                 println!("  {}: {}", texts::model_label(), models.len());
             }
